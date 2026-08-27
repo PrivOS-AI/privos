@@ -39,3 +39,21 @@ before use, and pulls images by immutable `@sha256` digest. Only the hub port is
 published on `0.0.0.0`; board, proxy, MinIO and the VM pool bind `127.0.0.1`. See
 `SIGNING.md` for the public key. The current published key is **DEV-only**; production
 releases are re-signed with a securely held key.
+
+## License
+
+PrivOS is licensed under the **PrivOS Community License 1.0** (see [`LICENSE`](./LICENSE)), a
+source-available license derived from the Elastic License 2.0. It is **not an Open Source license**.
+
+- **Free Community tier:** production use with up to **10 Active Human Users** per deployment
+  (bots, integrations and AI agents never count).
+- **More than 10 users:** requires a Commercial License Key from Roxane INC — activate at
+  `https://client.privos.io/self-hosted/activate`.
+- **Hosted/managed services (SaaS) and commercial redistribution** of PrivOS or modified versions
+  require a Partner License.
+- Giving an unmodified copy to someone for free, and charging for your own installation or support
+  services, is allowed — each deployment is its own licensee.
+
+Portions of PrivOS Hub are derived from Rocket.Chat and remain under the MIT License; third-party
+components keep their own licenses (shipped inside the images as `NOTICE` / `OPEN-SOURCE-NOTICES.txt`).
+Licensing inquiries: legal@privos.ai · Licensor: Roxane INC (Delaware, USA).
