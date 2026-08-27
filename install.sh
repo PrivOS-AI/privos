@@ -54,8 +54,8 @@ resolve_bundle_base_url() {
 # offline-held production public key before this script is ever published.
 # Read by warn_if_dev_signing_key() at startup — flip to "false" once
 # MINISIGN_PUBLIC_KEY below is the real production key.
-MINISIGN_PUBLIC_KEY_IS_DEV_ONLY="true"
-MINISIGN_PUBLIC_KEY="RWTSux76l3dmrV5gYhP/M/4jvg6ziwi4q7FmN2bDlMy7USQxpm2XpwWc"
+MINISIGN_PUBLIC_KEY_IS_DEV_ONLY="false"
+MINISIGN_PUBLIC_KEY="RWQVDoIkZD9NNKyCJhKYcl7tGiAAys+Pp+PvLH1DJ5Ai1Ze7nTzm3cK2"
 
 # Fails closed: a DEV-signed bundle must never become an install's trust
 # root by accident (e.g. scrolling past a warning under `curl | bash`).
