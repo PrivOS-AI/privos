@@ -1,5 +1,8 @@
 # PrivOS — self-hosted installer & release bundle
 
+**PrivOS is [fair-code](https://faircode.io):** free to run for your own team (up to 10 human users),
+source-available installer, commercial rights reserved. Not open source — see [License](#license).
+
 > 🚧 **Pre-release — do NOT `curl | bash` yet.** The bundle is not production-signed,
 > image digests are placeholders, and the backing container images / control-plane
 > routes are not yet public or deployed. Published for review and integration only.
@@ -53,9 +56,9 @@ public issue.
 
 ## Roadmap: open source
 
-PrivOS is **not open source today**. It is distributed under the
-[PrivOS Community License 1.0](./LICENSE) — the installer here is source-available, and the
-product ships as container images. **We intend to publish the PrivOS source code and move
+PrivOS is **fair-code, not open source, today**. It is distributed under the
+[PrivOS Community License 1.0](./LICENSE) — the installer here is source-available, the product
+ships as container images, and commercial use beyond the Community tier is reserved. **We intend to publish the PrivOS source code and move
 to an open source license in the future.** We have not committed to a date; we will announce
 it in this repository when we do. Until then the Community License applies to every release,
 and the terms below on contributions are in effect.
@@ -88,7 +91,11 @@ you for your understanding.
 ## License
 
 PrivOS is licensed under the **PrivOS Community License 1.0** (see [`LICENSE`](./LICENSE)), a
-source-available license derived from the Elastic License 2.0. It is **not an Open Source license**.
+[fair-code](https://faircode.io) license derived from the Elastic License 2.0: the source of the
+installer is available and the software is free to use within the Community tier, while commercial,
+hosted-service, and redistribution rights are reserved. It is **not an Open Source license** — like
+n8n's Sustainable Use License, it limits *how* the software may be used, which the OSI definition
+does not allow.
 
 - **Free Community tier:** production use with up to **10 Active Human Users** per deployment
   (bots, integrations and AI agents never count).

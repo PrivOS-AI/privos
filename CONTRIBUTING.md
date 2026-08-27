@@ -6,7 +6,7 @@ issues and feedback.
 AI has made writing code easy. The hard part today is not writing the code, but reviewing
 it, keeping quality high, and keeping the product coherent. External code contributions
 "donate" the easy part of the job while creating more of the hard part. In addition, the
-PrivOS product source is not yet published (see "Roadmap: open source" in the README), so
+PrivOS is fair-code and its product source is not yet published (see "Roadmap: open source" in the README), so
 only the installer in this repository can be changed by a pull request at all.
 
 ## What we welcome
