@@ -171,4 +171,27 @@ assert_status 1 "$?" "validate_port: rejects a non-numeric value"
 ( validate_port "-1" "test-port" ) >/dev/null 2>&1
 assert_status 1 "$?" "validate_port: rejects a negative value"
 
+# --- resolve_bundle_base_url: GitHub Releases, no apex/Cloudflare ----------
+
+unset PRIVOS_BUNDLE_BASE_URL VERSION_FLAG 2>/dev/null
+VERSION_FLAG=""
+# shellcheck disable=SC2034 # read by resolve_bundle_base_url() in the sourced install.sh
+BUNDLE_RELEASE_TAG="self-hosted-7.15.41"
+assert_eq "https://github.com/PrivOS-AI/privos/releases/download/self-hosted-7.15.41" \
+  "$(resolve_bundle_base_url)" "resolve_bundle_base_url: defaults to GitHub Releases at the baked tag"
+
+VERSION_FLAG="self-hosted-9.9.9"
+assert_eq "https://github.com/PrivOS-AI/privos/releases/download/self-hosted-9.9.9" \
+  "$(resolve_bundle_base_url)" "resolve_bundle_base_url: --version overrides the baked tag"
+
+# shellcheck disable=SC2034 # read by resolve_bundle_base_url() in the sourced install.sh
+PRIVOS_BUNDLE_BASE_URL="https://mirror.example.test/bundle"
+assert_eq "https://mirror.example.test/bundle" \
+  "$(resolve_bundle_base_url)" "resolve_bundle_base_url: PRIVOS_BUNDLE_BASE_URL overrides everything"
+unset PRIVOS_BUNDLE_BASE_URL
+# shellcheck disable=SC2034 # read by resolve_bundle_base_url() in the sourced install.sh
+VERSION_FLAG=""
+
+assert_not_contains "$(resolve_bundle_base_url)" "privos.io" "resolve_bundle_base_url: never resolves to the dropped apex domain"
+
 report_and_exit

@@ -13,7 +13,7 @@ the hub prints a **license request code** to redeem at
 ## Intended usage (once released)
 
 ```bash
-curl -fsSL https://privos.io/install.sh | bash
+curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh | sudo bash
 # overrides: --hub-port N  --vm-port-range A-B  --dir /opt/privos  --yes
 #            --with-knowledge-vector  --with-local-runtime  --upgrade  --uninstall [--purge]
 ```

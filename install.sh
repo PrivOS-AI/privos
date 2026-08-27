@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PrivOS self-hosted installer.
 #
-#   curl -fsSL https://privos.io/install.sh | sudo bash
+#   curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh | sudo bash
 #
 # Installs hub + sandbox (mongo, redis, minio, board, proxy, VM pool) as a
 # single-host Docker Compose stack. Idempotent: safe to re-run. See
@@ -21,7 +21,28 @@ set -euo pipefail
 # Constants
 # ---------------------------------------------------------------------------
 
-BUNDLE_BASE_URL="${PRIVOS_BUNDLE_BASE_URL:-https://privos.io/self-hosted}"
+# The bundle (compose.yml, versions.json, minio-init.sh, docker-user-rules.sh,
+# .minisig files) is served as flat GitHub Release assets — no apex domain,
+# no Cloudflare Worker. `releases/latest/download/install.sh` is how a user
+# curls THIS file; publish-self-hosted-bundle.sh bakes the concrete release
+# tag into BUNDLE_RELEASE_TAG below before uploading, so a no-arg install
+# fetches the rest of that SAME release's assets by default. `--version`
+# overrides the tag; PRIVOS_BUNDLE_BASE_URL overrides the whole base URL
+# (e.g. for a private mirror or local testing).
+GITHUB_RELEASES_OWNER_REPO="PrivOS-AI/privos"
+GITHUB_RELEASES_BASE="https://github.com/${GITHUB_RELEASES_OWNER_REPO}/releases/download"
+# Baked by publish-self-hosted-bundle.sh at publish time (sed-replaces this
+# placeholder with the real tag, e.g. "self-hosted-v1.2.3") — same mechanism
+# as the compose.yml image-digest placeholders.
+BUNDLE_RELEASE_TAG="unreleased"
+
+resolve_bundle_base_url() {
+  if [[ -n "${PRIVOS_BUNDLE_BASE_URL:-}" ]]; then
+    printf '%s' "$PRIVOS_BUNDLE_BASE_URL"
+    return
+  fi
+  printf '%s/%s' "$GITHUB_RELEASES_BASE" "${VERSION_FLAG:-$BUNDLE_RELEASE_TAG}"
+}
 
 # DEV-ONLY scaffold key — see SIGNING.md. MUST be replaced with the real,
 # offline-held production public key before this script is ever published.
@@ -123,7 +144,7 @@ usage() {
   cat <<'USAGE'
 PrivOS self-hosted installer
 
-  curl -fsSL https://privos.io/install.sh | sudo bash
+  curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh | sudo bash
 
 Flags:
   --version <tag>          Bundle/stack version to install (default: latest published)
@@ -187,7 +208,7 @@ parse_args() {
 # ---------------------------------------------------------------------------
 
 require_root() {
-  [[ "${EUID:-$(id -u)}" -eq 0 ]] || die "run as root: curl -fsSL https://privos.io/install.sh | sudo bash"
+  [[ "${EUID:-$(id -u)}" -eq 0 ]] || die "run as root: curl -fsSL https://github.com/${GITHUB_RELEASES_OWNER_REPO}/releases/latest/download/install.sh | sudo bash"
 }
 
 # --dir/PRIVOS_DIR flows into mkdir/chown/bind-mount paths and
@@ -314,7 +335,8 @@ fetch_bundle_file() {
     fi
     return 0
   fi
-  local url="${BUNDLE_BASE_URL}${VERSION_FLAG:+/${VERSION_FLAG}}/${name}"
+  local url
+  url="$(resolve_bundle_base_url)/${name}"
   curl -fsSL "$url" -o "$dest" || die "failed to download ${url}"
 }
 

@@ -82,8 +82,9 @@ effect once `publish-self-hosted-bundle.sh` re-hashes it into a freshly
 signed `versions.json`.
 
 **`install.sh` itself is not minisig-signed.** It is fetched over
-`https://privos.io/install.sh` (TLS-from-GitHub/R2, no application-level
-integrity check) and is the thing that *performs* the minisign verification —
+`https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh`
+(TLS-from-GitHub, no application-level integrity check) and is the thing
+that *performs* the minisign verification —
 it cannot verify itself. The minisign boundary protects the bundle
 (`compose.yml`, `versions.json`, and by extension `minio-init.sh` /
 `docker-user-rules.sh`) it downloads and runs; TLS is the only protection on

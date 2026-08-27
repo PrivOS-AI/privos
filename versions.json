@@ -1,5 +1,5 @@
 {
-  "$schema": "https://privos.io/self-hosted/versions.schema.json",
+  "$schema": "https://raw.githubusercontent.com/PrivOS-AI/privos/main/infra/self-hosted/versions.schema.json",
   "bundleVersion": "0.0.0-dev",
   "stackVersion": "PLACEHOLDER_STACK_VERSION",
   "publishedAt": null,

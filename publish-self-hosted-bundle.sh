@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Resolves pinned image digests, signs versions.json + compose.yml with
-# minisign, and publishes the self-hosted bundle to a GitHub repository
-# (distributable files pushed to a branch + a signed GitHub Release with the
-# same files as assets).
+# minisign, and publishes the self-hosted bundle to GitHub Releases — flat
+# release assets, no apex domain, no Cloudflare Worker. The canonical install
+# command becomes:
+#
+#   curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh | sudo bash
 #
 # NOT RUN as part of authoring this bundle — this task explicitly excludes
 # live image pulls/builds and any push to GitHub. A human operator runs this
@@ -16,14 +18,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 REPO="PrivOS-AI/privos"
-BRANCH="main"
-BUNDLE_PATH="self-hosted"
 BUNDLE_DIR="$SCRIPT_DIR"
 STACK_VERSION=""
 MINISIGN_KEY=""
 BUNDLE_VERSION=""
 DRY_RUN="true"
 CHECK_ONLY="false"
+
+# GitHub Release tag naming — install.sh's baked BUNDLE_RELEASE_TAG (and any
+# --version override a user passes) must match this exactly, since
+# `releases/download/<tag>/<file>` is an exact-match GitHub URL scheme.
+release_tag_for() { printf 'self-hosted-%s' "$1"; }
 
 IMAGE_REFS=(
   "hub|ghcr.io/privos-ai/privos-hub|__HUB_DIGEST__"
@@ -49,7 +54,6 @@ usage() {
 publish-self-hosted-bundle.sh — resolve digests, sign, publish the bundle.
 
   --repo <owner/name>       Target GitHub repo (default: PrivOS-AI/privos)
-  --branch <name>           Branch to push distributable files to (default: main)
   --stack-version <tag>     Tag family for hub/sandbox-* images (required unless --check)
   --bundle-version <ver>    versions.json bundleVersion (default: <stack-version>)
   --minisign-key <path>     Secret key for signing (required unless --check)
@@ -80,7 +84,6 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --repo) REPO="${2:?}"; shift 2 ;;
-      --branch) BRANCH="${2:?}"; shift 2 ;;
       --stack-version) STACK_VERSION="${2:?}"; shift 2 ;;
       --bundle-version) BUNDLE_VERSION="${2:?}"; shift 2 ;;
       --minisign-key) MINISIGN_KEY="${2:?}"; shift 2 ;;
@@ -184,9 +187,20 @@ apply_digests_and_sign() {
 
   cp "$BUNDLE_DIR/compose.yml" "$work/compose.yml"
   cp "$BUNDLE_DIR/versions.json" "$work/versions.json"
-  for f in install.sh minio-init.sh docker-user-rules.sh env.template; do
+  for f in install.sh minio-init.sh docker-user-rules.sh env.template SIGNING.md; do
     cp "$BUNDLE_DIR/$f" "$work/$f"
   done
+
+  # Bake this release's exact tag into install.sh so a no-arg
+  # `curl .../releases/latest/download/install.sh | sudo bash` fetches the
+  # REST of this same release's assets by default (see
+  # resolve_bundle_base_url() in install.sh).
+  local release_tag
+  release_tag="$(release_tag_for "$STACK_VERSION")"
+  sed -i.bak "s|^BUNDLE_RELEASE_TAG=\"unreleased\"|BUNDLE_RELEASE_TAG=\"${release_tag}\"|" "$work/install.sh"
+  rm -f "$work/install.sh.bak"
+  grep -q "BUNDLE_RELEASE_TAG=\"${release_tag}\"" "$work/install.sh" \
+    || die "failed to bake BUNDLE_RELEASE_TAG into install.sh — placeholder line format changed?"
 
   for entry in "${IMAGE_REFS[@]}"; do
     IFS='|' read -r name _ placeholder <<<"$entry"
@@ -234,42 +248,49 @@ apply_digests_and_sign() {
 }
 
 # ---------------------------------------------------------------------------
-# Publish: push files to the repo branch + create a GitHub Release
+# Publish: create-or-update a GitHub Release, upload the bundle as flat
+# release assets. No apex domain, no Cloudflare Worker, no branch push —
+# `releases/download/<tag>/<file>` (and `releases/latest/download/<file>`
+# for the newest non-prerelease) is the entire distribution mechanism.
 # ---------------------------------------------------------------------------
 
 publish() {
-  local work="$1"
+  local work="$1" tag
   require_cmd gh
-  require_cmd git
+  tag="$(release_tag_for "$STACK_VERSION")"
+
+  local -a assets=(
+    "$work/install.sh"
+    "$work/compose.yml" "$work/compose.yml.minisig"
+    "$work/versions.json" "$work/versions.json.minisig"
+    "$work/minio-init.sh"
+    "$work/docker-user-rules.sh"
+    "$work/env.template"
+    "$work/SIGNING.md"
+  )
 
   if [[ "$DRY_RUN" == "true" ]]; then
-    log "DRY RUN — would push $(ls "$work") to ${REPO}@${BRANCH}:${BUNDLE_PATH}/ and create release ${STACK_VERSION}. Pass --yes to actually publish."
+    local a names=()
+    for a in "${assets[@]}"; do names+=("$(basename "$a")"); done
+    log "DRY RUN — would create/update GitHub Release '${tag}' on ${REPO} (--latest, non-prerelease) with ${#assets[@]} assets: ${names[*]}. Pass --yes to actually publish."
     return 0
   fi
 
-  local clone_dir
-  clone_dir="$(mktemp -d)"
-  gh repo clone "$REPO" "$clone_dir" -- --depth=1 --branch "$BRANCH"
-  mkdir -p "$clone_dir/$BUNDLE_PATH"
-  cp "$work"/{compose.yml,compose.yml.minisig,versions.json,versions.json.minisig,install.sh,minio-init.sh,docker-user-rules.sh,env.template} "$clone_dir/$BUNDLE_PATH/"
-  (
-    cd "$clone_dir"
-    git add "$BUNDLE_PATH"
-    git -c user.name="privos-release-bot" -c user.email="release@privos.io" \
-      commit -m "self-hosted bundle ${STACK_VERSION}"
-    git push origin "HEAD:${BRANCH}"
-  )
+  if gh release view "$tag" --repo "$REPO" >/dev/null 2>&1; then
+    log "Release ${tag} already exists on ${REPO} — updating assets"
+  else
+    # No --prerelease: a normal release, so `releases/latest/download/...`
+    # resolves to it. --latest explicitly marks it newest regardless of
+    # creation-time ordering relative to other tags in the repo.
+    gh release create "$tag" \
+      --repo "$REPO" \
+      --title "PrivOS self-hosted ${STACK_VERSION}" \
+      --notes "Self-hosted installer bundle for stack version ${STACK_VERSION}." \
+      --latest
+  fi
+  gh release upload "$tag" --repo "$REPO" --clobber "${assets[@]}"
 
-  gh release create "self-hosted-${STACK_VERSION}" \
-    --repo "$REPO" \
-    --title "PrivOS self-hosted ${STACK_VERSION}" \
-    --notes "Self-hosted installer bundle for stack version ${STACK_VERSION}." \
-    "$work/compose.yml" "$work/compose.yml.minisig" \
-    "$work/versions.json" "$work/versions.json.minisig" \
-    "$work/install.sh" "$work/minio-init.sh" "$work/docker-user-rules.sh"
-
-  rm -rf "$clone_dir"
-  log "Published ${STACK_VERSION} to ${REPO}."
+  log "Published ${tag} to ${REPO} (${#assets[@]} release assets)."
 }
 
 main() {
