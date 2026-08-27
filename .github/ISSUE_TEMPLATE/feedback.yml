@@ -1,0 +1,15 @@
+name: Feedback
+description: Something confusing, missing, or that would block you from adopting PrivOS.
+labels: [feedback]
+body:
+  - type: textarea
+    id: context
+    attributes: { label: Your context, description: "Team size, what you'd use PrivOS for, self-hosted vs cloud." }
+    validations: { required: true }
+  - type: textarea
+    id: feedback
+    attributes: { label: Feedback }
+    validations: { required: true }
+  - type: markdown
+    attributes:
+      value: "For open-ended discussion or big ideas, a [Discussion](https://github.com/PrivOS-AI/privos/discussions) may fit better."

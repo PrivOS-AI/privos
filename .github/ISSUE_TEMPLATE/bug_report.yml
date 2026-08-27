@@ -1,0 +1,27 @@
+name: Bug report
+description: The installer, upgrade, or docs did something wrong.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Thanks — bug reports are exactly the contribution we want right now. Never paste secrets, license keys, or the contents of `/opt/privos/.env`."
+  - type: input
+    id: version
+    attributes: { label: Bundle version, description: "From `versions.json` or the installer banner (e.g. self-hosted-148)" }
+    validations: { required: true }
+  - type: input
+    id: platform
+    attributes: { label: OS / arch / Docker version, placeholder: "Ubuntu 24.04 x86_64, Docker 27.1" }
+    validations: { required: true }
+  - type: textarea
+    id: command
+    attributes: { label: Exact command run, render: shell }
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes: { label: What you expected }
+    validations: { required: true }
+  - type: textarea
+    id: actual
+    attributes: { label: What happened instead (installer output), render: shell }
+    validations: { required: true }
