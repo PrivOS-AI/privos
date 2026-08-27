@@ -1,34 +1,79 @@
 # Contributing to PrivOS
 
-At this time, we are **not seeking outside code contributions**. We *are* seeking your
-issues and feedback.
+We are not accepting general code contributions yet.
 
-AI has made writing code easy. The hard part today is not writing the code, but reviewing
-it, keeping quality high, and keeping the product coherent. External code contributions
-"donate" the easy part of the job while creating more of the hard part. In addition, the
-PrivOS is fair-code and its product source is not yet published (see "Roadmap: open source" in the README), so
-only the installer in this repository can be changed by a pull request at all.
+Reviewing code, keeping quality high, and keeping the product coherent are the
+constraints on this project right now, not the writing of code. Taking in a
+large volume of contributions we cannot review properly would slow PrivOS down
+rather than speed it up. This will change as the project matures and more of
+the source is opened; until then, the policy below applies.
 
-## What we welcome
+## What is welcome
 
-| You have… | Please… |
-|---|---|
-| A bug (installer fails, port check wrong, upgrade broke, docs wrong) | [Open an issue](https://github.com/PrivOS-AI/privos/issues/new/choose) using the bug template — include your OS/arch, Docker version, the exact command, and the installer output (it never prints secrets). |
-| Feedback, a feature request, a "what I'd need to adopt this" | [Open a discussion](https://github.com/PrivOS-AI/privos/discussions). |
-| A big idea | A discussion **first**, before anyone writes code. |
-| A security vulnerability | Email `security@privos.ai`. Do **not** open a public issue. |
-| A licensing question | Email `legal@privos.ai`. |
+- **Bug reports.** Open an issue with your OS and version, the exact install
+  command you ran, the relevant output, and what you expected instead.
+- **Feature requests and product feedback.** Use discussions. Tell us what you
+  are trying to do, not only the feature you have in mind.
+- **Design and architecture ideas.** Talk to us before writing any code.
+- **Security vulnerabilities.** Do not open a public issue. Email
+  security@privos.ai. Release signatures and how to verify them are documented
+  in the repository.
+- **Licensing and attribution questions.** legal@privos.ai
 
 ## Pull requests
 
-We are happy to accept **small, trivially-verified PRs** to the installer that fix a real
-problem. Please refrain from low-value PRs (e.g. typo fixes) or PRs larger than a dozen or
-so lines; such PRs will be closed with a reference to this guideline.
+We will consider small, easily verified pull requests that fix a real problem
+in the installer — a broken path, an unhandled error, a wrong check.
 
-For an accepted PR: `shellcheck` must be clean and `bash tests/run-tests.sh` must pass
-(CI runs both). By submitting a PR you agree that your contribution is licensed under the
-PrivOS Community License 1.0 and that Roxane INC may relicense it when PrivOS moves to an
-open source license.
+- Roughly a dozen changed lines is the upper bound of "easily verified".
+- `shellcheck` must pass.
+- The test suite must pass.
+- For anything larger, open a discussion first, so that neither of us spends
+  time on a change we cannot merge.
 
-This policy will change as the project matures and the source is opened. Until then, thank
-you for your understanding.
+## Licensing of contributions
+
+PrivOS is distributed under the PrivOS Community License (see `LICENSE`), is
+also offered under commercial licenses, and is intended to be released under an
+OSI-approved open source license in the future. We can only do that if we hold
+clear rights in every line of code in the project.
+
+**Every contribution therefore requires the PrivOS Contributor License
+Agreement in [`CLA.md`](CLA.md).** It does not transfer ownership — you keep
+your copyright — but it grants us a broad, sublicensable license and the right
+to relicense the project, including under commercial and open source terms.
+
+Two things are required on every pull request:
+
+1. **Sign off every commit** with your real name and the email on your commits:
+
+   ```
+   git commit -s -m "your message"
+   ```
+
+2. **Accept the CLA** in the description of your first pull request:
+
+   ```
+   I have read the PrivOS CLA (CLA.md) and I accept it. My contributions are
+   made under its terms.
+   ```
+
+If you are contributing in the course of your work for a company, or using
+company equipment or time, your employer must sign the entity form as well —
+email legal@privos.ai and we will send it to you.
+
+We cannot merge contributions without both steps, however good the patch is.
+Code whose rights are unclear is not a problem that can be fixed later; it is a
+permanent obstacle to opening the source.
+
+Contributions of third-party code, or code produced with an AI assistant from
+material you do not have rights to, cannot be accepted. If any part of your
+change comes from somewhere else, say so in the pull request and name the
+source and its license.
+
+## Reporting a licensing or attribution problem
+
+If you believe PrivOS ships a component without correct attribution, or in
+breach of a third-party license, we want to know and we will fix it. Email
+legal@privos.ai with the component, the file, and the license concerned. This
+is not treated as an adversarial report.

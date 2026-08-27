@@ -1,0 +1,32 @@
+ROCKET.CHAT UPSTREAM FILES INCORPORATED INTO PRIVOS HUB
+MIT (Expat) License
+
+This file identifies the unmodified Rocket.Chat source files incorporated into
+PrivOS Hub. Those files are licensed under the MIT License, whose full text is
+reproduced in section 3 of the OPEN-SOURCE-NOTICES file distributed with this
+software.
+
+All modifications of these files, and all other code, configuration, assets,
+and content created by or for Roxane, Inc., are licensed under the PrivOS
+Community License 1.0 and are NOT licensed under the MIT License.
+
+No content from the "apps/meteor/ee/" or "ee/" directories of the Rocket.Chat
+repository is included in PrivOS.
+
+Copyright (c) __ROCKETCHAT_COPYRIGHT_YEARS__ Rocket.Chat Technologies Corp.
+
+Upstream repository:  https://github.com/RocketChat/Rocket.Chat
+Upstream commit:      __ROCKETCHAT_UPSTREAM_COMMIT__
+Upstream version:     __ROCKETCHAT_UPSTREAM_VERSION__
+Generated:            __GENERATION_DATE__
+
+--------------------------------------------------------------------------
+FILES
+--------------------------------------------------------------------------
+
+Each entry gives the path in PrivOS Hub, the corresponding upstream path, and
+the status of the file. Only files marked UNMODIFIED are covered by the MIT
+grant above; files marked MODIFIED or ROXANE are licensed under the PrivOS
+Community License 1.0.
+
+__ROCKETCHAT_FILE_MANIFEST__

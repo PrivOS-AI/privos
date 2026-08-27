@@ -1,0 +1,181 @@
+OPEN SOURCE AND THIRD-PARTY NOTICES
+PrivOS self-hosted bundle
+
+This file lists the third-party components distributed with, or pulled by, the
+PrivOS self-hosted bundle, together with their licenses, where their source can
+be obtained, and the attribution notices those licenses require. These
+components are licensed by their respective rights holders under their own
+terms, not by Roxane, Inc. Those terms prevail over the PrivOS Community
+License for those components.
+
+This file must be passed on with the software, together with the LICENSE,
+NOTICE, rocketchat-upstream-files.txt, and TRADEMARK.md files.
+
+Bundle version:  __PRIVOS_STACK_VERSION__
+Generated:       __GENERATION_DATE__
+
+--------------------------------------------------------------------------
+HOW TO READ THIS FILE
+--------------------------------------------------------------------------
+
+Section 1 lists the container images the bundle deploys, the license of the
+primary software in each image, and whether Roxane distributes that image or
+your deployment pulls it from the upstream registry.
+
+Section 2 lists components whose licenses impose obligations on operators who
+make the software available to other people over a network. If you run a
+deployment that other people can reach, read this section.
+
+Section 3 covers the Rocket.Chat derivation in PrivOS Hub and reproduces the
+MIT license text.
+
+Section 4 is the full dependency inventory, generated from the software bill of
+materials for each image.
+
+--------------------------------------------------------------------------
+1. BUNDLED CONTAINER IMAGES
+--------------------------------------------------------------------------
+
+MongoDB Community Server
+  Image:     mongo:__MONGO_VERSION__
+  License:   Server Side Public License, Version 1 (SSPL-1.0)
+  Notice:    Copyright (C) MongoDB, Inc.
+  License:   https://www.mongodb.com/licensing/server-side-public-license
+  Source:    https://github.com/mongodb/mongo
+  Conveyed:  __MONGO_CONVEYED__
+  Note:      See section 2. MongoDB is a trademark of MongoDB, Inc.
+
+Redis
+  Image:     redis:__REDIS_VERSION__
+  License:   __REDIS_LICENSE__
+  Notice:    Copyright (c) Redis Ltd. and contributors.
+  Source:    https://github.com/redis/redis
+  Conveyed:  __REDIS_CONVEYED__
+
+MinIO Object Storage
+  Image:     minio/minio:__MINIO_VERSION__
+  License:   GNU Affero General Public License, Version 3 (AGPL-3.0)
+  Notice:    Copyright (c) MinIO, Inc.
+  Source:    https://github.com/minio/minio
+  Conveyed:  __MINIO_CONVEYED__
+  Note:      See section 2. MinIO is a trademark of MinIO, Inc.
+
+MinIO Client (mc)
+  Image:     minio/mc:__MINIO_MC_VERSION__
+  License:   GNU Affero General Public License, Version 3 (AGPL-3.0)
+  Notice:    Copyright (c) MinIO, Inc.
+  Source:    https://github.com/minio/mc
+  Conveyed:  __MINIO_MC_CONVEYED__
+
+Weaviate (optional, "knowledge-vector" profile)
+  Image:     cr.weaviate.io/semitechnologies/weaviate:__WEAVIATE_VERSION__
+  License:   BSD 3-Clause
+  Notice:    Copyright (c) Weaviate B.V.
+  Source:    https://github.com/weaviate/weaviate
+  Conveyed:  __WEAVIATE_CONVEYED__
+
+PrivOS Hub, Sandbox Board, Sandbox Proxy, Sandbox VM, Local Runtime Driver
+  Images:    ghcr.io/privos-ai/*
+  License:   PrivOS Community License 1.0, except for the third-party
+             components inside those images, which are listed in section 4,
+             and except for the Rocket.Chat portions described in section 3.
+
+Each image also contains operating system packages and language runtime
+dependencies under their own licenses. Those are listed in section 4.
+
+Where an entry above is marked as conveyed by Roxane, Roxane offers to any
+third party, for at least three years after Roxane last distributes that
+version of the component, the corresponding source of the exact version
+conveyed, at the source location listed for that component and, on request and
+at no more than Roxane's cost of distribution, by writing to legal@privos.ai.
+
+--------------------------------------------------------------------------
+2. NETWORK AND SERVICE-SIDE OBLIGATIONS (READ IF YOU OPERATE A DEPLOYMENT)
+--------------------------------------------------------------------------
+
+Some components carry obligations that are triggered by making the software
+available to other people over a network, not by distributing it:
+
+MinIO and MinIO Client (AGPL-3.0), section 13
+  If you modify MinIO and make the modified version available to users over a
+  network, you must offer those users the corresponding source code of your
+  modified version. Running the unmodified image as shipped does not create
+  that obligation.
+
+MongoDB (SSPL-1.0), section 13
+  If you offer the functionality of MongoDB to third parties as a service, the
+  SSPL requires you to release the source code of the entire service
+  management stack you use to do so. Using MongoDB as the database behind your
+  own application does not trigger this. Offering a database service built on
+  it does.
+
+Redis
+  If the version listed in section 1 is under RSALv2, that license prohibits
+  offering the software to third parties as a managed service and prohibits
+  circumventing license functionality. If it is under SSPLv1, the section 13
+  obligation described above applies.
+
+These obligations fall on whoever operates the deployment. If you hold a
+PrivOS Partner License and offer PrivOS as a hosted or managed service, the
+Partner License covers the PrivOS software only. It does not and cannot
+relieve you of the obligations of these third-party licenses; review them for
+your own service before you launch it.
+
+--------------------------------------------------------------------------
+3. ROCKET.CHAT
+--------------------------------------------------------------------------
+
+Portions of PrivOS Hub are derived from Rocket.Chat
+(https://github.com/RocketChat/Rocket.Chat).
+
+Scope of the MIT-licensed material:
+
+  The unmodified upstream Rocket.Chat source files incorporated into PrivOS
+  Hub are listed in the accompanying file rocketchat-upstream-files.txt, with
+  the upstream commit they were taken from. Those files are licensed under the
+  MIT (Expat) License reproduced below.
+
+  All modifications of those files, and all other code, configuration, assets,
+  and content created by or for Roxane, Inc., are licensed under the PrivOS
+  Community License 1.0 and are NOT licensed under the MIT License.
+
+  No content from the "apps/meteor/ee/" or "ee/" directories of the
+  Rocket.Chat repository is included in PrivOS. Those directories are licensed
+  under the Rocket.Chat Enterprise Edition license and no rights in them are
+  granted.
+
+Required notice:
+
+  Copyright (c) __ROCKETCHAT_COPYRIGHT_YEARS__ Rocket.Chat Technologies Corp.
+
+  The MIT License (MIT)
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+Trademark:
+
+  "Rocket.Chat" is a trademark of Rocket.Chat Technologies Corp. PrivOS is not
+  affiliated with, endorsed by, or sponsored by Rocket.Chat Technologies Corp.
+  The mark is used here only to identify the origin of the code.
+
+--------------------------------------------------------------------------
+4. FULL DEPENDENCY INVENTORY
+--------------------------------------------------------------------------
+
+__SBOM_LICENSE_INVENTORY__
