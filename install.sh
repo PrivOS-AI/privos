@@ -8,9 +8,15 @@
 # docs/self-hosted-install.md for the full model this implements.
 #
 # Flags: --version <tag> --dir <path> --url <root-url> --hub-port <port>
-#        --vm-port-range <lo-hi> --yes --upgrade --uninstall [--purge]
-#        --with-knowledge-vector --with-local-runtime --install-docker
-#        --allow-dev-signing-key
+#        --vm-port-range <lo-hi> --yes --accept-license --upgrade --uninstall
+#        [--purge] --with-knowledge-vector --with-local-runtime
+#        --install-docker --allow-dev-signing-key
+#
+# Distributed under the PrivOS Community License 1.0 (LICENSE, PCL-1.0) — a
+# source-available license with commercial/hosting terms, not an OSI-approved
+# license. --yes implies license acceptance; --accept-license accepts it
+# without --yes's other non-interactive effects. See
+# require_license_acceptance() below.
 #
 # This file is dual-purpose: run directly it installs the stack; sourced (as
 # `tests/` does) it only defines functions — nothing runs until `main` is
@@ -77,14 +83,18 @@ PROJECT_NAME="privos"
 NETWORK_NAME="privos-sandbox-net"
 STACK_READY_TIMEOUT_SEC=600
 
-BUNDLE_FILES=(compose.yml versions.json minio-init.sh docker-user-rules.sh)
+BUNDLE_FILES=(compose.yml versions.json minio-init.sh docker-user-rules.sh LICENSE)
 SIGNED_FILES=(compose.yml versions.json)
 # Not directly minisig-signed, but versions.json's files{} block (itself
 # covered by the versions.json signature) carries a sha256 for each of
 # these — verify_bundle_integrity() checks both before either file is
-# installed, mounted, or executed. Both run as root / with root-equivalent
-# access (systemd unit + iptables; MinIO root creds in the mc container).
-UNSIGNED_HASHED_FILES=(minio-init.sh docker-user-rules.sh)
+# installed, mounted, or executed. minio-init.sh/docker-user-rules.sh run as
+# root / with root-equivalent access (systemd unit + iptables; MinIO root
+# creds in the mc container); LICENSE is hashed the same way so the text an
+# operator accepts can never silently diverge from what was actually signed.
+UNSIGNED_HASHED_FILES=(minio-init.sh docker-user-rules.sh LICENSE)
+LICENSE_MARKER_FILE=".license-accepted"
+LICENSE_VERSION="PCL-1.0"
 MAX_PORT_RANGE_SPAN=5000
 DANGEROUS_DIRS=(/ /root /home /usr /usr/local /etc /bin /sbin /lib /lib64 /var /boot /dev /proc /sys /opt /tmp /srv /mnt /media /run)
 
@@ -152,7 +162,9 @@ Flags:
   --url <root-url>          Public URL the hub is reachable at (rewrites ROOT_URL on re-run)
   --hub-port <port>         Host port for the hub (default: 3000)
   --vm-port-range <lo-hi>   Loopback host-port range for the sandbox VM pool (default: 30000-30999)
-  --yes                     Assume "no" for every optional-sidecar prompt (non-interactive)
+  --yes                     Non-interactive: assume "no" for optional-sidecar prompts AND
+                            accept the PrivOS Community License 1.0 (see LICENSE)
+  --accept-license          Accept the PrivOS Community License 1.0 without --yes's other effects
   --upgrade                 Pull latest images for the current install and recreate containers
   --uninstall               Stop and remove the stack (add --purge to also delete data)
   --purge                   With --uninstall: also delete data, volumes, network, firewall rules
@@ -161,6 +173,11 @@ Flags:
   --install-docker          Install Docker + compose v2 automatically if missing
   --allow-dev-signing-key   Local testing only: proceed despite a DEV-ONLY minisign key
   -h, --help                Show this help
+
+License: PrivOS Community License 1.0 (PCL-1.0) — free for up to 10 Active
+Human Users; larger deployments, hosted/managed services, and commercial
+redistribution require a license from Roxane INC (legal@privos.ai). Full
+text: https://github.com/PrivOS-AI/privos/blob/main/LICENSE
 USAGE
 }
 
@@ -180,6 +197,7 @@ VM_PORT_RANGE_FLAG=""
 WITH_KNOWLEDGE_VECTOR_FLAG=""
 WITH_LOCAL_RUNTIME_FLAG=""
 ALLOW_DEV_KEY_FLAG=""
+ACCEPT_LICENSE_FLAG=""
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -197,6 +215,7 @@ parse_args() {
       --with-local-runtime) WITH_LOCAL_RUNTIME_FLAG="true"; shift ;;
       --install-docker) INSTALL_DOCKER="true"; shift ;;
       --allow-dev-signing-key) ALLOW_DEV_KEY_FLAG="true"; shift ;;
+      --accept-license) ACCEPT_LICENSE_FLAG="true"; shift ;;
       -h|--help) usage; exit 0 ;;
       *) die "unknown flag: $1 (see --help)" ;;
     esac
@@ -298,6 +317,69 @@ check_resources() {
   while [[ ! -d "$check_dir" && "$check_dir" != "/" ]]; do check_dir="$(dirname "$check_dir")"; done
   avail_kb="$(df -Pk "$check_dir" | awk 'NR==2{print $4}')"
   (( avail_kb >= MIN_DISK_KB )) || die "at least 20 GB free disk is required at ${PRIVOS_DIR} (found $(( avail_kb / 1024 / 1024 )) GB free)."
+}
+
+# ---------------------------------------------------------------------------
+# License acceptance — must run before ANY other install state is written
+# (directories, secrets, .env). Never treat silence as acceptance: a bare
+# Enter at the TTY prompt, or no TTY and no explicit flag/env, both refuse.
+# ---------------------------------------------------------------------------
+
+license_already_accepted() {
+  local marker="$PRIVOS_DIR/$LICENSE_MARKER_FILE"
+  [[ -f "$marker" ]] || return 1
+  grep -q "$LICENSE_VERSION" "$marker" 2>/dev/null
+}
+
+print_license_notice() {
+  cat >&2 <<EOF
+
+PrivOS is licensed under the PrivOS Community License 1.0 (free for up to 10
+Active Human Users; larger deployments, hosted/managed services and
+commercial redistribution require a license from Roxane INC). Full text:
+https://github.com/PrivOS-AI/privos/blob/main/LICENSE and ${PRIVOS_DIR}/LICENSE
+after install.
+
+EOF
+}
+
+# --yes implies acceptance (see usage()); --accept-license / PRIVOS_ACCEPT_LICENSE=1
+# accept without --yes's other non-interactive effects. Sets LICENSE_ACCEPTED=true
+# only when THIS run newly accepted — write_license_marker() checks that flag.
+require_license_acceptance() {
+  if license_already_accepted; then
+    log "License already accepted (${PRIVOS_DIR}/${LICENSE_MARKER_FILE})."
+    return 0
+  fi
+
+  print_license_notice
+
+  if [[ "$ASSUME_YES" == "true" || "$ACCEPT_LICENSE_FLAG" == "true" || "${PRIVOS_ACCEPT_LICENSE:-}" == "1" ]]; then
+    log "License accepted (--yes/--accept-license or PRIVOS_ACCEPT_LICENSE=1)."
+    LICENSE_ACCEPTED="true"
+    return 0
+  fi
+
+  if [[ -t 0 ]]; then
+    local ans=""
+    read -r -p "Accept the license? [y/N] " ans || ans=""
+    if [[ "$ans" =~ ^[Yy] ]]; then
+      LICENSE_ACCEPTED="true"
+      return 0
+    fi
+    die "license not accepted — installation stopped."
+  fi
+
+  die "cannot prompt for license acceptance (no TTY). Re-run with --yes or --accept-license, or set PRIVOS_ACCEPT_LICENSE=1, after reading the license."
+}
+
+# Called once $PRIVOS_DIR exists (right after directory creation) — a no-op
+# unless require_license_acceptance() set LICENSE_ACCEPTED=true THIS run
+# (already-accepted re-runs never touch the existing marker).
+write_license_marker() {
+  [[ "${LICENSE_ACCEPTED:-}" == "true" ]] || return 0
+  printf '%s\naccepted_at=%s\n' "$LICENSE_VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$PRIVOS_DIR/$LICENSE_MARKER_FILE"
+  chmod 0644 "$PRIVOS_DIR/$LICENSE_MARKER_FILE"
 }
 
 # ---------------------------------------------------------------------------
@@ -887,13 +969,18 @@ main() {
   requested_ports+=("${vm_ports[@]}")
   check_ports "${requested_ports[@]}" || exit 1
 
+  set_stage "license acceptance"
+  require_license_acceptance
+
   set_stage "creating directories"
   mkdir -p "$PRIVOS_DIR"/data/{mongo,minio,hub-uploads,sandbox-board,sandbox-proxy,sandbox-pool,weaviate,local-runtime-socket,local-runtime-state}
   mkdir -p "$PRIVOS_DIR"/secrets
+  write_license_marker
 
   set_stage "fetching and verifying the bundle"
   fetch_bundle "$PRIVOS_DIR"
   verify_bundle_integrity "$PRIVOS_DIR"
+  chmod 0644 "$PRIVOS_DIR/LICENSE"
 
   COMPOSE_FILE="$PRIVOS_DIR/compose.yml"
   ENV_FILE="$PRIVOS_DIR/.env"

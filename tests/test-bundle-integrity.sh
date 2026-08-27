@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Unit tests for install.sh's bundle integrity chain (C1 fix): every fetched
 # bundle file must be verified — compose.yml/versions.json by minisign,
-# minio-init.sh/docker-user-rules.sh by sha256 recorded INSIDE the (signed)
-# versions.json — before any of them is installed, mounted, or executed.
+# minio-init.sh/docker-user-rules.sh/LICENSE by sha256 recorded INSIDE the
+# (signed) versions.json — before any of them is installed, mounted,
+# executed, or (LICENSE) presented to the operator as what they accepted.
 set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,6 +23,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 printf 'echo hello from docker-user-rules\n' > "$WORK/docker-user-rules.sh"
 printf 'echo hello from minio-init\n' > "$WORK/minio-init.sh"
+printf 'PrivOS Community License 1.0 (PCL-1.0) — test fixture text\n' > "$WORK/LICENSE"
 
 real_sha() { sha256_file "$1"; }
 
@@ -41,7 +43,8 @@ assert_eq "$expected_hello" "$(sha256_file "$tmp_hello")" "sha256_file: matches 
 jq -n \
   --arg dur "$(real_sha "$WORK/docker-user-rules.sh")" \
   --arg mi "$(real_sha "$WORK/minio-init.sh")" \
-  '{files: {"docker-user-rules.sh": {sha256: $dur}, "minio-init.sh": {sha256: $mi}}}' \
+  --arg lic "$(real_sha "$WORK/LICENSE")" \
+  '{files: {"docker-user-rules.sh": {sha256: $dur}, "minio-init.sh": {sha256: $mi}, "LICENSE": {sha256: $lic}}}' \
   > "$WORK/versions.json"
 
 ( verify_bundle_file_hash "docker-user-rules.sh" "$WORK" "$WORK/versions.json" ) >/dev/null 2>&1
@@ -49,6 +52,9 @@ assert_status 0 "$?" "verify_bundle_file_hash: accepts a file matching versions.
 
 ( verify_bundle_file_hash "minio-init.sh" "$WORK" "$WORK/versions.json" ) >/dev/null 2>&1
 assert_status 0 "$?" "verify_bundle_file_hash: accepts minio-init.sh matching its recorded sha256"
+
+( verify_bundle_file_hash "LICENSE" "$WORK" "$WORK/versions.json" ) >/dev/null 2>&1
+assert_status 0 "$?" "verify_bundle_file_hash: accepts LICENSE matching its recorded sha256"
 
 # --- verify_bundle_file_hash: tampered file after hashing -------------------
 
@@ -65,6 +71,16 @@ printf 'echo PWNED — malicious minio-init\n' > "$WORK/minio-init.sh"
 assert_status 1 "$?" "verify_bundle_file_hash: rejects a tampered minio-init.sh"
 printf 'echo hello from minio-init\n' > "$WORK/minio-init.sh"
 
+# A tampered LICENSE is just as much a trust-path violation as tampered
+# executable code here: an operator must accept the SAME text that was
+# signed, not a swapped-in one.
+printf 'PrivOS Community License 1.0 — PWNED, terms silently altered\n' > "$WORK/LICENSE"
+out="$(verify_bundle_file_hash "LICENSE" "$WORK" "$WORK/versions.json" 2>&1)"
+rc=$?
+assert_status 1 "$rc" "verify_bundle_file_hash: rejects a tampered LICENSE"
+assert_contains "$out" "sha256 mismatch" "verify_bundle_file_hash: names the mismatch for a tampered LICENSE"
+printf 'PrivOS Community License 1.0 (PCL-1.0) — test fixture text\n' > "$WORK/LICENSE"
+
 # --- verify_bundle_file_hash: missing / malformed hash entry ----------------
 
 jq -n '{files: {}}' > "$WORK/versions-empty.json"
@@ -80,11 +96,15 @@ assert_status 1 "$?" "verify_bundle_file_hash: rejects a malformed (non-hex-64) 
 DEV_KEY="$SELF_DIR/../.secrets/dev-minisign.key"
 if [[ -f "$DEV_KEY" ]] && command -v minisign >/dev/null 2>&1; then
   cp "$SELF_DIR/../compose.yml" "$WORK/compose.yml"
+  printf 'echo hello from docker-user-rules\n' > "$WORK/docker-user-rules.sh"
+  printf 'echo hello from minio-init\n' > "$WORK/minio-init.sh"
+  printf 'PrivOS Community License 1.0 (PCL-1.0) — test fixture text\n' > "$WORK/LICENSE"
   # A minimal, self-consistent versions.json for this scratch dir only.
   jq -n \
     --arg dur "$(real_sha "$WORK/docker-user-rules.sh")" \
     --arg mi "$(real_sha "$WORK/minio-init.sh")" \
-    '{files: {"docker-user-rules.sh": {sha256: $dur}, "minio-init.sh": {sha256: $mi}}}' \
+    --arg lic "$(real_sha "$WORK/LICENSE")" \
+    '{files: {"docker-user-rules.sh": {sha256: $dur}, "minio-init.sh": {sha256: $mi}, "LICENSE": {sha256: $lic}}}' \
     > "$WORK/versions.json"
   minisign -S -s "$DEV_KEY" -m "$WORK/compose.yml" -t "test" >/dev/null 2>&1
   minisign -S -s "$DEV_KEY" -m "$WORK/versions.json" -t "test" >/dev/null 2>&1
@@ -92,7 +112,7 @@ if [[ -f "$DEV_KEY" ]] && command -v minisign >/dev/null 2>&1; then
   MINISIGN_PUBLIC_KEY="$(tail -n1 "$SELF_DIR/../.secrets/dev-minisign.pub")"
 
   ( verify_bundle_integrity "$WORK" ) >/dev/null 2>&1
-  assert_status 0 "$?" "verify_bundle_integrity: passes end-to-end when everything is genuine"
+  assert_status 0 "$?" "verify_bundle_integrity: passes end-to-end when everything is genuine (incl. LICENSE)"
 
   # Attacker swaps in a malicious docker-user-rules.sh AFTER versions.json was
   # signed — compose.yml/versions.json are still validly signed (an attacker
@@ -103,6 +123,15 @@ if [[ -f "$DEV_KEY" ]] && command -v minisign >/dev/null 2>&1; then
   rc=$?
   assert_status 1 "$rc" "verify_bundle_integrity: aborts when docker-user-rules.sh is swapped after signing (C1)"
   assert_contains "$out" "sha256 mismatch" "verify_bundle_integrity: names the mismatch, not a generic failure"
+  printf 'echo hello from docker-user-rules\n' > "$WORK/docker-user-rules.sh"
+
+  # Same attack, but on LICENSE — the text an operator's --accept-license /
+  # TTY prompt is standing in for must be the SAME text that was signed.
+  printf 'PrivOS Community License 1.0 — PWNED, terms silently altered after signing\n' > "$WORK/LICENSE"
+  out="$( verify_bundle_integrity "$WORK" 2>&1 )"
+  rc=$?
+  assert_status 1 "$rc" "verify_bundle_integrity: aborts when LICENSE is swapped after signing"
+  assert_contains "$out" "sha256 mismatch" "verify_bundle_integrity: names the mismatch for a swapped LICENSE"
 else
   echo "# SKIP: DEV scaffold keypair or minisign not available for the end-to-end check"
 fi

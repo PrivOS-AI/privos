@@ -44,7 +44,7 @@ IMAGE_REFS=(
 )
 
 SIGNED_FILES=(compose.yml versions.json)
-HASHED_FILES=(compose.yml install.sh minio-init.sh docker-user-rules.sh)
+HASHED_FILES=(compose.yml install.sh minio-init.sh docker-user-rules.sh LICENSE)
 
 log()  { printf '[publish-bundle] %s\n' "$*" >&2; }
 die()  { printf '[publish-bundle] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -187,7 +187,7 @@ apply_digests_and_sign() {
 
   cp "$BUNDLE_DIR/compose.yml" "$work/compose.yml"
   cp "$BUNDLE_DIR/versions.json" "$work/versions.json"
-  for f in install.sh minio-init.sh docker-user-rules.sh env.template SIGNING.md; do
+  for f in install.sh minio-init.sh docker-user-rules.sh env.template SIGNING.md LICENSE; do
     cp "$BUNDLE_DIR/$f" "$work/$f"
   done
 
@@ -267,6 +267,7 @@ publish() {
     "$work/docker-user-rules.sh"
     "$work/env.template"
     "$work/SIGNING.md"
+    "$work/LICENSE"
   )
 
   if [[ "$DRY_RUN" == "true" ]]; then

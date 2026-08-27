@@ -61,6 +61,7 @@
     "compose.yml": { "sha256": null },
     "install.sh": { "sha256": null },
     "minio-init.sh": { "sha256": null },
-    "docker-user-rules.sh": { "sha256": null }
+    "docker-user-rules.sh": { "sha256": null },
+    "LICENSE": { "sha256": null }
   }
 }
