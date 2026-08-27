@@ -86,4 +86,89 @@ assert_eq "87" "${#VAPID_PUBLIC_KEY}" "generate_vapid_keypair: public key is 65 
 assert_not_contains "$VAPID_PRIVATE_KEY" "=" "generate_vapid_keypair: private key has no base64 padding"
 assert_not_contains "$VAPID_PRIVATE_KEY" "+" "generate_vapid_keypair: private key is base64url (no '+')"
 
+# --- M2: env_quote / env_unquote round-trip a value containing a quote -----
+
+tricky="admin's mailbox 'quoted' twice"
+quoted="$(env_quote "$tricky")"
+assert_eq "$tricky" "$(env_unquote "$quoted")" "env_unquote: reverses env_quote exactly for a value with embedded single quotes"
+
+# Full write_env_file -> load_existing_env round-trip with a quote in a real
+# field. Reuses $WORK (already trapped for cleanup at the top of this file).
+# shellcheck disable=SC2034 # read by write_env_file/load_existing_env in the sourced install.sh
+PRIVOS_DIR="$WORK"
+ADMIN_EMAIL="o'brien@example.test"
+write_env_file "$WORK/.env"
+unset ADMIN_EMAIL
+load_existing_env
+assert_eq "o'brien@example.test" "${ADMIN_EMAIL:-}" "load_existing_env: round-trips a value containing a single quote (M2 regression)"
+
+# --- C2: warn_if_dev_signing_key fails closed by default --------------------
+
+# shellcheck disable=SC2034 # read by warn_if_dev_signing_key() in the sourced install.sh
+MINISIGN_PUBLIC_KEY_IS_DEV_ONLY="true"
+# shellcheck disable=SC2034 # read by warn_if_dev_signing_key() in the sourced install.sh
+ALLOW_DEV_KEY_FLAG=""
+unset PRIVOS_ALLOW_DEV_KEY 2>/dev/null
+( warn_if_dev_signing_key ) >/dev/null 2>&1
+assert_status 1 "$?" "warn_if_dev_signing_key: refuses to proceed with a DEV key by default"
+
+ALLOW_DEV_KEY_FLAG="true"
+( warn_if_dev_signing_key ) >/dev/null 2>&1
+assert_status 0 "$?" "warn_if_dev_signing_key: proceeds with --allow-dev-signing-key"
+
+# shellcheck disable=SC2034 # read by warn_if_dev_signing_key() in the sourced install.sh
+ALLOW_DEV_KEY_FLAG=""
+# shellcheck disable=SC2034 # read by warn_if_dev_signing_key() in the sourced install.sh
+PRIVOS_ALLOW_DEV_KEY="1"
+( warn_if_dev_signing_key ) >/dev/null 2>&1
+assert_status 0 "$?" "warn_if_dev_signing_key: proceeds with PRIVOS_ALLOW_DEV_KEY=1"
+unset PRIVOS_ALLOW_DEV_KEY
+
+# shellcheck disable=SC2034 # read by warn_if_dev_signing_key() in the sourced install.sh
+MINISIGN_PUBLIC_KEY_IS_DEV_ONLY="false"
+( warn_if_dev_signing_key ) >/dev/null 2>&1
+assert_status 0 "$?" "warn_if_dev_signing_key: no-op once a real key is embedded"
+# shellcheck disable=SC2034 # restores state; not re-read again in this file
+MINISIGN_PUBLIC_KEY_IS_DEV_ONLY="true"
+
+# --- H1: validate_privos_dir rejects dangerous / malformed --dir values ----
+
+( validate_privos_dir "/" ) >/dev/null 2>&1
+assert_status 1 "$?" "validate_privos_dir: rejects '/'"
+
+( validate_privos_dir "/usr" ) >/dev/null 2>&1
+assert_status 1 "$?" "validate_privos_dir: rejects a protected system directory (/usr)"
+
+( validate_privos_dir "/opt" ) >/dev/null 2>&1
+assert_status 1 "$?" "validate_privos_dir: rejects the bare parent of the default install dir (/opt)"
+
+( validate_privos_dir "opt/privos" ) >/dev/null 2>&1
+assert_status 1 "$?" "validate_privos_dir: rejects a relative path"
+
+( validate_privos_dir "/opt/privos/../../etc" ) >/dev/null 2>&1
+assert_status 1 "$?" "validate_privos_dir: rejects a '..' traversal segment"
+
+( validate_privos_dir '/opt/privos; rm -rf /' ) >/dev/null 2>&1
+assert_status 1 "$?" "validate_privos_dir: rejects shell metacharacters"
+
+resolved="$(validate_privos_dir "/opt/privos" 2>/dev/null)"
+assert_eq "/opt/privos" "$resolved" "validate_privos_dir: accepts the real default install directory"
+
+# --- M1: validate_port -------------------------------------------------------
+
+( validate_port "3000" "test-port" ) >/dev/null 2>&1
+assert_status 0 "$?" "validate_port: accepts a normal port"
+
+( validate_port "0" "test-port" ) >/dev/null 2>&1
+assert_status 1 "$?" "validate_port: rejects 0"
+
+( validate_port "65536" "test-port" ) >/dev/null 2>&1
+assert_status 1 "$?" "validate_port: rejects > 65535"
+
+( validate_port "abc" "test-port" ) >/dev/null 2>&1
+assert_status 1 "$?" "validate_port: rejects a non-numeric value"
+
+( validate_port "-1" "test-port" ) >/dev/null 2>&1
+assert_status 1 "$?" "validate_port: rejects a negative value"
+
 report_and_exit

@@ -22,7 +22,13 @@ minisign -G -p privos-self-hosted.pub -s privos-self-hosted.key
   `untrusted comment: ...`) into `install.sh` (`MINISIGN_PUBLIC_KEY=`) and
   into `docs/self-hosted-install.md`. Both copies must match, byte for byte,
   or an install host verifying against a stale doc copy would falsely
-  distrust a legitimately re-signed bundle.
+  distrust a legitimately re-signed bundle. `publish-self-hosted-bundle.sh`
+  is **not** a third copy to keep in sync — it reads `MINISIGN_PUBLIC_KEY`
+  straight out of `install.sh` at run time
+  (`resolve_public_key_from_install_sh`), both for its `--check` verification
+  and as a post-sign sanity check that the `--minisign-key` it was just given
+  actually produces a signature `install.sh` would trust. There are exactly
+  two places to update on rotation: `install.sh` and the docs.
 - `privos-self-hosted.key` — never touches a fleet node or this repository.
   Only `publish-self-hosted-bundle.sh`, run by a human with the password, may
   use it (see that script's `--check` mode for a dry run that never touches
@@ -47,7 +53,12 @@ infra/self-hosted/.secrets/dev-minisign.pub   # embedded in install.sh as the DE
 
 `install.sh` embeds this DEV public key with an explicit
 `MINISIGN_PUBLIC_KEY_IS_DEV_ONLY=true` marker and an unmissable comment —
-**this key must be replaced before any real publish.** It exists purely so
+**this key must be replaced before any real publish.** With the marker set,
+`install.sh` **refuses to run** (fails closed with a clear error) unless
+explicitly overridden with `--allow-dev-signing-key` or
+`PRIVOS_ALLOW_DEV_KEY=1` — a disposable DEV key must never become an
+install's trust root just because someone scrolled past a warning under
+`curl | bash`. The escape hatch exists purely so
 `publish-self-hosted-bundle.sh --check` and the `tests/` signature fixtures
 have something to sign against without a human generating a real keypair
 first. Regenerate at any time with:
@@ -57,6 +68,29 @@ minisign -G -f -W -p infra/self-hosted/.secrets/dev-minisign.pub \
   -s infra/self-hosted/.secrets/dev-minisign.key \
   -c "PrivOS self-hosted bundle DEV-ONLY signing key (scaffold, not for production)"
 ```
+
+## What minisign covers, and what it does not
+
+`install.sh` minisig-verifies `compose.yml` and `versions.json` directly.
+`minio-init.sh` and `docker-user-rules.sh` are **not** separately minisig-signed
+— they are hash-pinned instead: `versions.json`'s `files{}` block (itself
+inside the signature) carries a sha256 for each, and `install.sh`
+(`verify_bundle_integrity`) checks both files against that hash *before*
+either is installed, mounted into a container, or executed as root. Treat a
+change to either file the same as a change to `compose.yml`: it only takes
+effect once `publish-self-hosted-bundle.sh` re-hashes it into a freshly
+signed `versions.json`.
+
+**`install.sh` itself is not minisig-signed.** It is fetched over
+`https://privos.io/install.sh` (TLS-from-GitHub/R2, no application-level
+integrity check) and is the thing that *performs* the minisign verification —
+it cannot verify itself. The minisign boundary protects the bundle
+(`compose.yml`, `versions.json`, and by extension `minio-init.sh` /
+`docker-user-rules.sh`) it downloads and runs; TLS is the only protection on
+`install.sh` in transit. An operator who wants a stronger guarantee on
+`install.sh` itself should download it, verify its sha256 out-of-band (e.g.
+against a value published on a different channel), and run the local copy
+instead of piping directly from `curl`.
 
 ## Before production go-live
 

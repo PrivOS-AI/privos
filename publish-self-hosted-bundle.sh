@@ -25,8 +25,6 @@ BUNDLE_VERSION=""
 DRY_RUN="true"
 CHECK_ONLY="false"
 
-MINISIGN_PUBLIC_KEY="RWTSux76l3dmrV5gYhP/M/4jvg6ziwi4q7FmN2bDlMy7USQxpm2XpwWc"
-
 IMAGE_REFS=(
   "hub|ghcr.io/privos-ai/privos-hub|__HUB_DIGEST__"
   "sandboxBoard|ghcr.io/privos-ai/privos-sandbox-board|__SANDBOX_BOARD_DIGEST__"
@@ -66,6 +64,18 @@ USAGE
 
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 
+# Single source of truth for the trust root: read it out of install.sh
+# rather than hardcoding a 3rd copy here (SIGNING.md's rotation checklist
+# only covers install.sh + docs/self-hosted-install.md — a separate copy in
+# this script would silently drift on the next key rotation).
+resolve_public_key_from_install_sh() {
+  local dir="$1" install_sh="$1/install.sh" key
+  [[ -f "$install_sh" ]] || die "cannot find install.sh in ${dir} to read MINISIGN_PUBLIC_KEY from"
+  key="$(grep -m1 '^MINISIGN_PUBLIC_KEY=' "$install_sh" | sed -E 's/^MINISIGN_PUBLIC_KEY="([^"]*)".*/\1/')"
+  [[ -n "$key" ]] || die "could not extract MINISIGN_PUBLIC_KEY from ${install_sh}"
+  printf '%s' "$key"
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -91,10 +101,14 @@ run_check() {
   local f name ref placeholder digest_field
   cd "$BUNDLE_DIR"
 
+  local pubkey
+  pubkey="$(resolve_public_key_from_install_sh "$BUNDLE_DIR")"
+  log "Trust root: MINISIGN_PUBLIC_KEY read from ${BUNDLE_DIR}/install.sh"
+
   for f in "${SIGNED_FILES[@]}"; do
     [[ -f "$f" ]] || die "missing ${f}"
     [[ -f "${f}.minisig" ]] || die "missing ${f}.minisig"
-    minisign -Vq -m "$f" -x "${f}.minisig" -P "$MINISIGN_PUBLIC_KEY" \
+    minisign -Vq -m "$f" -x "${f}.minisig" -P "$pubkey" \
       || die "signature verification failed for ${f}"
     log "OK: ${f} signature verified"
   done
@@ -205,6 +219,17 @@ apply_digests_and_sign() {
     minisign -S -s "$MINISIGN_KEY" -m "$work/$f2" -t "PrivOS self-hosted bundle ${STACK_VERSION}" \
       || die "signing failed for ${f2}"
     log "Signed ${f2}"
+  done
+
+  # Catch a mismatched-keypair release mistake immediately: the signature we
+  # just produced must verify against the SAME public key install.sh trusts
+  # (single-sourced — see resolve_public_key_from_install_sh above), not a
+  # hardcoded copy that could silently drift from it.
+  local pubkey
+  pubkey="$(resolve_public_key_from_install_sh "$work")"
+  for f2 in "${SIGNED_FILES[@]}"; do
+    minisign -Vq -m "$work/$f2" -x "$work/${f2}.minisig" -P "$pubkey" \
+      || die "just-produced signature for ${f2} does not verify against install.sh's embedded MINISIGN_PUBLIC_KEY — wrong --minisign-key for this release?"
   done
 }
 

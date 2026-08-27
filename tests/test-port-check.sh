@@ -80,4 +80,21 @@ assert_eq "30000
 30001
 30002" "$ports" "expand_port_range: produces every port in the range"
 
+# --- expand_port_range: L1 — span cap and strict port bounds ---------------
+
+( expand_port_range "1-999999999" ) >/dev/null 2>&1
+assert_status 1 "$?" "expand_port_range: rejects an out-of-range end port instead of hanging seq"
+
+( expand_port_range "1-100000" ) >/dev/null 2>&1
+assert_status 1 "$?" "expand_port_range: rejects a span above MAX_PORT_RANGE_SPAN"
+
+( expand_port_range "30999-30000" ) >/dev/null 2>&1
+assert_status 1 "$?" "expand_port_range: rejects start > end"
+
+( expand_port_range "0-100" ) >/dev/null 2>&1
+assert_status 1 "$?" "expand_port_range: rejects a start port of 0"
+
+( expand_port_range "30000-30999" ) >/dev/null 2>&1
+assert_status 0 "$?" "expand_port_range: accepts the real default range (span 1000)"
+
 report_and_exit

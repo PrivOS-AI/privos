@@ -30,8 +30,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install minisign
-        run: sudo apt-get update -y && sudo apt-get install -y minisign
+      - name: Install minisign + jq
+        run: sudo apt-get update -y && sudo apt-get install -y minisign jq
       - name: Generate a throwaway DEV signing key (fixture for verify tests)
         run: |
           mkdir -p infra/self-hosted/.secrets

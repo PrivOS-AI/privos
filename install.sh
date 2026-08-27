@@ -10,6 +10,7 @@
 # Flags: --version <tag> --dir <path> --url <root-url> --hub-port <port>
 #        --vm-port-range <lo-hi> --yes --upgrade --uninstall [--purge]
 #        --with-knowledge-vector --with-local-runtime --install-docker
+#        --allow-dev-signing-key
 #
 # This file is dual-purpose: run directly it installs the stack; sourced (as
 # `tests/` does) it only defines functions — nothing runs until `main` is
@@ -29,9 +30,17 @@ BUNDLE_BASE_URL="${PRIVOS_BUNDLE_BASE_URL:-https://privos.io/self-hosted}"
 MINISIGN_PUBLIC_KEY_IS_DEV_ONLY="true"
 MINISIGN_PUBLIC_KEY="RWTSux76l3dmrV5gYhP/M/4jvg6ziwi4q7FmN2bDlMy7USQxpm2XpwWc"
 
+# Fails closed: a DEV-signed bundle must never become an install's trust
+# root by accident (e.g. scrolling past a warning under `curl | bash`).
+# --allow-dev-signing-key / PRIVOS_ALLOW_DEV_KEY=1 is an explicit escape
+# hatch for our own local testing only — see SIGNING.md.
 warn_if_dev_signing_key() {
   [[ "$MINISIGN_PUBLIC_KEY_IS_DEV_ONLY" == "true" ]] || return 0
-  log "WARNING: this install.sh embeds the DEV-ONLY scaffold signing key (see SIGNING.md) — do not use for a production install."
+  if [[ "$ALLOW_DEV_KEY_FLAG" == "true" || "${PRIVOS_ALLOW_DEV_KEY:-}" == "1" ]]; then
+    log "WARNING: proceeding with the DEV-ONLY scaffold signing key (--allow-dev-signing-key / PRIVOS_ALLOW_DEV_KEY=1) — do not use for a production install."
+    return 0
+  fi
+  die "refusing to install with a DEV-ONLY signing key (see SIGNING.md) — this build of install.sh has not been re-signed with a production key. Pass --allow-dev-signing-key or set PRIVOS_ALLOW_DEV_KEY=1 only for local testing."
 }
 
 DEFAULT_DIR="/opt/privos"
@@ -49,6 +58,14 @@ STACK_READY_TIMEOUT_SEC=600
 
 BUNDLE_FILES=(compose.yml versions.json minio-init.sh docker-user-rules.sh)
 SIGNED_FILES=(compose.yml versions.json)
+# Not directly minisig-signed, but versions.json's files{} block (itself
+# covered by the versions.json signature) carries a sha256 for each of
+# these — verify_bundle_integrity() checks both before either file is
+# installed, mounted, or executed. Both run as root / with root-equivalent
+# access (systemd unit + iptables; MinIO root creds in the mc container).
+UNSIGNED_HASHED_FILES=(minio-init.sh docker-user-rules.sh)
+MAX_PORT_RANGE_SPAN=5000
+DANGEROUS_DIRS=(/ /root /home /usr /usr/local /etc /bin /sbin /lib /lib64 /var /boot /dev /proc /sys /opt /tmp /srv /mnt /media /run)
 
 # .env keys, in the order they are written — must match env.template.
 ENV_KEYS=(
@@ -73,6 +90,34 @@ ENV_KEYS=(
 
 log()  { printf '[privos-install] %s\n' "$*" >&2; }
 die()  { printf '[privos-install] ERROR: %s\n' "$*" >&2; exit 1; }
+require_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
+
+# ---------------------------------------------------------------------------
+# Failure reporting — nothing here rolls back partial state (a mid-`compose
+# pull` network blip should not delete secrets that took real work to
+# generate); every stage is safe to retry, so on a failure the trap just
+# names the stage and tells the operator re-running converges.
+# ---------------------------------------------------------------------------
+
+CURRENT_STAGE="startup"
+TRAP_FIRED="false"
+
+set_stage() { CURRENT_STAGE="$1"; }
+
+on_err() {
+  local rc=$?
+  [[ "$TRAP_FIRED" == "true" ]] && exit "$rc"
+  TRAP_FIRED="true"
+  trap - ERR EXIT
+  if (( rc != 0 )); then
+    {
+      echo ""
+      echo "[privos-install] Install did not complete (stage: ${CURRENT_STAGE}, exit ${rc})."
+      echo "[privos-install] Nothing here rolls back destructively — re-running install.sh is safe and reuses what was already written (secrets, .env), retrying only what failed."
+    } >&2
+  fi
+  exit "$rc"
+}
 
 usage() {
   cat <<'USAGE'
@@ -93,6 +138,7 @@ Flags:
   --with-knowledge-vector    Enable the Weaviate knowledge-vector sidecar
   --with-local-runtime       Enable the local-runtime (MCP apps on this host) sidecar
   --install-docker          Install Docker + compose v2 automatically if missing
+  --allow-dev-signing-key   Local testing only: proceed despite a DEV-ONLY minisign key
   -h, --help                Show this help
 USAGE
 }
@@ -112,6 +158,7 @@ HUB_PORT_FLAG=""
 VM_PORT_RANGE_FLAG=""
 WITH_KNOWLEDGE_VECTOR_FLAG=""
 WITH_LOCAL_RUNTIME_FLAG=""
+ALLOW_DEV_KEY_FLAG=""
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -128,6 +175,7 @@ parse_args() {
       --with-knowledge-vector) WITH_KNOWLEDGE_VECTOR_FLAG="true"; shift ;;
       --with-local-runtime) WITH_LOCAL_RUNTIME_FLAG="true"; shift ;;
       --install-docker) INSTALL_DOCKER="true"; shift ;;
+      --allow-dev-signing-key) ALLOW_DEV_KEY_FLAG="true"; shift ;;
       -h|--help) usage; exit 0 ;;
       *) die "unknown flag: $1 (see --help)" ;;
     esac
@@ -140,6 +188,43 @@ parse_args() {
 
 require_root() {
   [[ "${EUID:-$(id -u)}" -eq 0 ]] || die "run as root: curl -fsSL https://privos.io/install.sh | sudo bash"
+}
+
+# --dir/PRIVOS_DIR flows into mkdir/chown/bind-mount paths and
+# `rm -rf "$PRIVOS_DIR"` under --uninstall --purge — validate it strictly
+# before it is used anywhere. Prints the resolved (canonicalized when the
+# path already exists) directory on stdout; dies on anything unsafe.
+validate_privos_dir() {
+  local dir="$1" resolved d
+  [[ -n "$dir" ]] || die "--dir must not be empty"
+  [[ "$dir" == /* ]] || die "--dir must be an absolute path (got: ${dir})"
+  [[ "$dir" =~ ^[A-Za-z0-9_./-]+$ ]] || die "--dir contains unsupported characters (got: ${dir}) — use plain path characters only."
+  case "$dir" in
+    *"/../"*|*"/..") die "--dir must not contain '..' path segments (got: ${dir})" ;;
+  esac
+  case "$dir" in
+    *"/./"*|*"/.") die "--dir must not contain '.' path segments (got: ${dir})" ;;
+  esac
+
+  if [[ -e "$dir" ]]; then
+    resolved="$(cd "$dir" && pwd -P)"
+  else
+    resolved="$dir"
+  fi
+  [[ "$resolved" != "/" ]] && resolved="${resolved%/}"
+
+  for d in "${DANGEROUS_DIRS[@]}"; do
+    [[ "$resolved" == "$d" ]] && die "--dir resolves to ${resolved}, a protected system directory — refusing (this value is later passed to 'rm -rf' under --purge)."
+  done
+  [[ -n "${HOME:-}" && "$resolved" == "$HOME" ]] && die "--dir resolves to \$HOME (${resolved}) — refusing (this value is later passed to 'rm -rf' under --purge)."
+
+  printf '%s' "$resolved"
+}
+
+validate_port() {
+  local val="$1" label="$2"
+  [[ "$val" =~ ^[0-9]+$ ]] || die "${label} must be a positive integer (got: ${val})"
+  (( val >= 1 && val <= 65535 )) || die "${label} must be between 1 and 65535 (got: ${val})"
 }
 
 detect_platform() {
@@ -242,7 +327,7 @@ fetch_bundle() {
   for name in "${SIGNED_FILES[@]}"; do
     fetch_bundle_file "${name}.minisig" "$dest_dir/${name}.minisig"
   done
-  for name in "${SIGNED_FILES[@]}"; do
+  for name in "${BUNDLE_FILES[@]}"; do
     [[ -f "$dest_dir/$name" ]] || die "bundle is missing ${name} after fetch"
   done
 }
@@ -253,6 +338,50 @@ verify_signature() {
   minisign -Vq -m "$file" -x "${file}.minisig" -P "$MINISIGN_PUBLIC_KEY" \
     || die "signature verification FAILED for ${file} — refusing to use a tampered or corrupted bundle."
   log "Signature OK: $(basename "$file")"
+}
+
+sha256_file() {
+  # sha256sum (GNU coreutils) is present on every real target (Linux); the
+  # shasum fallback exists only so tests/ can run this on macOS dev boxes.
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+bundle_file_sha256_from_versions_json() {
+  local name="$1" versions_json="$2"
+  jq -r --arg f "$name" '.files[$f].sha256 // empty' "$versions_json"
+}
+
+# Not every bundle file is directly minisig-signed (only compose.yml and
+# versions.json are). minio-init.sh and docker-user-rules.sh are instead
+# hash-pinned INSIDE the signed versions.json (files{} block) — verify
+# against that hash before either file is ever installed, mounted, or
+# executed. Fails closed on a missing or mismatched hash.
+verify_bundle_file_hash() {
+  local name="$1" dir="$2" versions_json="$3" expected actual
+  expected="$(bundle_file_sha256_from_versions_json "$name" "$versions_json")"
+  [[ -n "$expected" ]] || die "versions.json has no files[\"${name}\"].sha256 entry — refusing to use an unverifiable bundle file."
+  [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || die "versions.json files[\"${name}\"].sha256 is not a well-formed sha256 hex digest."
+  actual="$(sha256_file "$dir/$name")"
+  [[ "$expected" == "$actual" ]] || die "sha256 mismatch for ${name} (expected ${expected}, got ${actual}) — refusing to install/execute a tampered bundle file."
+  log "sha256 OK: ${name}"
+}
+
+# Full bundle trust chain: minisig-verify the two signed files, then
+# hash-verify every remaining bundle file against the (now-trusted)
+# versions.json. Must run to completion before anything in $dir is used.
+verify_bundle_integrity() {
+  local dir="$1" f
+  require_cmd jq
+  for f in "${SIGNED_FILES[@]}"; do
+    verify_signature "$dir/$f"
+  done
+  for f in "${UNSIGNED_HASHED_FILES[@]}"; do
+    verify_bundle_file_hash "$f" "$dir" "$dir/versions.json"
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -329,10 +458,15 @@ port_already_ours() {
 }
 
 expand_port_range() {
-  local range="$1" start end
+  local range="$1" start end span
   start="${range%-*}"
   end="${range#*-}"
-  [[ "$start" =~ ^[0-9]+$ && "$end" =~ ^[0-9]+$ && "$start" -le "$end" ]] || die "invalid port range: ${range}"
+  [[ "$start" =~ ^[0-9]+$ && "$end" =~ ^[0-9]+$ ]] || die "invalid port range: ${range}"
+  (( start >= 1 && start <= 65535 )) || die "invalid port range: ${range} (start must be 1-65535)"
+  (( end >= 1 && end <= 65535 )) || die "invalid port range: ${range} (end must be 1-65535)"
+  (( start <= end )) || die "invalid port range: ${range} (start must be <= end)"
+  span=$(( end - start + 1 ))
+  (( span <= MAX_PORT_RANGE_SPAN )) || die "invalid port range: ${range} spans ${span} ports — refusing (max ${MAX_PORT_RANGE_SPAN})"
   seq "$start" "$end"
 }
 
@@ -447,14 +581,29 @@ env_quote() {
   printf "'%s'" "${v//\'/\'\\\'\'}"
 }
 
+# Exact inverse of env_quote(): strip the wrapping single quotes, then
+# reverse the '\'' → ' substitution for any embedded single quotes. A naive
+# strip-one-leading/trailing-quote (the previous implementation) corrupts any
+# value containing a literal `'` on the next load — e.g. an operator-supplied
+# ADMIN_EMAIL or ROOT_URL with a quote in it would silently mangle on
+# --upgrade. No `eval` — this only ever runs against our own file format.
+env_unquote() {
+  local v="$1"
+  if [[ "$v" == \'*\' ]]; then
+    v="${v#\'}"
+    v="${v%\'}"
+    v="${v//\'\\\'\'/\'}"
+  fi
+  printf '%s' "$v"
+}
+
 load_existing_env() {
-  local env_file="$PRIVOS_DIR/.env" line key val
+  local env_file="$PRIVOS_DIR/.env" key val
   [[ -f "$env_file" ]] || return 0
   while IFS='=' read -r key val; do
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
     [[ -n "${!key:-}" ]] && continue # invocation-time env already set — do not clobber
-    val="${val%\'}"
-    val="${val#\'}"
+    val="$(env_unquote "$val")"
     printf -v "$key" '%s' "$val"
     export "${key?}"
   done < "$env_file"
@@ -500,7 +649,10 @@ resolve_config() {
   : "${PRIVOS_WITH_KNOWLEDGE_VECTOR:=false}"
   : "${PRIVOS_WITH_LOCAL_RUNTIME:=false}"
 
-  [[ -n "$DIR_FLAG" ]] && PRIVOS_DIR="$DIR_FLAG"
+  # PRIVOS_DIR is resolved and validated once in main() (validate_privos_dir)
+  # before this function ever runs — do not re-derive it from DIR_FLAG here,
+  # that would silently swap the validated/canonicalized value back for the
+  # raw, unvalidated flag string.
   [[ -n "$URL_FLAG" ]] && PRIVOS_ROOT_URL="$URL_FLAG"
   [[ -n "$HUB_PORT_FLAG" ]] && PRIVOS_HUB_PORT="$HUB_PORT_FLAG"
   [[ -n "$VM_PORT_RANGE_FLAG" ]] && PRIVOS_VM_PORT_RANGE="$VM_PORT_RANGE_FLAG"
@@ -509,6 +661,11 @@ resolve_config() {
   [[ -n "$WITH_LOCAL_RUNTIME_FLAG" ]] && PRIVOS_WITH_LOCAL_RUNTIME="true"
 
   : "${PRIVOS_ROOT_URL:=http://localhost:${PRIVOS_HUB_PORT}}"
+
+  validate_port "$PRIVOS_HUB_PORT" "--hub-port/PRIVOS_HUB_PORT"
+  validate_port "$PRIVOS_BOARD_PORT" "PRIVOS_BOARD_PORT"
+  validate_port "$PRIVOS_PROXY_PORT" "PRIVOS_PROXY_PORT"
+  validate_port "$PRIVOS_MINIO_PORT" "PRIVOS_MINIO_PORT"
 }
 
 prompt_sidecars() {
@@ -672,10 +829,15 @@ do_uninstall() {
 # ---------------------------------------------------------------------------
 
 main() {
+  trap on_err ERR EXIT
+
   parse_args "$@"
+  set_stage "resolving --dir"
   PRIVOS_DIR="${DIR_FLAG:-${PRIVOS_DIR:-$DEFAULT_DIR}}"
+  PRIVOS_DIR="$(validate_privos_dir "$PRIVOS_DIR")"
 
   if [[ "$MODE" == "uninstall" ]]; then
+    set_stage "uninstall"
     require_root
     PRIVOS_PROJECT="${PRIVOS_PROJECT:-$PROJECT_NAME}"
     PRIVOS_NETWORK="${PRIVOS_NETWORK:-$NETWORK_NAME}"
@@ -683,6 +845,7 @@ main() {
     exit 0
   fi
 
+  set_stage "preflight"
   require_root
   warn_if_dev_signing_key
   detect_platform
@@ -696,31 +859,36 @@ main() {
   prompt_sidecars
   finalize_sidecar_config
 
+  set_stage "port conflict check"
   local -a requested_ports=("$PRIVOS_HUB_PORT" "$PRIVOS_BOARD_PORT" "$PRIVOS_PROXY_PORT" "$PRIVOS_MINIO_PORT")
   mapfile -t vm_ports < <(expand_port_range "$PRIVOS_VM_PORT_RANGE")
   requested_ports+=("${vm_ports[@]}")
   check_ports "${requested_ports[@]}" || exit 1
 
+  set_stage "creating directories"
   mkdir -p "$PRIVOS_DIR"/data/{mongo,minio,hub-uploads,sandbox-board,sandbox-proxy,sandbox-pool,weaviate,local-runtime-socket,local-runtime-state}
   mkdir -p "$PRIVOS_DIR"/secrets
 
+  set_stage "fetching and verifying the bundle"
   fetch_bundle "$PRIVOS_DIR"
-  for f in "${SIGNED_FILES[@]}"; do
-    verify_signature "$PRIVOS_DIR/$f"
-  done
+  verify_bundle_integrity "$PRIVOS_DIR"
 
   COMPOSE_FILE="$PRIVOS_DIR/compose.yml"
   ENV_FILE="$PRIVOS_DIR/.env"
 
+  set_stage "generating secrets"
   generate_secrets
   write_mongo_keyfile
   write_env_file "$ENV_FILE"
 
+  set_stage "network + firewall setup"
   ensure_network
   chown -R 1001:1001 "$PRIVOS_DIR/data/sandbox-board" "$PRIVOS_DIR/data/sandbox-proxy" "$PRIVOS_DIR/data/sandbox-pool"
   install_docker_user_rules
 
+  set_stage "bringing up the stack (docker compose)"
   bring_up_stack
+  set_stage "waiting for hub + sandbox-proxy to become healthy"
   wait_for_stack_ready || die "stack did not become healthy in time — inspect with: docker compose -f ${COMPOSE_FILE} --env-file ${ENV_FILE} logs"
   print_summary
 }
