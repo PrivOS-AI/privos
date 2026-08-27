@@ -1,0 +1,66 @@
+{
+  "$schema": "https://privos.io/self-hosted/versions.schema.json",
+  "bundleVersion": "0.0.0-dev",
+  "stackVersion": "PLACEHOLDER_STACK_VERSION",
+  "publishedAt": null,
+  "images": {
+    "hub": {
+      "repository": "ghcr.io/privos-ai/privos-hub",
+      "tag": "PLACEHOLDER_STACK_VERSION",
+      "digest": "__HUB_DIGEST__"
+    },
+    "sandboxBoard": {
+      "repository": "ghcr.io/privos-ai/privos-sandbox-board",
+      "tag": "PLACEHOLDER_STACK_VERSION",
+      "digest": "__SANDBOX_BOARD_DIGEST__"
+    },
+    "sandboxProxy": {
+      "repository": "ghcr.io/privos-ai/privos-sandbox-proxy",
+      "tag": "PLACEHOLDER_STACK_VERSION",
+      "digest": "__SANDBOX_PROXY_DIGEST__"
+    },
+    "sandboxVm": {
+      "repository": "ghcr.io/privos-ai/privos-sandbox-vm",
+      "tag": "PLACEHOLDER_STACK_VERSION",
+      "digest": "__SANDBOX_VM_DIGEST__"
+    },
+    "mongo": {
+      "repository": "mongo",
+      "tag": "7.0.14",
+      "digest": "__MONGO_DIGEST__"
+    },
+    "redis": {
+      "repository": "redis",
+      "tag": "7-alpine",
+      "digest": "__REDIS_DIGEST__"
+    },
+    "minio": {
+      "repository": "minio/minio",
+      "tag": "RELEASE.2025-04-08T15-41-24Z",
+      "digest": "__MINIO_DIGEST__"
+    },
+    "minioMc": {
+      "repository": "minio/mc",
+      "tag": "RELEASE.2025-04-08T15-39-49Z",
+      "digest": "__MINIO_MC_DIGEST__"
+    },
+    "weaviate": {
+      "repository": "cr.weaviate.io/semitechnologies/weaviate",
+      "tag": "1.38.2",
+      "digest": "__WEAVIATE_DIGEST__",
+      "profile": "knowledge-vector"
+    },
+    "localRuntimeDriver": {
+      "repository": "ghcr.io/privos-ai/privos-local-runtime-driver",
+      "tag": "v1",
+      "digest": "__LOCAL_RUNTIME_DRIVER_DIGEST__",
+      "profile": "local-runtime"
+    }
+  },
+  "files": {
+    "compose.yml": { "sha256": null },
+    "install.sh": { "sha256": null },
+    "minio-init.sh": { "sha256": null },
+    "docker-user-rules.sh": { "sha256": null }
+  }
+}

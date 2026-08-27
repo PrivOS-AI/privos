@@ -1,0 +1,10 @@
+# Signing key material — never committed, DEV or production.
+.secrets/
+
+# Generated per-install env files (real secrets) — env.template is the only
+# tracked env file.
+*.env
+!env.template
+
+# Anything a local drill/test writes under a generated install dir.
+secrets/

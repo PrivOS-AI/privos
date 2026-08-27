@@ -1,0 +1,107 @@
+# PrivOS self-hosted bundle — CI.
+#
+# NOT wired into this repository's own Actions (privos-mt-manage does not
+# publish the bundle; the controller publishes it separately — see the task
+# constraints in plans/). Copy this file to `.github/workflows/` in whichever
+# repo actually distributes `infra/self-hosted/` (adjust the checkout path
+# below to match) to get it running for real.
+name: self-hosted-bundle-ci
+
+on:
+  push:
+    paths:
+      - 'infra/self-hosted/**'
+  pull_request:
+    paths:
+      - 'infra/self-hosted/**'
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y shellcheck
+          shellcheck -x infra/self-hosted/*.sh infra/self-hosted/tests/*.sh
+
+  unit-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install minisign
+        run: sudo apt-get update -y && sudo apt-get install -y minisign
+      - name: Generate a throwaway DEV signing key (fixture for verify tests)
+        run: |
+          mkdir -p infra/self-hosted/.secrets
+          minisign -G -W -f \
+            -p infra/self-hosted/.secrets/dev-minisign.pub \
+            -s infra/self-hosted/.secrets/dev-minisign.key
+      - name: Run bash unit tests
+        run: bash infra/self-hosted/tests/run-tests.sh
+
+  compose-config:
+    runs-on: ubuntu-24.04
+    needs: [shellcheck]
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config (no pull, no build)
+        run: |
+          cd infra/self-hosted
+          cp env.template ci-dummy.env
+          {
+            echo "PRIVOS_DIR=/opt/privos"
+            echo "PRIVOS_STACK_VERSION=ci-dummy"
+            echo "PRIVOS_ROOT_URL=http://localhost:3000"
+            echo "PRIVOS_DEPLOYMENT_ID=00000000-0000-4000-8000-000000000000"
+            echo "MONGO_ROOT_USER=privos"
+            echo "MONGO_ROOT_PASSWORD=dummy"
+            echo "MONGO_URL=mongodb://privos:dummy@mongo:27017/privos?replicaSet=rs0&authSource=admin&w=1"
+            echo "MONGO_OPLOG_URL=mongodb://privos:dummy@mongo:27017/local?replicaSet=rs0&authSource=admin&w=1"
+            echo "MONGODB_URL=mongodb://privos:dummy@mongo:27017/?replicaSet=rs0&authSource=admin&w=1"
+            echo "MINIO_ROOT_USER=privos-root"
+            echo "MINIO_ROOT_PASSWORD=dummy"
+            echo "MINIO_ACCESS_KEY=dummy"
+            echo "MINIO_SECRET_KEY=dummy"
+            echo "ADMIN_PASS=dummy"
+            echo "ADMIN_EMAIL=admin@localhost"
+            echo "REG_TOKEN=dummy"
+            echo "VAPID_SUBJECT=mailto:admin@localhost"
+            echo "VAPID_PUBLIC_KEY=dummy"
+            echo "VAPID_PRIVATE_KEY=dummy"
+            echo "SANDBOX_API_KEY=dummy"
+            echo "PRIVOS_DOCKER_SOCKET_GID=999"
+          } >> ci-dummy.env
+          docker compose -f compose.yml --env-file ci-dummy.env config >/dev/null
+          docker compose -f compose.yml --env-file ci-dummy.env --profile knowledge-vector --profile local-runtime config >/dev/null
+          rm -f ci-dummy.env
+
+  # Digest-pinned images are not resolvable until publish-self-hosted-bundle.sh
+  # has run for real (this task never does — see infra/self-hosted/SIGNING.md
+  # and RENDERER-DIFF.md). A DinD smoke test that actually starts the stack
+  # therefore no-ops here: it only runs once every image in versions.json
+  # carries a real (non-placeholder) digest, which `publish-self-hosted-
+  # bundle.sh --check` verifies.
+  dind-smoke:
+    runs-on: ubuntu-24.04
+    needs: [compose-config]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Skip unless every image digest is resolved
+        id: gate
+        run: |
+          if grep -q '__[A-Z_]*_DIGEST__' infra/self-hosted/compose.yml; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Unresolved digest placeholders — bundle has not been published yet, skipping the live smoke test."
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: docker compose up (public images only)
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          cd infra/self-hosted
+          # A real run resolves PRIVOS_DOCKER_SOCKET_GID, generates secrets,
+          # etc. the way install.sh does — left as a follow-up once G3 (ghcr
+          # packages public) is green and a real bundle has been published.
+          echo "TODO: exercise install.sh end-to-end once G2/G3 (see docs/self-hosted-install.md) are live."

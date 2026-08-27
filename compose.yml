@@ -1,0 +1,402 @@
+# PrivOS self-hosted bundle — derived from privos-portal's fleet renderer
+# (render-tenant-stack.ts / render-compose-file.ts). See RENDERER-DIFF.md for
+# the exact service-by-service diff against the multi-tenant fleet.
+#
+# This file is a PUBLISHED, SIGNED artifact (minisign, see SIGNING.md). Image
+# references below carry `__..._DIGEST__` placeholders that
+# publish-self-hosted-bundle.sh replaces with real `sha256:` digests before
+# signing — do not hand-edit a placeholder and expect it to pull.
+#
+# install.sh writes the companion `.env` (secrets + knobs, mode 0600) into the
+# same directory before running `docker compose --env-file .env -f compose.yml
+# ... up -d`. Every host path below is anchored on the absolute ${PRIVOS_DIR}
+# install.sh resolves (default /opt/privos) so bind mounts stay correct
+# regardless of the working directory a later `docker compose` invocation runs
+# from — this matters because the sandbox-proxy spawns agent VM containers
+# directly via the Docker API (not through compose) and must bind-mount host
+# paths that are valid on the real host filesystem, not merely inside its own
+# container namespace.
+
+name: privos-self-hosted
+
+networks:
+  privos:
+    name: ${PRIVOS_NETWORK:-privos-sandbox-net}
+    external: true
+
+volumes:
+  # Hub instance identity (P-256 keypair) + the self-hosted license-request
+  # code live under here. A true named volume (not a host bind) per the
+  # phase-4 spec — this is the one piece of hub state that must survive
+  # --uninstall (no --purge) and re-creation without any host-side chown
+  # gymnastics.
+  hub-lib:
+    name: ${PRIVOS_PROJECT:-privos}-hub-lib
+
+services:
+  mongo:
+    image: mongo:7.0.14@sha256:__MONGO_DIGEST__
+    container_name: ${PRIVOS_PROJECT:-privos}-mongo
+    restart: unless-stopped
+    networks: [privos]
+    command: ["--replSet", "rs0", "--keyFile", "/run/secrets/mongo-keyfile", "--wiredTigerCacheSizeGB", "${PRIVOS_MONGO_CACHE_GB:-1}"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:?MONGO_ROOT_USER is required}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required}
+    volumes:
+      - ${PRIVOS_DIR:?PRIVOS_DIR is required}/data/mongo:/data/db
+      - ${PRIVOS_DIR}/secrets/mongo-keyfile:/run/secrets/mongo-keyfile:ro
+    mem_limit: ${PRIVOS_MONGO_MEM:-1g}
+    cpus: ${PRIVOS_MONGO_CPUS:-2}
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --host $$(hostname -i) --quiet --eval \"db.adminCommand({ping:1})\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine@sha256:__REDIS_DIGEST__
+    container_name: ${PRIVOS_PROJECT:-privos}-redis
+    restart: unless-stopped
+    networks: [privos]
+    mem_limit: ${PRIVOS_REDIS_MEM:-256m}
+    cpus: ${PRIVOS_REDIS_CPUS:-0.5}
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-08T15-41-24Z@sha256:__MINIO_DIGEST__
+    container_name: ${PRIVOS_PROJECT:-privos}-minio
+    restart: unless-stopped
+    networks: [privos]
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+    volumes:
+      - ${PRIVOS_DIR}/data/minio:/data
+    # API only — loopback. Console (9001) is intentionally never published;
+    # reach it with `docker compose exec minio ...` or an SSH tunnel.
+    ports:
+      - "127.0.0.1:${PRIVOS_MINIO_PORT:-9000}:9000"
+    mem_limit: ${PRIVOS_MINIO_MEM:-512m}
+    cpus: ${PRIVOS_MINIO_CPUS:-1}
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # One-shot: mirrors minio-provisioner.ts (mc mb -p, versioning, scoped
+  # service account). Exits 0 on success; install.sh runs it explicitly via
+  # `docker compose run --rm minio-init` after minio is healthy, then
+  # `docker compose up -d` brings it up again as a no-op on every re-run
+  # (idempotent — see minio-init.sh).
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-08T15-39-49Z@sha256:__MINIO_MC_DIGEST__
+    container_name: ${PRIVOS_PROJECT:-privos}-minio-init
+    networks: [privos]
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+      MINIO_BUCKET: ${MINIO_BUCKET:-privos}
+    volumes:
+      - ${PRIVOS_DIR}/minio-init.sh:/minio-init.sh:ro
+    entrypoint: ["/bin/sh", "/minio-init.sh"]
+    security_opt: ["no-new-privileges:true"]
+
+  hub:
+    image: ghcr.io/privos-ai/privos-hub:${PRIVOS_STACK_VERSION:?PRIVOS_STACK_VERSION is required}@sha256:__HUB_DIGEST__
+    container_name: ${PRIVOS_PROJECT:-privos}-hub
+    restart: unless-stopped
+    networks: [privos]
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      ROOT_URL: ${PRIVOS_ROOT_URL:?PRIVOS_ROOT_URL is required}
+      PRIVOS_INTERNAL_URL: http://hub:3000
+      DEPLOYMENT_ID: ${PRIVOS_DEPLOYMENT_ID:?PRIVOS_DEPLOYMENT_ID is required}
+      PORT: "3000"
+      NODE_ENV: production
+      REDIS_URL: redis://redis:6379/0
+      EXIT_UNHANDLEDPROMISEREJECTION: "1"
+      MONGO_URL: ${MONGO_URL:?MONGO_URL is required}
+      MONGO_OPLOG_URL: ${MONGO_OPLOG_URL:?MONGO_OPLOG_URL is required}
+      ADMIN_USERNAME: admin
+      ADMIN_NAME: Administrator
+      ADMIN_PASS: ${ADMIN_PASS:?ADMIN_PASS is required}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?ADMIN_EMAIL is required}
+      REG_TOKEN: ${REG_TOKEN:?REG_TOKEN is required}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:?VAPID_SUBJECT is required}
+      OVERWRITE_SETTING_WebPush_public_key: ${VAPID_PUBLIC_KEY:?VAPID_PUBLIC_KEY is required}
+      OVERWRITE_SETTING_WebPush_private_key: ${VAPID_PRIVATE_KEY:?VAPID_PRIVATE_KEY is required}
+      SERVICE_USAGE_AUTHORIZATION_FAIL_CLOSED: ${SERVICE_USAGE_AUTHORIZATION_FAIL_CLOSED:-true}
+      Accounts_AvatarStorePath: /app/bundle/uploads
+      # Self-hosted signal — fleet derives this from Workspace.selfHosted; a
+      # self-hosted hub has no portal Workspace row to read it from.
+      PRIVOS_SELF_HOSTED: "true"
+      # See RENDERER-DIFF.md: these four live on board/proxy on the fleet;
+      # the hub also needs them here for BYO-vs-credit LLM routing and
+      # self-hosted license polling (phase 2/5).
+      PRIVOS_SANDBOX_MODE: "true"
+      SANDBOX_PROXY_URL: http://sandbox-proxy:8557
+      SANDBOX_APP_ORIGIN: http://sandbox-board:8556
+      AGENT_PROVIDER: privos-agent-sdk
+      # BYO LLM key (Community self-hosted, no license). A paid+licensed hub
+      # receives a LiteLLM key over its poll response instead — the installer
+      # never touches that path.
+      Cloud_Self_Hosted_LLM_Provider: ${PRIVOS_LLM_PROVIDER:-byo}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # --- knowledge-vector profile (off by default) ---
+      WEAVIATE_URL: ${PRIVOS_WEAVIATE_URL:-}
+      WEAVIATE_COLLECTION: KnowledgeObject
+      KNOWLEDGE_WORKSPACE_ID: ${PRIVOS_DEPLOYMENT_ID:-}
+      WEAVIATE_API_KEY: ${WEAVIATE_ROOT_KEY:-}
+      # --- local-runtime profile (off by default) ---
+      MCP_APP_LOCAL_RUNTIME_V3: ${PRIVOS_WITH_LOCAL_RUNTIME:-false}
+      MCP_LOCAL_RUNTIME_DRIVER_SOCKET: /run/privos-local-runtime/driver.sock
+      MCP_LOCAL_RUNTIME_DRIVER_SOCKET_UID: "65532"
+      MCP_LOCAL_RUNTIME_DRIVER_SOCKET_GID: "1001"
+      MCP_LOCAL_RUNTIME_ENDPOINT_HOSTS: ${PRIVOS_LOCAL_RUNTIME_ENDPOINT_HOSTS:-}
+      MARKETPLACE_LOCAL_APP_DIR: /var/lib/privos/marketplace/apps
+    volumes:
+      - hub-lib:/var/lib/privos
+      - ${PRIVOS_DIR}/data/hub-uploads:/app/bundle/uploads
+      - ${PRIVOS_DIR}/data/local-runtime-socket:/run/privos-local-runtime:ro
+    # Only the hub is published, and only the hub is published on all
+    # interfaces — everything else in this file binds 127.0.0.1 or is not
+    # published at all.
+    ports:
+      - "0.0.0.0:${PRIVOS_HUB_PORT:-3000}:3000"
+    mem_limit: ${PRIVOS_HUB_MEM:-2g}
+    cpus: ${PRIVOS_HUB_CPUS:-2}
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/api/info"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 480s
+
+  sandbox-board:
+    image: ghcr.io/privos-ai/privos-sandbox-board:${PRIVOS_STACK_VERSION:?PRIVOS_STACK_VERSION is required}@sha256:__SANDBOX_BOARD_DIGEST__
+    container_name: ${PRIVOS_PROJECT:-privos}-sandbox-board
+    restart: unless-stopped
+    networks: [privos]
+    user: "1001:1001"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      DB_DIALECT: mongo
+      MONGODB_URL: ${MONGODB_URL:?MONGODB_URL is required}
+      NODE_ENV: production
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+      PRIVOS_SANDBOX_MODE: "true"
+      AGENT_PROVIDER: privos-agent-sdk
+      ROXANE_PROXIED_BASE_URL: ${PRIVOS_LLM_BASE_URL:-}
+      ROXANE_MODEL: gauga
+      ROXANE_DEFAULT_GAUGA_MODEL: gauga
+      ROXANE_DEFAULT_ISSUS_MODEL: issus
+      ROXANE_DEFAULT_GRANIC_MODEL: granic
+      PORT: "8556"
+      SANDBOX_APP_ORIGIN: http://sandbox-board:8556
+      SANDBOX_PROXY_URL: http://sandbox-proxy:8557
+      BOT_INTERNAL_API_BASE_URL: http://sandbox-board:8556
+      API_ACCESS_KEY: ${SANDBOX_API_KEY:?SANDBOX_API_KEY is required}
+      POOL_DATA_BASE: ${PRIVOS_DIR}/data/sandbox-pool
+    volumes:
+      - ${PRIVOS_DIR}/data/sandbox-board:/app/data
+      - ${PRIVOS_DIR}/data/sandbox-pool:${PRIVOS_DIR}/data/sandbox-pool
+    # Loopback only — reachable from the host (installer health check,
+    # operator debugging), never from the network.
+    ports:
+      - "127.0.0.1:${PRIVOS_BOARD_PORT:-8556}:8556"
+    mem_limit: ${PRIVOS_BOARD_MEM:-512m}
+    cpus: ${PRIVOS_BOARD_CPUS:-1}
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8556/api/bot/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  sandbox-proxy:
+    image: ghcr.io/privos-ai/privos-sandbox-proxy:${PRIVOS_STACK_VERSION:?PRIVOS_STACK_VERSION is required}@sha256:__SANDBOX_PROXY_DIGEST__
+    container_name: ${PRIVOS_PROJECT:-privos}-sandbox-proxy
+    restart: unless-stopped
+    networks: [privos]
+    # Root, like the fleet: the proxy spawns per-bot agent VM containers via
+    # the Docker API (docker.sock bind below) — root-equivalent on this host.
+    # ACCEPTED RISK, same as the fleet's compose-ssh-driver comment; contained
+    # by loopback-only exposure + the DOCKER-USER rules docker-user-rules.sh
+    # installs.
+    user: "0:0"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      DB_DIALECT: mongo
+      MONGODB_URL: ${MONGODB_URL:?MONGODB_URL is required}
+      NODE_ENV: production
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+      PRIVOS_SANDBOX_MODE: "true"
+      AGENT_PROVIDER: privos-agent-sdk
+      ROXANE_PROXIED_BASE_URL: ${PRIVOS_LLM_BASE_URL:-}
+      ROXANE_MODEL: gauga
+      ROXANE_DEFAULT_GAUGA_MODEL: gauga
+      ROXANE_DEFAULT_ISSUS_MODEL: issus
+      ROXANE_DEFAULT_GRANIC_MODEL: granic
+      PORT: "8557"
+      SANDBOX_PROXY_URL: http://sandbox-proxy:8557
+      API_ACCESS_KEY: ${SANDBOX_API_KEY:?SANDBOX_API_KEY is required}
+      POOL_DATA_BASE: ${PRIVOS_DIR}/data/sandbox-pool
+      COLLOC_HUB_ID: ${PRIVOS_DEPLOYMENT_ID:?PRIVOS_DEPLOYMENT_ID is required}
+      PRIVOS_COLLOCATION_ENABLED: "true"
+      # Legacy host-port pool (VM_NETWORK left unset — see RENDERER-DIFF.md):
+      # each spawned agent VM publishes its own host port from this range,
+      # bound to POOL_BIND_HOST so the whole range stays loopback-only.
+      POOL_PORT_RANGE: ${PRIVOS_VM_PORT_RANGE:-30000-30999}
+      POOL_BIND_HOST: 127.0.0.1
+      POOL_IMAGE: ghcr.io/privos-ai/privos-sandbox-vm:${PRIVOS_STACK_VERSION:?PRIVOS_STACK_VERSION is required}@sha256:__SANDBOX_VM_DIGEST__
+      # --- knowledge-vector profile (off by default) ---
+      KNOWLEDGE_VECTOR_PROXY_ENABLED: ${PRIVOS_WITH_KNOWLEDGE_VECTOR:-false}
+      WEAVIATE_INTERNAL_URL: http://weaviate:8080
+      WEAVIATE_ROOT_API_KEY: ${WEAVIATE_ROOT_KEY:-}
+    volumes:
+      - ${PRIVOS_DIR}/data/sandbox-proxy:/app/data
+      - ${PRIVOS_DIR}/data/sandbox-pool:${PRIVOS_DIR}/data/sandbox-pool
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "127.0.0.1:${PRIVOS_PROXY_PORT:-8557}:8557"
+    mem_limit: ${PRIVOS_PROXY_MEM:-512m}
+    cpus: ${PRIVOS_PROXY_CPUS:-1}
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8557/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  # --- knowledge-vector profile: opt-in, off by default -------------------
+  # Managed knowledge base / semantic search. ~+2 GB RAM (raises the
+  # practical minimum from 4 GB to 8 GB). Embedding routing
+  # (OVERWRITE_SETTING_Knowledge_Embedding_*) depends on the llm.privos.io
+  # gateway ingress, which is not yet published — left unset here rather than
+  # guessed at; see docs/self-hosted-install.md.
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.38.2@sha256:__WEAVIATE_DIGEST__
+    container_name: ${PRIVOS_PROJECT:-privos}-weaviate
+    restart: unless-stopped
+    profiles: ["knowledge-vector"]
+    networks: [privos]
+    environment:
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      QUERY_DEFAULTS_LIMIT: "25"
+      DEFAULT_VECTORIZER_MODULE: "none"
+      API_BASED_MODULES_DISABLED: "true"
+      AUTOSCHEMA_ENABLED: "false"
+      DISABLE_TELEMETRY: "true"
+      CLUSTER_HOSTNAME: privos-self-hosted-vector
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "false"
+      AUTHENTICATION_APIKEY_ENABLED: "true"
+      AUTHENTICATION_APIKEY_USERS: workspace-vector-root
+      # `docker compose` interpolates every service's env regardless of which
+      # profiles are active (config resolution happens before profile
+      # filtering) — a hard `:?` here would break a base install that never
+      # enables knowledge-vector. install.sh's finalize_sidecar_config()
+      # always populates this before compose ever runs with the profile on.
+      AUTHENTICATION_APIKEY_ALLOWED_KEYS: ${WEAVIATE_ROOT_KEY:-}
+      AUTHORIZATION_ENABLE_RBAC: "true"
+      AUTHORIZATION_RBAC_ROOT_USERS: workspace-vector-root
+    volumes:
+      - ${PRIVOS_DIR}/data/weaviate:/var/lib/weaviate
+    mem_limit: ${PRIVOS_WEAVIATE_MEM:-2g}
+    cpus: ${PRIVOS_WEAVIATE_CPUS:-1}
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    cap_drop: ["ALL"]
+    pids_limit: 512
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=128m"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/v1/.well-known/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  # --- local-runtime profile: opt-in, off by default -----------------------
+  # Run marketplace MCP apps as containers on this host instead of PrivOS's
+  # app cluster. Needs Docker socket access; dockerSocketGid is resolved by
+  # install.sh (`stat -c %g /var/run/docker.sock`) into PRIVOS_DOCKER_SOCKET_GID.
+  local-runtime-driver:
+    image: ghcr.io/privos-ai/privos-local-runtime-driver:v1@sha256:__LOCAL_RUNTIME_DRIVER_DIGEST__
+    container_name: ${PRIVOS_PROJECT:-privos}-local-runtime-driver
+    restart: unless-stopped
+    profiles: ["local-runtime"]
+    networks: [privos]
+    user: "65532:65532"
+    # Same interpolation-before-profile-filtering reasoning as
+    # WEAVIATE_ROOT_KEY above — install.sh resolves and validates the real
+    # gid before ever running compose with local-runtime enabled.
+    group_add: ["1001", "${PRIVOS_DOCKER_SOCKET_GID:-0}"]
+    environment:
+      PRIVOS_LOCAL_RUNTIME_DRIVER_ENABLED: "true"
+      PRIVOS_LOCAL_RUNTIME_SOCKET_PATH: /run/privos-local-runtime/driver.sock
+      PRIVOS_LOCAL_RUNTIME_STATE_DB: /var/lib/privos/local-runtime-driver/state.sqlite3
+      PRIVOS_LOCAL_RUNTIME_ARTIFACT_ROOT: /var/lib/privos/marketplace/apps
+      PRIVOS_LOCAL_RUNTIME_DOCKER_SOCKET: /var/run/docker.sock
+      PRIVOS_LOCAL_RUNTIME_PRIVATE_NETWORK: ${PRIVOS_NETWORK:-privos-sandbox-net}
+      PRIVOS_LOCAL_RUNTIME_SOCKET_MODE: "0660"
+      PRIVOS_LOCAL_RUNTIME_SOCKET_GID: "1001"
+      PRIVOS_LOCAL_RUNTIME_ALLOWED_PEER_UID: "1001"
+      PRIVOS_LOCAL_RUNTIME_ARTIFACT_UID: "1001"
+      PRIVOS_LOCAL_RUNTIME_ARTIFACT_GID: "1001"
+    volumes:
+      - ${PRIVOS_DIR}/data/local-runtime-socket:/run/privos-local-runtime
+      - hub-lib:/var/lib/privos/marketplace/apps:ro
+      - ${PRIVOS_DIR}/data/local-runtime-state:/var/lib/privos/local-runtime-driver
+      - /var/run/docker.sock:/var/run/docker.sock
+    mem_limit: ${PRIVOS_LOCAL_RUNTIME_MEM:-256m}
+    cpus: ${PRIVOS_LOCAL_RUNTIME_CPUS:-1}
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    cap_drop: ["ALL"]
+    pids_limit: 256
+    tmpfs: ["/tmp:rw,nosuid,nodev,noexec,size=32m"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -m privos_local_runtime_driver.healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
