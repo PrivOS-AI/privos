@@ -1,0 +1,50 @@
+PrivOS
+Copyright (c) 2026 Roxane, Inc.
+
+This product is licensed under the PrivOS Community License 1.0 (see the
+LICENSE file). It is not Open Source as defined by the Open Source Initiative.
+
+This product includes software developed by third parties. Those components
+are licensed by their respective rights holders under their own terms, not by
+Roxane, Inc. A complete list of those components, their licenses, where their
+source can be obtained, and the required attribution notices is in the
+OPEN-SOURCE-NOTICES file distributed with this software. If you pass this
+software on to anyone else, you must pass on the LICENSE file, this NOTICE
+file, the OPEN-SOURCE-NOTICES file, the rocketchat-upstream-files.txt file,
+and the TRADEMARK.md file with it.
+
+Some of those components are licensed under terms that impose obligations on
+anyone who makes the component available to others over a network or as a
+service (for example the GNU Affero General Public License and the Server Side
+Public License). If you operate a deployment that other people can reach,
+review those obligations for your deployment. They are your responsibility as
+the operator.
+
+-------------------------------------------------------------------------
+Rocket.Chat
+-------------------------------------------------------------------------
+
+Portions of PrivOS Hub are derived from Rocket.Chat.
+
+Copyright (c) 2015-2022 Rocket.Chat Technologies Corp.
+
+The unmodified Rocket.Chat source files listed in the file
+rocketchat-upstream-files.txt are licensed under the MIT (Expat) License,
+reproduced in the OPEN-SOURCE-NOTICES file. All modifications of those files,
+and all other code, configuration, and content created by or for Roxane, Inc.,
+are licensed under the PrivOS Community License 1.0 and are not licensed under
+the MIT License.
+
+The Rocket.Chat Enterprise Edition components (the "apps/meteor/ee/" and "ee/"
+directories of the Rocket.Chat repository) are not included in this software
+and no rights in them are granted.
+
+"Rocket.Chat" is a trademark of Rocket.Chat Technologies Corp. and is used
+here for identification purposes only. PrivOS is not affiliated with, endorsed
+by, or sponsored by Rocket.Chat Technologies Corp.
+
+-------------------------------------------------------------------------
+
+Third-party trademarks (including MongoDB, Redis, MinIO, Weaviate, and Docker)
+are the property of their respective owners and are used for identification
+purposes only.

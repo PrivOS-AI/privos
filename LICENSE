@@ -1,69 +1,208 @@
 PrivOS Community License 1.0 (PCL-1.0)
+SPDX-License-Identifier: LicenseRef-PCL-1.0
 
-Copyright (c) 2026 Roxane INC, a Delaware corporation ("Roxane").
-Based on the Elastic License 2.0 (ELv2), adapted with additional terms.
+Copyright (c) 2026 Roxane, Inc., a Delaware corporation ("Roxane").
 Licensing inquiries: legal@privos.ai
 
 This license is NOT an Open Source license as defined by the Open Source
-Initiative. It grants a free Community tier with limits and reserves
-commercial, hosted-service, and redistribution rights to the licensor.
+Initiative. It grants a free Community tier with limits, and reserves
+paid-tier, hosted-service, and redistribution rights to the licensor.
 
-------------------------------------------------------------------------
+--------------------------------------------------------------------------
+
 ACCEPTANCE
 
 By installing, copying, running, or otherwise using the software, you agree
-to all of the terms and conditions below. If you do not agree, do not use the
-software.
+to all of the terms and conditions below. If you do not agree, do not use
+the software.
+
+Capitalized terms and terms in quotation marks are defined in the DEFINITIONS
+section at the end of this license, except where they are defined where they
+are used. The numbered sections under LIMITATIONS are referred to in these
+terms and elsewhere as "Limitation 1", "Limitation 2", and so on.
 
 COPYRIGHT LICENSE
 
 The licensor grants you a non-exclusive, royalty-free, worldwide,
-non-sublicensable, non-transferable license to use, copy, distribute, make
-available, and prepare derivative works of the software, in each case subject
-to the limitations and conditions below.
+non-sublicensable license to use, copy, distribute, make available, and
+prepare derivative works of the software, in each case subject to the
+limitations and conditions below. Your licenses are not transferable except
+as set out under ASSIGNMENT.
 
 LIMITATIONS
 
-1. Free Community tier. You may use the software in production without a
-   Commercial License only in a deployment that has no more than ten (10)
-   Active Human Users. Any deployment with more than ten (10) Active Human
-   Users requires a valid Commercial License Key issued by the licensor for
-   that deployment. Trial keys issued by the licensor are Commercial License
-   Keys for the trial term stated in the key.
+1. User limit. Use of the software is limited to a maximum number of Active
+   Human Users, counted once per natural person across all deployments
+   operated by you and your company. That maximum is the greater of:
 
-2. Managed and hosted services. You may not provide the software to third
-   parties as a hosted or managed service, where the service provides users
-   with access to any substantial set of the features or functionality of the
-   software, without a Partner License. This includes software-as-a-service,
-   platform-as-a-service, multi-tenant hosting, and similar offerings, whether
-   or not the software has been modified.
+   (a) ten (10); and
 
-3. Commercial redistribution. You may not sell, resell, sublicense, rent,
+   (b) the number of Active Human Users permitted by the Commercial License
+       Keys you hold that are valid and in force.
+
+   Use above the applicable maximum is not licensed under these terms. The
+   limit applies to every kind of use, including production, development,
+   testing, staging, evaluation, demonstration, and internal training.
+
+   Where the number of Active Human Users exceeds ten (10), every deployment
+   operated by you and your company requires a valid Commercial License Key
+   issued by the licensor for that deployment, whether or not any individual
+   deployment on its own has more than ten (10) Active Human Users. A
+   deployment does not violate this Limitation 1 for want of its own key during
+   the first thirty (30) days after you create it or after you first exceed ten
+   (10) Active Human Users, whichever is later. That period does not start
+   again because you recreate, rebuild, replace, or move a deployment that
+   serves substantially the same function or the same users.
+
+   Where the software provides no key functionality for a deployment, you must
+   request a Commercial License Key for it from the licensor within thirty (30)
+   days of first exceeding ten (10) Active Human Users, stating the number of
+   Active Human Users you need. Until the licensor issues a Commercial License
+   Key for that deployment, the absence of that key does not violate this
+   Limitation 1, and a number counts under (b) as though a key permitting it
+   were in force: the number stated in your request until the licensor responds
+   to it, and after that the number the licensor sets in its response. You must
+   pay the fee for that number under the licensor's published pricing for the
+   period concerned, and the number counts under (b) only while you do. This
+   paragraph ceases to apply when the licensor issues a key for that
+   deployment.
+
+   The licensor may issue trial keys for evaluation on request, at its
+   discretion. A trial key is a Commercial License Key for the trial term
+   stated in it.
+
+2. No splitting to stay within the limit. You may not operate more than one
+   deployment, use components of the software separately, create or use
+   additional legal entities, or divide users, accounts, or workloads, for
+   the purpose or with the effect of understating the number of Active Human
+   Users across the deployments operated by you and your company, or of
+   presenting use that is outside the Free Community tier as use within it.
+   Sharing a single user account among several natural persons does not reduce
+   the number of Active Human Users.
+
+   An arrangement adopted for genuine business reasons other than the Active
+   Human User limit, and a count that proves too low despite having been
+   made in good faith, are not by themselves violations of this Limitation 2.
+
+3. Managed and hosted services. You may not, without a Partner License:
+
+   (a) provide the software, or any of its features or functionality, to any
+       third party as a hosted or managed service; or
+
+   (b) offer the software, or any of its features or functionality, to any
+       third party under your own brand or as your own product or service.
+
+   Paragraph (a) applies whether the functionality is provided directly,
+   through a modified version or a derivative work, or through any interface,
+   front end, gateway, or application programming interface that makes it
+   available; whether or not the software has been modified; and whether the
+   software runs on infrastructure operated by you, by the third party, or by
+   anyone else. It includes software-as-a-service, platform-as-a-service,
+   multi-tenant hosting, and similar offerings.
+
+   Providing professional services to a third party in respect of a deployment
+   that the third party operationally controls — including installing,
+   configuring, integrating, administering, monitoring, and supporting it —
+   is not itself a hosted or managed service, provided that the third party
+   holds its own Commercial License Key for that deployment or its use of it
+   is within its own Free Community tier, that you do not provide access to
+   that deployment to anyone other than that third party, its personnel, and
+   the users it permits, and that paragraph (b) does not apply to what you
+   offer.
+
+   A third party has "operational control" of a deployment only if it decides
+   whether and where the deployment runs, it owns or contracts in its own name
+   for the infrastructure the deployment runs on, and it can at any time take
+   over or end the deployment's administration. Administering or monitoring a
+   deployment for a third party that operationally controls it is not, by
+   itself, operating that deployment. The meaning of "control" in DEFINITIONS
+   does not apply to this paragraph.
+
+4. Commercial redistribution. You may not sell, resell, sublicense, rent,
    lease, or bundle the software or any derivative work, and you may not
    charge any third party for the software or for access to it, without a
    Partner License. You may provide an unmodified copy of the software to a
    third party free of charge, and you may charge for your own professional
    services (such as installation, configuration, integration, or support),
-   provided that each recipient accepts this license and either stays within
-   the Free Community tier or holds its own Commercial License Key for its
-   deployment.
+   provided that you pass these terms on to the recipient as required under
+   NOTICES and that you do not provide a copy to a recipient that you know, or
+   reasonably should know, will use the software outside its own Free
+   Community tier and without a Commercial License Key covering that use.
 
-4. Derivative works. You may modify the software and use derivative works for
-   your own internal purposes. You may not distribute, make available, or
-   deploy a derivative work for or to any third party (other than your own
-   employees and contractors working on your behalf) without a Partner
-   License.
+5. Derivative works. You may modify the software and use derivative works for
+   the internal purposes of you and your company, subject to Limitation 1. You
+   may not distribute, make available, or deploy a derivative work for or to
+   any third party without a Partner License. Submitting a contribution to the
+   licensor under FEEDBACK AND CONTRIBUTIONS is not a violation of this
+   Limitation 5.
 
-5. License keys and limits. You may not move, change, disable, or circumvent
-   the license key functionality or the Active Human User limit in the
-   software, and you may not remove or obscure any functionality in the
-   software that is protected by the license key or by a license.
+6. License keys and limits. You may not move, change, disable, circumvent,
+   prevent, block, or otherwise interfere with the operation of the license
+   key functionality or of the Active Human User limit in the software, and
+   you may not manipulate the data on which the Active Human User count is
+   based, in each case for the purpose of using the software above the
+   applicable maximum, without a required Commercial License Key, or beyond a
+   key's term. You may not remove or obscure functionality in the software
+   that a license key protects in order to use that functionality without a
+   key.
 
-6. Notices and marks. You may not alter, remove, or obscure any licensing,
-   copyright, or other notices of the licensor in the software. Any use of
-   the licensor's trademarks, including "PrivOS", is subject to applicable
-   law and to the licensor's trademark guidelines; this license grants no
-   trademark rights.
+   Restricting a deployment's network access, including operating it in an
+   environment with no network access at all, is not a violation of this
+   Limitation 6 unless it is done for a purpose described above. A measure
+   adopted for genuine business reasons other than those purposes is not a
+   violation of this Limitation 6 by reason of its effect alone. If you need
+   to operate under a Commercial License Key without network access, ask the
+   licensor for a key issued for that purpose.
+
+7. Notices and marks. You may not alter, remove, or obscure any licensing,
+   copyright, or other notices of the licensor in the software. Any use of the
+   licensor's trademarks, including "PrivOS", is subject to applicable law and
+   to the trademark guidelines in the TRADEMARK.md file distributed with the
+   software. This license grants no trademark rights other than the limited
+   permissions expressly stated in that file.
+
+8. Determining and confirming your use. Where the number of Active Human Users
+   across the deployments operated by you and your company is, or may
+   reasonably be, more than ten (10) or more than half the applicable maximum,
+   whichever is lower, or where the licensor has asked you to confirm that
+   number, you must keep records sufficient to determine it, using the counts
+   the software produces and, for any access the software cannot count, a
+   reasonable good-faith estimate.
+
+   If the licensor has a reasonable basis to believe that your use exceeds the
+   applicable maximum, the licensor may request written confirmation of that
+   number. You will provide it within thirty (30) days of the request. This
+   Limitation 8 does not entitle the licensor to access your systems, your
+   deployments, or your data.
+
+LICENSE KEY VALIDATION
+
+The software contains license key functionality. Issuing, activating,
+validating, and renewing a Commercial License Key may require the deployment
+to communicate with systems operated by the licensor, and that communication
+may transmit the deployment identifier, the license key, version information,
+and counts of Active Human Users.
+
+The licensor will not design the software to transmit to the licensor, or to
+anyone else, the content of the messages, files, or other data you or your
+users process with the software. This commitment does not apply to a
+transmission that you, your company, or your users configure, direct, or
+request, such as an integration, connector, backup destination, or model
+provider that you choose to connect. This commitment is not subject to the NO
+LIABILITY section below.
+
+The behavior of the software when a Commercial License Key expires, is
+revoked, or cannot be validated is a technical characteristic of each version
+of the software and is not a commitment under this license. The licensor makes
+no representation about that behavior and may change it between versions.
+Documentation for the version you are running describes the behavior of that
+version.
+
+YOUR DATA
+
+The licensor obtains no ownership of, and no license to, the messages, files,
+configuration, or other data that you or your users process with the software.
+This license governs the software only.
 
 PATENTS
 
@@ -72,33 +211,95 @@ license, or becomes able to license, to make, have made, use, sell, offer for
 sale, import and have imported the software, in each case subject to the
 limitations and conditions in this license. This license does not cover any
 patent claims that you cause to be infringed by modifications or additions to
-the software. If you or your company make any written claim that the software
-infringes or contributes to infringement of any patent, your patent license
-for the software granted under these terms ends immediately. If your company
-makes such a claim, your patent license ends immediately for work on behalf
-of your company.
+the software. If you or your company assert against the licensor or any of its
+licensees a claim that the software infringes or contributes to infringement
+of any patent, your patent license for the software granted under these terms
+ends immediately, and if your company asserts such a claim, your patent
+license ends immediately for work on behalf of your company. Telling the
+licensor in good faith that the software may infringe a third party's patent
+is not such an assertion.
 
 NOTICES
 
-You must ensure that anyone who gets a copy of any part of the software from
-you also gets a copy of these terms. If you modify the software, you must
-include in any modified copies of the software prominent notices stating that
-you have modified the software.
+You must ensure that anyone to whom you distribute the software, or a
+substantial portion of it, also gets a copy of these terms, together with the
+NOTICE, OPEN-SOURCE-NOTICES, rocketchat-upstream-files.txt, and TRADEMARK.md
+files distributed with the software. Quoting or discussing portions of the
+software, for example in documentation, an article, or a support forum, is not
+distribution for the purposes of this section. If you modify the software, you
+must include in any modified copies prominent notices stating that you have
+modified it.
+
+The licensor may give you a notice under these terms by email to an address
+you have given it, by a message shown in the software, or by post to your last
+known address. A notice sent by email is treated as received on the day it is
+sent; a notice shown in the software is treated as received seven (7) days
+after it is first shown; a notice sent by post is treated as received five (5)
+business days after it is posted. You may give the licensor a notice under
+these terms by email to legal@privos.ai.
+
+FEEDBACK AND CONTRIBUTIONS
+
+If you send the licensor ideas, suggestions, or other feedback about the
+software, the licensor may use it without restriction and without any
+obligation to you. Contributions of code, documentation, or other material are
+accepted only under a Contributor License Agreement, accepted in the manner
+described in the contribution guidelines the licensor publishes with the
+source repository. Nothing in this section transfers ownership of your
+feedback.
+
+VERSIONS OF THIS LICENSE
+
+This license governs the version of the software with which it was
+distributed. The licensor may make later versions of the software available
+under different terms, and may publish later versions of this license. The
+terms that apply to a version of the software you have already received will
+not change retroactively, except that the licensor may release a version under
+terms that are more permissive.
 
 NO OTHER RIGHTS
 
 These terms do not imply any licenses other than those expressly granted in
 these terms.
 
+ASSIGNMENT
+
+You may transfer your licenses to a successor to all or substantially all of
+your business or assets, on written notice to the licensor, provided that the
+successor accepts these terms, and provided that if use by the successor and
+its company then exceeds the maximum applicable to the successor under
+Limitation 1, the successor brings that use within its maximum within thirty
+(30) days of the transfer. Your licenses are otherwise not transferable.
+
 TERMINATION
 
-If you use the software in violation of these terms, such use is not licensed,
-and your licenses will automatically terminate. If the licensor provides you
-with a notice of your violation, and you cease all violation of this license
-no later than 30 days after you receive that notice, your licenses will be
-reinstated retroactively. However, if you violate these terms after such
-reinstatement, any additional violation of these terms will cause your
-licenses to terminate automatically and permanently.
+If you use the software in violation of these terms, that use is not licensed
+and your licenses terminate automatically. Where the violation is of
+Limitation 1, what is not licensed is the use that exceeds the applicable
+maximum, the use made through a deployment lacking a required Commercial
+License Key, and any other use to which the violation relates.
+
+The "cure period" for a violation is thirty (30) days from the earlier of the
+date you receive notice of the violation from the licensor and the date on
+which a person responsible for your use of the software becomes aware of it. A
+violation of which neither has yet happened has not yet begun its cure period,
+and your licenses do not terminate because of it in the meantime. If you cease
+the violation within its cure period, your licenses are treated as never having
+terminated because of it. If you do not cease the violation within its cure
+period, your licenses terminate at the end of that period. If you cease the
+violation after its cure period, your licenses are reinstated with effect from
+the date you cease it, unless the licensor, acting reasonably and by notice
+given within thirty (30) days of your ceasing it, declines to reinstate them on
+the ground that you knew the use was not licensed and continued it.
+
+Ceasing a violation does not license the use that occurred before you ceased
+it, and does not affect any right of the licensor in respect of that use,
+including the right to charge the fees that would have been payable for it
+under the licensor's published pricing for the period concerned.
+
+If, after your licenses have been reinstated or preserved under this section,
+you commit a further material violation of these terms and do not cease it
+within its cure period, your licenses terminate automatically and permanently.
 
 NO LIABILITY
 
@@ -107,35 +308,105 @@ CONDITION, AND THE LICENSOR WILL NOT BE LIABLE TO YOU FOR ANY DAMAGES ARISING
 OUT OF THESE TERMS OR THE USE OR NATURE OF THE SOFTWARE, UNDER ANY KIND OF
 LEGAL CLAIM.
 
+Where mandatory law that applies to you does not permit an exclusion or
+limitation in this section, that exclusion or limitation does not apply to
+you. In particular, and where mandatory law so requires, nothing in this
+license excludes or limits liability for willful misconduct or gross
+negligence, for injury to life, body, or health, for the negligent breach of
+an obligation essential to the performance of these terms, or under applicable
+product liability law. The commitment stated under LICENSE KEY VALIDATION is
+not excluded or limited by this section.
+
+EXPORT CONTROL AND SANCTIONS
+
+The software is subject to the export control and sanctions laws of the United
+States and of other jurisdictions. You may not use, export, re-export, or make
+the software available to any person or in any country or territory where
+doing so is prohibited under those laws, and you represent that you are not a
+person with whom dealings are prohibited under them.
+
 GOVERNING LAW
 
 This license is governed by the laws of the State of Delaware, United States
 of America, without regard to its conflict-of-laws rules. The state and
 federal courts located in Delaware have exclusive jurisdiction over any
-dispute arising out of this license, and you consent to their jurisdiction.
+dispute arising out of this license, and you consent to their jurisdiction,
+except that the licensor may seek injunctive or other equitable relief in any
+court of competent jurisdiction. This section does not deprive you of the
+protection of, and does not override, any mandatory provision of the law of
+your country of residence, including any provision that gives you the right to
+bring proceedings in, or requires proceedings against you to be brought in,
+the courts of that country.
+
+ORDER OF PRECEDENCE
+
+If you have entered into a separate written agreement with the licensor that
+expressly governs the licensing of the software and is in effect, such as a
+commercial subscription agreement or a Partner License, that agreement
+prevails over this license to the extent of any conflict, for the software and
+the term it covers.
+
+SEVERABILITY
+
+If any provision of this license is held to be unenforceable, that provision
+will be modified to the minimum extent necessary to make it enforceable, or,
+if it cannot be so modified, severed, and the remaining provisions will remain
+in full force and effect.
 
 THIRD-PARTY COMPONENTS
 
-The software includes third-party components that are licensed under their
-own terms (see the NOTICE and OPEN-SOURCE-NOTICES files distributed with the
-software). Those terms apply to those components only. Portions of PrivOS Hub
-are derived from Rocket.Chat and remain available under the MIT License as
-stated in the applicable NOTICE.
+The software is distributed together with third-party components that are
+licensed by their respective rights holders under their own terms, and not by
+the licensor. Those terms apply to those components only, and prevail over
+this license for those components. The NOTICE and OPEN-SOURCE-NOTICES files
+distributed with the software identify those components, their licenses, and
+where their source can be obtained.
+
+Some third-party components are licensed under terms that impose obligations
+on anyone who makes the component available to others over a network or as a
+service, including the GNU Affero General Public License and the Server Side
+Public License. Compliance with those obligations for the deployment you
+operate is your responsibility. A Partner License covers the software only and
+does not relieve you of any obligation under a third-party license. This
+section does not limit any obligation the licensor itself owes under those
+components' licenses as their distributor.
+
+Portions of PrivOS Hub are derived from Rocket.Chat. The unmodified
+Rocket.Chat source files listed in the rocketchat-upstream-files.txt file
+distributed with the software are licensed under the MIT License, and the
+required MIT copyright and permission notice for those files is reproduced in
+the OPEN-SOURCE-NOTICES file. All modifications of those files, and all other
+code, configuration, and content created by or for the licensor, are licensed
+under this license and are not licensed under the MIT License. Nothing in this
+license is a grant of rights in the Rocket.Chat Enterprise Edition components,
+and "Rocket.Chat" is a trademark of its owner and is used here for
+identification only.
 
 DEFINITIONS
 
-The "licensor" is Roxane INC, the entity offering these terms, and the
+The "licensor" is Roxane, Inc., the entity offering these terms, and the
 "software" is the software the licensor makes available under these terms,
 including any portion of it.
 
 "you" refers to the individual or entity agreeing to these terms.
 
-"your company" is any legal entity, sole proprietorship, or other kind of
-organization that you work for, plus all organizations that have control over,
-are under the control of, or are under common control with that organization.
-"control" means ownership of substantially all the assets of an entity, or
-the power to direct its management and policies by vote, contract, or
-otherwise. Control can be direct or indirect.
+"your company" means: where you are a legal entity, you together with every
+organization that has control over, is under the control of, or is under
+common control with you; and where you are an individual, any legal entity,
+sole proprietorship, or other kind of organization that you work for, together
+with every organization that has control over, is under the control of, or is
+under common control with that organization. "control" means ownership of
+substantially all the assets of an entity, or the power to direct its
+management and policies by vote, contract, or otherwise. Control can be direct
+or indirect.
+
+"third party" means any person or organization other than you, your company,
+the employees and contractors of you and your company who are working on your
+behalf, and the licensor.
+
+"derivative work" means any work based on the software or on any part of it,
+including any modification, adaptation, extension, translation, and any work
+that incorporates any part of the software.
 
 "your licenses" are all the licenses granted to you for the software under
 these terms.
@@ -144,17 +415,73 @@ these terms.
 
 "trademark" means trademarks, service marks, and similar rights.
 
-"deployment" means one running instance of the PrivOS Hub server and the
-services attached to it, identified by its unique workspace identifier.
+"PrivOS Hub" means the PrivOS Hub server component of the software.
 
-"Active Human User" means a user account on a deployment that is not
-deactivated and that corresponds to a natural person. Accounts that are bots,
-integrations, applications, or AI agents are not Active Human Users.
+"workspace identifier" means the unique identifier that a PrivOS Hub server
+assigns to the workspace it serves. A deployment's "deployment identifier" is
+the workspace identifier of its PrivOS Hub server.
+
+"deployment" means one running instance of a PrivOS Hub server together with
+the services attached to it. Each running instance of a PrivOS Hub server is a
+separate deployment, whatever identifier it bears; resetting, replacing, or
+duplicating a workspace identifier neither creates nor merges deployments.
+Instances of parts of the software that run without a PrivOS Hub server form
+part of the deployment they serve; where they serve no deployment, all such
+instances operated by you and your company together constitute one deployment.
+Use of the software is not outside these terms because a deployment has no
+workspace identifier.
+
+"Free Community tier" means use of the software, without a Commercial License
+Key, that complies with Limitation 1.
+
+"Active Human User" means a natural person who, on or at any time during the
+thirty (30) days preceding any date on which the software is used:
+
+  (a) has signed in to a deployment with a user account and accessed or
+      interacted with it while signed in, including through an embedded,
+      proxied, or white-labeled interface;
+
+  (b) has directed a bot, integration, application, or AI agent that acts on a
+      deployment on that person's behalf; or
+
+  (c) is you, is within your company, is an employee or contractor of you or
+      your company, or otherwise performs work for or on behalf of you or your
+      company, holds a user account on a deployment, and has submitted content
+      or a request to that deployment through that account, whether directly or
+      through another system that acts under that account.
+
+A natural person directs an agent under (b) if that person gives the agent
+instructions or requests through the software or through an interface to a
+deployment, and the agent carries them out on a deployment. Paragraph (c)
+governs instructions and requests given through any other system under that
+person's user account.
+
+A natural person who holds no user account on any deployment — including a
+guest or anonymous visitor, and a person who reaches a deployment only through
+an embedded, proxied, or white-labeled interface without signing in — is not an
+Active Human User.
+
+Where several natural persons use the software through one user account, each
+of them is counted separately. A bot, integration, application, or AI agent is
+not itself an Active Human User, and a user account through which no natural
+person has acted in that period is not counted.
+
+Notwithstanding paragraphs (a) to (c), a person does not become an Active Human
+User only because content that person authored was ingested into a deployment,
+including where you or your company ingest work that person created in the
+ordinary course of their work without that person submitting it. Nor does a
+person who is not described in paragraph (c) become an Active Human User only
+because a communication that person addressed to you or your company was
+relayed to a deployment.
 
 "Commercial License Key" means a license key issued by the licensor for a
-specific deployment under a commercial subscription or trial, which raises or
-removes the Active Human User limit and may enable additional features.
+specific deployment under a commercial subscription or trial, which sets the
+maximum number of Active Human Users permitted under Limitation 1(b) and may
+enable additional features. A Commercial License Key states the number of
+Active Human Users it permits; a key that states no number permits ten (10). A
+key that has expired or been revoked is not valid or in force and permits
+none, and the maximum under Limitation 1(a) continues to apply.
 
 "Partner License" means a separate written agreement with the licensor that
-expressly permits hosted or managed services, commercial redistribution, or
-distribution of derivative works.
+expressly permits hosted or managed services, offering the software under your
+own brand, commercial redistribution, or distribution of derivative works.
