@@ -1,6 +1,6 @@
 # PrivOS — self-hosted installer & release bundle
 
-**PrivOS is [fair-code](https://faircode.io):** free to run for your own team (up to 10 human users),
+**PrivOS is [fair-code](https://faircode.io):** free to run for your own team (up to 10 signed-in users across your company),
 source-available installer, commercial rights reserved. Not open source — see [License](#license).
 
 > 🚧 **Pre-release — do NOT `curl | bash` yet.** The bundle is not production-signed,
@@ -91,21 +91,24 @@ you for your understanding.
 ## License
 
 PrivOS is licensed under the **PrivOS Community License 1.0** (see [`LICENSE`](./LICENSE)), a
-[fair-code](https://faircode.io) license derived from the Elastic License 2.0: the source of the
-installer is available and the software is free to use within the Community tier, while commercial,
-hosted-service, and redistribution rights are reserved. It is **not an Open Source license** — like
+[fair-code](https://faircode.io) license: the source of the installer is available and the software
+is free to use within the Community tier, while commercial, hosted-service, and redistribution
+rights are reserved. Plain-English answers: [`LICENSE-FAQ.md`](./LICENSE-FAQ.md). It is **not an Open Source license** — like
 n8n's Sustainable Use License, it limits *how* the software may be used, which the OSI definition
 does not allow.
 
-- **Free Community tier:** production use with up to **10 Active Human Users** per deployment
-  (bots, integrations and AI agents never count).
-- **More than 10 users:** requires a Commercial License Key from Roxane INC — activate at
+- **Free Community tier:** production use with up to **10 Active Human Users** — people who
+  sign in with an account — counted across all deployments your company runs (bots,
+  integrations, AI agents, and guests who never sign in do not count).
+- **More than 10 users:** requires a Commercial License Key from Roxane, Inc. — activate at
   `https://client.privos.io/self-hosted/activate`.
 - **Hosted/managed services (SaaS) and commercial redistribution** of PrivOS or modified versions
   require a Partner License.
 - Giving an unmodified copy to someone for free, and charging for your own installation or support
   services, is allowed — each deployment is its own licensee.
 
-Portions of PrivOS Hub are derived from Rocket.Chat and remain under the MIT License; third-party
-components keep their own licenses (shipped inside the images as `NOTICE` / `OPEN-SOURCE-NOTICES.txt`).
-Licensing inquiries: legal@privos.ai · Licensor: Roxane INC (Delaware, USA).
+Portions of PrivOS Hub are derived from Rocket.Chat 7.9.1 and remain under the MIT License
+(byte-identical upstream files: [`rocketchat-upstream-files.txt`](./rocketchat-upstream-files.txt));
+third-party components keep their own licenses ([`NOTICE`](./NOTICE), [`OPEN-SOURCE-NOTICES`](./OPEN-SOURCE-NOTICES)).
+Trademarks: [`TRADEMARK.md`](./TRADEMARK.md). Contributions require the [CLA](./CLA.md).
+Licensing inquiries: legal@privos.ai · Licensor: Roxane, Inc. (Delaware, USA).
