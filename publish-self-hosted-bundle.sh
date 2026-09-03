@@ -40,7 +40,10 @@ IMAGE_REFS=(
   "redis|redis:7.2-alpine|__REDIS_DIGEST__"
   "minio|minio/minio:RELEASE.2025-04-08T15-41-24Z|__MINIO_DIGEST__"
   "minioMc|minio/mc:RELEASE.2025-04-08T15-39-49Z|__MINIO_MC_DIGEST__"
-  "weaviate|cr.weaviate.io/semitechnologies/weaviate:1.38.2|__WEAVIATE_DIGEST__"
+  # Digest-pinned: cr.weaviate.io enforces a strict unauthenticated pull rate
+  # limit that blocks digest resolution from developer machines. Pin explicitly
+  # (resolved on the fleet build host) and bump alongside the tag.
+  "weaviate|cr.weaviate.io/semitechnologies/weaviate:1.38.2@sha256:9969db903c76cbaf17f40b7b33d3432e111c494713d1065ee050d742aeeaebfe|__WEAVIATE_DIGEST__"
   "localRuntimeDriver|ghcr.io/privos-ai/privos-local-runtime-driver:v1|__LOCAL_RUNTIME_DRIVER_DIGEST__"
 )
 
@@ -171,6 +174,11 @@ run_check() {
 
 resolve_digest() {
   local ref="$1" digest
+  # A ref already pinned by @sha256: is authoritative — return it without any
+  # registry call. This also lets an image be pinned when the publishing host
+  # cannot reach its upstream (e.g. a rate-limited third-party registry); the
+  # digest is still verified downstream by install.sh's digest-pinned pull.
+  if [[ "$ref" == *@sha256:* ]]; then printf '%s' "${ref##*@}"; return 0; fi
   require_cmd docker
   digest="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"')"
   if [[ -z "$digest" ]] && command -v crane >/dev/null 2>&1; then
