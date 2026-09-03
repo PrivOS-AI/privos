@@ -31,7 +31,7 @@
     },
     "redis": {
       "repository": "redis",
-      "tag": "7-alpine",
+      "tag": "7.2-alpine",
       "digest": "__REDIS_DIGEST__"
     },
     "minio": {
@@ -62,6 +62,10 @@
     "install.sh": { "sha256": null },
     "minio-init.sh": { "sha256": null },
     "docker-user-rules.sh": { "sha256": null },
-    "LICENSE": { "sha256": null }
+    "LICENSE": { "sha256": null },
+    "NOTICE": { "sha256": null },
+    "OPEN-SOURCE-NOTICES": { "sha256": null },
+    "rocketchat-upstream-files.txt": { "sha256": null },
+    "TRADEMARK.md": { "sha256": null }
   }
 }

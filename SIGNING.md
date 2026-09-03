@@ -96,23 +96,28 @@ minisign -G -f -W -p infra/self-hosted/.secrets/dev-minisign.pub \
 ## What minisign covers, and what it does not
 
 `install.sh` minisig-verifies `compose.yml` and `versions.json` directly.
-`minio-init.sh` and `docker-user-rules.sh` are **not** separately minisig-signed
-— they are hash-pinned instead: `versions.json`'s `files{}` block (itself
-inside the signature) carries a sha256 for each, and `install.sh`
-(`verify_bundle_integrity`) checks both files against that hash *before*
-either is installed, mounted into a container, or executed as root. Treat a
-change to either file the same as a change to `compose.yml`: it only takes
-effect once `publish-self-hosted-bundle.sh` re-hashes it into a freshly
-signed `versions.json`.
+`minio-init.sh`, `docker-user-rules.sh`, `LICENSE`, `NOTICE`,
+`OPEN-SOURCE-NOTICES`, `rocketchat-upstream-files.txt`, and `TRADEMARK.md`
+are **not** separately minisig-signed — they are hash-pinned instead:
+`versions.json`'s `files{}` block (itself inside the signature) carries a
+sha256 for each, and `install.sh` (`verify_bundle_integrity`) checks every one
+of them against that hash *before* any is installed, mounted into a
+container, executed as root, or (the five license/notice files) presented to
+the operator as the text that was actually signed. Treat a change to any of
+them the same as a change to `compose.yml`: it only takes effect once
+`publish-self-hosted-bundle.sh` re-hashes it into a freshly signed
+`versions.json`.
 
 **`install.sh` itself is not minisig-signed.** It is fetched over
 `https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh`
 (TLS-from-GitHub, no application-level integrity check) and is the thing
 that *performs* the minisign verification —
 it cannot verify itself. The minisign boundary protects the bundle
-(`compose.yml`, `versions.json`, and by extension `minio-init.sh` /
-`docker-user-rules.sh`) it downloads and runs; TLS is the only protection on
-`install.sh` in transit. An operator who wants a stronger guarantee on
+(`compose.yml`, `versions.json`, and by extension `minio-init.sh`,
+`docker-user-rules.sh`, `LICENSE`, `NOTICE`, `OPEN-SOURCE-NOTICES`,
+`rocketchat-upstream-files.txt`, and `TRADEMARK.md`) it downloads and runs;
+TLS is the only protection on `install.sh` in transit. An operator who wants
+a stronger guarantee on
 `install.sh` itself should download it, verify its sha256 out-of-band (e.g.
 against a value published on a different channel), and run the local copy
 instead of piping directly from `curl`.

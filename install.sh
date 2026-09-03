@@ -83,7 +83,7 @@ PROJECT_NAME="privos"
 NETWORK_NAME="privos-sandbox-net"
 STACK_READY_TIMEOUT_SEC=600
 
-BUNDLE_FILES=(compose.yml versions.json minio-init.sh docker-user-rules.sh LICENSE)
+BUNDLE_FILES=(compose.yml versions.json minio-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md)
 SIGNED_FILES=(compose.yml versions.json)
 # Not directly minisig-signed, but versions.json's files{} block (itself
 # covered by the versions.json signature) carries a sha256 for each of
@@ -92,7 +92,10 @@ SIGNED_FILES=(compose.yml versions.json)
 # root / with root-equivalent access (systemd unit + iptables; MinIO root
 # creds in the mc container); LICENSE is hashed the same way so the text an
 # operator accepts can never silently diverge from what was actually signed.
-UNSIGNED_HASHED_FILES=(minio-init.sh docker-user-rules.sh LICENSE)
+# NOTICE/OPEN-SOURCE-NOTICES/rocketchat-upstream-files.txt/TRADEMARK.md are
+# on the same trust path for the same reason: NOTICE requires all five files
+# to be passed on together, so none of them may be swapped after signing.
+UNSIGNED_HASHED_FILES=(minio-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md)
 LICENSE_MARKER_FILE=".license-accepted"
 LICENSE_VERSION="PCL-1.0"
 MAX_PORT_RANGE_SPAN=5000
@@ -175,9 +178,13 @@ Flags:
   -h, --help                Show this help
 
 License: PrivOS Community License 1.0 (PCL-1.0) — free for up to 10 Active
-Human Users; larger deployments, hosted/managed services, and commercial
-redistribution require a license from Roxane INC (legal@privos.ai). Full
-text: https://github.com/PrivOS-AI/privos/blob/main/LICENSE
+Human Users (people who sign in with an account; bots, integrations, AI
+agents, and guests who never sign in do not count), counted across all
+deployments your company runs. More than that, hosted/managed services, and
+commercial redistribution require a license from Roxane, Inc.
+(legal@privos.ai). Full text: <install dir>/LICENSE (default /opt/privos) and
+https://github.com/PrivOS-AI/privos/blob/main/LICENSE — plain-English FAQ:
+https://github.com/PrivOS-AI/privos/blob/main/LICENSE-FAQ.md
 USAGE
 }
 
@@ -334,11 +341,14 @@ license_already_accepted() {
 print_license_notice() {
   cat >&2 <<EOF
 
-PrivOS is licensed under the PrivOS Community License 1.0 (free for up to 10
-Active Human Users; larger deployments, hosted/managed services and
-commercial redistribution require a license from Roxane INC). Full text:
-https://github.com/PrivOS-AI/privos/blob/main/LICENSE and ${PRIVOS_DIR}/LICENSE
-after install.
+PrivOS is licensed under the PrivOS Community License 1.0: free for up to 10
+Active Human Users — people who sign in with an account — counted across all
+deployments your company runs; bots, integrations, AI agents, and guests who
+never sign in do not count. More than that, hosted/managed services, and
+commercial redistribution require a license from Roxane, Inc. Full text:
+${PRIVOS_DIR}/LICENSE (after install) and
+https://github.com/PrivOS-AI/privos/blob/main/LICENSE — plain-English FAQ:
+https://github.com/PrivOS-AI/privos/blob/main/LICENSE-FAQ.md
 
 EOF
 }
@@ -980,7 +990,8 @@ main() {
   set_stage "fetching and verifying the bundle"
   fetch_bundle "$PRIVOS_DIR"
   verify_bundle_integrity "$PRIVOS_DIR"
-  chmod 0644 "$PRIVOS_DIR/LICENSE"
+  chmod 0644 "$PRIVOS_DIR/LICENSE" "$PRIVOS_DIR/NOTICE" "$PRIVOS_DIR/OPEN-SOURCE-NOTICES" \
+    "$PRIVOS_DIR/rocketchat-upstream-files.txt" "$PRIVOS_DIR/TRADEMARK.md"
 
   COMPOSE_FILE="$PRIVOS_DIR/compose.yml"
   ENV_FILE="$PRIVOS_DIR/.env"

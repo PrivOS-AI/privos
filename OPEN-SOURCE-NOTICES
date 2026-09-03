@@ -49,10 +49,8 @@ MongoDB Community Server
   Note:      See section 2. MongoDB is a trademark of MongoDB, Inc.
 
 Redis
-  Image:     redis:7-alpine (Docker Hub library/redis)
-  License:   BSD 3-Clause for Redis 7.2.x. Redis 7.4 and later are dual-licensed
-             RSALv2 / SSPLv1 — the exact version is the digest pinned in
-             versions.json at publish; if it resolves to 7.4+, see section 2.
+  Image:     redis:7.2-alpine (Docker Hub library/redis)
+  License:   BSD 3-Clause
   Notice:    Copyright (c) Redis Ltd. and contributors.
   Source:    https://github.com/redis/redis
   Conveyed:  Not conveyed by Roxane. Your deployment pulls this image from Docker Hub (library/redis) at

@@ -24,6 +24,7 @@ MINISIGN_KEY=""
 BUNDLE_VERSION=""
 DRY_RUN="true"
 CHECK_ONLY="false"
+SKIP_SBOM="false"
 
 # GitHub Release tag naming — install.sh's baked BUNDLE_RELEASE_TAG (and any
 # --version override a user passes) must match this exactly, since
@@ -36,7 +37,7 @@ IMAGE_REFS=(
   "sandboxProxy|ghcr.io/privos-ai/privos-sandbox-proxy|__SANDBOX_PROXY_DIGEST__"
   "sandboxVm|ghcr.io/privos-ai/privos-sandbox-vm|__SANDBOX_VM_DIGEST__"
   "mongo|mongo:7.0.14|__MONGO_DIGEST__"
-  "redis|redis:7-alpine|__REDIS_DIGEST__"
+  "redis|redis:7.2-alpine|__REDIS_DIGEST__"
   "minio|minio/minio:RELEASE.2025-04-08T15-41-24Z|__MINIO_DIGEST__"
   "minioMc|minio/mc:RELEASE.2025-04-08T15-39-49Z|__MINIO_MC_DIGEST__"
   "weaviate|cr.weaviate.io/semitechnologies/weaviate:1.38.2|__WEAVIATE_DIGEST__"
@@ -44,7 +45,13 @@ IMAGE_REFS=(
 )
 
 SIGNED_FILES=(compose.yml versions.json)
-HASHED_FILES=(compose.yml install.sh minio-init.sh docker-user-rules.sh LICENSE)
+HASHED_FILES=(compose.yml install.sh minio-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md)
+
+# OPEN-SOURCE-NOTICES ships with two release-time template tokens that must
+# never reach a published bundle unresolved (see fill_open_source_notices_tokens
+# / run_check below).
+OSN_STACK_VERSION_TOKEN="__PRIVOS_STACK_VERSION__"
+OSN_SBOM_TOKEN="__SBOM_LICENSE_INVENTORY__"
 
 log()  { printf '[publish-bundle] %s\n' "$*" >&2; }
 die()  { printf '[publish-bundle] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -60,8 +67,12 @@ publish-self-hosted-bundle.sh — resolve digests, sign, publish the bundle.
   --bundle-dir <path>       Directory containing the bundle source (default: this script's dir)
   --yes                     Actually push/release (default: dry-run, prints the plan only)
   --check                   Verify an already-published bundle dir: signatures valid, no
-                             placeholder digests remain, files{}.sha256 matches disk. No key
+                             placeholder digests remain, files{}.sha256 matches disk, no
+                             unresolved OPEN-SOURCE-NOTICES template tokens. No key
                              needed; exits non-zero on the first failure.
+  --skip-sbom               Publish without a syft-generated SBOM license inventory —
+                             OPEN-SOURCE-NOTICES gets an explicit "not generated" note
+                             instead. Without this flag, publishing requires syft.
   -h, --help                Show this help
 USAGE
 }
@@ -90,6 +101,7 @@ parse_args() {
       --bundle-dir) BUNDLE_DIR="${2:?}"; shift 2 ;;
       --yes) DRY_RUN="false"; shift ;;
       --check) CHECK_ONLY="true"; shift ;;
+      --skip-sbom) SKIP_SBOM="true"; shift ;;
       -h|--help) usage; exit 0 ;;
       *) die "unknown flag: $1 (see --help)" ;;
     esac
@@ -141,6 +153,15 @@ run_check() {
   done
   log "OK: versions.json file hashes match disk"
 
+  [[ -f OPEN-SOURCE-NOTICES ]] || die "missing OPEN-SOURCE-NOTICES"
+  if grep -qF -- "$OSN_STACK_VERSION_TOKEN" OPEN-SOURCE-NOTICES; then
+    die "OPEN-SOURCE-NOTICES still has the unresolved ${OSN_STACK_VERSION_TOKEN} token"
+  fi
+  if grep -qF -- "$OSN_SBOM_TOKEN" OPEN-SOURCE-NOTICES; then
+    die "OPEN-SOURCE-NOTICES still has the unresolved ${OSN_SBOM_TOKEN} token"
+  fi
+  log "OK: OPEN-SOURCE-NOTICES has no unresolved template tokens"
+
   log "--check passed."
 }
 
@@ -178,6 +199,91 @@ resolve_all_digests() {
 }
 
 # ---------------------------------------------------------------------------
+# OPEN-SOURCE-NOTICES release-time token fill: __PRIVOS_STACK_VERSION__ and
+# __SBOM_LICENSE_INVENTORY__ (section 4 — full dependency inventory) must
+# never reach a published bundle unresolved. Done only in the publish-dir
+# copy (never the source file in BUNDLE_DIR) — run_check() enforces that
+# neither token survives.
+# ---------------------------------------------------------------------------
+
+# Generates "name  version  license" rows per ghcr.io/privos-ai/* image
+# (grouped per image, sorted), via `syft <image@digest> -o json`. Only images
+# Roxane builds and conveys get an inventory here — third-party images
+# (mongo, redis, minio, weaviate) are already covered by OPEN-SOURCE-NOTICES
+# section 1, which states they are pulled by the deployment, not conveyed.
+build_sbom_inventory() {
+  require_cmd syft
+  require_cmd jq
+  local entry name ref_template placeholder digest repo ref json rows section=""
+  for entry in "${IMAGE_REFS[@]}"; do
+    IFS='|' read -r name ref_template placeholder <<<"$entry"
+    [[ "$ref_template" == ghcr.io/privos-ai/* ]] || continue
+    digest="${RESOLVED_DIGEST[$name]:-}"
+    [[ -n "$digest" ]] || die "no resolved digest for ${name} — cannot generate its SBOM inventory"
+    repo="${ref_template%%:*}"
+    ref="${repo}@${digest}"
+    log "Generating SBOM inventory for ${ref}…"
+    json="$(syft "$ref" -o json 2>/dev/null)" || die "syft failed to generate an SBOM for ${ref}"
+    rows="$(jq -r '
+        [ .artifacts[]? |
+          {
+            name: (.name // "unknown"),
+            version: (.version // "unknown"),
+            license: ((.licenses // []) | map(if type == "string" then . else (.value // .spdxExpression // "unknown") end) | unique | join(", "))
+          }
+        ]
+        | unique_by(.name, .version, .license)
+        | sort_by(.name, .version)
+        | .[]
+        | [.name, .version, (if .license == "" then "unknown" else .license end)]
+        | @tsv
+      ' <<<"$json" | awk -F'\t' '{printf "  %-40s %-24s %s\n", $1, $2, $3}')"
+    section+="$(printf '%s (%s)\n' "$repo" "$digest")"
+    section+=$'\n'
+    section+="$rows"
+    section+=$'\n\n'
+  done
+  printf '%s' "$section"
+}
+
+# Replaces a standalone-line placeholder ($2) with (possibly multi-line)
+# content ($3) — used for __SBOM_LICENSE_INVENTORY__, which occupies its own
+# line. awk (not sed) because the replacement text is multi-line and may
+# contain sed-special characters (/, &, |).
+replace_placeholder_line() {
+  local file="$1" token="$2" content="$3"
+  awk -v token="$token" -v content="$content" '
+    $0 == token { print content; next }
+    { print }
+  ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+}
+
+fill_open_source_notices_tokens() {
+  local work="$1"
+  local f="$work/OPEN-SOURCE-NOTICES" sbom_text
+  [[ -f "$f" ]] || die "missing OPEN-SOURCE-NOTICES in bundle source"
+
+  sed -i.bak "s|${OSN_STACK_VERSION_TOKEN}|${STACK_VERSION}|g" "$f"
+  rm -f "$f.bak"
+  if grep -qF -- "$OSN_STACK_VERSION_TOKEN" "$f"; then
+    die "failed to fill ${OSN_STACK_VERSION_TOKEN} in OPEN-SOURCE-NOTICES"
+  fi
+
+  if [[ "$SKIP_SBOM" == "true" ]]; then
+    sbom_text="SBOM inventory not generated for this release (published with --skip-sbom)."
+  elif command -v syft >/dev/null 2>&1; then
+    sbom_text="$(build_sbom_inventory)"
+  else
+    die "syft is required to generate the SBOM license inventory (see https://github.com/anchore/syft#installation for install instructions), or pass --skip-sbom to publish without one."
+  fi
+
+  replace_placeholder_line "$f" "$OSN_SBOM_TOKEN" "$sbom_text"
+  if grep -qF -- "$OSN_SBOM_TOKEN" "$f"; then
+    die "failed to fill ${OSN_SBOM_TOKEN} in OPEN-SOURCE-NOTICES"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Rewrite compose.yml / versions.json with resolved digests, then sign
 # ---------------------------------------------------------------------------
 
@@ -187,7 +293,8 @@ apply_digests_and_sign() {
 
   cp "$BUNDLE_DIR/compose.yml" "$work/compose.yml"
   cp "$BUNDLE_DIR/versions.json" "$work/versions.json"
-  for f in install.sh minio-init.sh docker-user-rules.sh env.template SIGNING.md LICENSE; do
+  for f in install.sh minio-init.sh docker-user-rules.sh env.template SIGNING.md \
+    LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md; do
     cp "$BUNDLE_DIR/$f" "$work/$f"
   done
 
@@ -208,6 +315,11 @@ apply_digests_and_sign() {
     sed -i.bak "s|${placeholder}|${digest#sha256:}|g" "$work/compose.yml"
     rm -f "$work/compose.yml.bak"
   done
+
+  # OPEN-SOURCE-NOTICES token fill happens in this publish-dir copy only,
+  # and before HASHED_FILES is hashed below, so the recorded sha256 covers
+  # the FINAL text — never the source file's placeholders.
+  fill_open_source_notices_tokens "$work"
 
   json="$(cat "$work/versions.json")"
   json="$(jq --arg sv "$STACK_VERSION" --arg bv "${BUNDLE_VERSION:-$STACK_VERSION}" \
@@ -268,6 +380,10 @@ publish() {
     "$work/env.template"
     "$work/SIGNING.md"
     "$work/LICENSE"
+    "$work/NOTICE"
+    "$work/OPEN-SOURCE-NOTICES"
+    "$work/rocketchat-upstream-files.txt"
+    "$work/TRADEMARK.md"
   )
 
   if [[ "$DRY_RUN" == "true" ]]; then
