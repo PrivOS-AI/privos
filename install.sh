@@ -286,6 +286,17 @@ detect_platform() {
   log "Platform: ${os} ${arch}"
 }
 
+# Everything the trust chain and secret generation call: a stock Ubuntu/Debian
+# image ships neither jq nor minisign, and a missing binary would otherwise
+# surface as "signature verification FAILED" after the license was accepted.
+require_host_tools() {
+  local missing=() c
+  for c in curl jq minisign openssl; do
+    command -v "$c" >/dev/null 2>&1 || missing+=("$c")
+  done
+  (( ${#missing[@]} == 0 )) || die "missing host tools: ${missing[*]} — install them first (Debian/Ubuntu: apt-get install -y ${missing[*]}) and re-run."
+}
+
 check_docker_version() {
   command -v docker >/dev/null 2>&1 || return 1
   local ver major
@@ -489,7 +500,6 @@ verify_bundle_file_hash() {
 # versions.json. Must run to completion before anything in $dir is used.
 verify_bundle_integrity() {
   local dir="$1" f
-  require_cmd jq
   for f in "${SIGNED_FILES[@]}"; do
     verify_signature "$dir/$f"
   done
@@ -963,6 +973,7 @@ main() {
   require_root
   warn_if_dev_signing_key
   detect_platform
+  require_host_tools
   ensure_docker
   check_resources
   resolve_bundle_source
@@ -983,7 +994,7 @@ main() {
   require_license_acceptance
 
   set_stage "creating directories"
-  mkdir -p "$PRIVOS_DIR"/data/{mongo,minio,hub-uploads,sandbox-board,sandbox-proxy,sandbox-pool,weaviate,local-runtime-socket,local-runtime-state}
+  mkdir -p "$PRIVOS_DIR"/data/{mongo,minio,hub-uploads,hub-marketplace/apps,sandbox-board,sandbox-proxy,sandbox-pool,weaviate,local-runtime-socket,local-runtime-state}
   mkdir -p "$PRIVOS_DIR"/secrets
   write_license_marker
 
@@ -1004,6 +1015,10 @@ main() {
   set_stage "network + firewall setup"
   ensure_network
   chown -R 1001:1001 "$PRIVOS_DIR/data/sandbox-board" "$PRIVOS_DIR/data/sandbox-proxy" "$PRIVOS_DIR/data/sandbox-pool"
+  # Hub (uid 1001) writes uploads and marketplace artifacts; the driver reads
+  # apps/ as uid 1001 too and requires 0750 on it (compose-ssh-driver parity).
+  chown 1001:1001 "$PRIVOS_DIR/data/hub-uploads" "$PRIVOS_DIR/data/hub-marketplace" "$PRIVOS_DIR/data/hub-marketplace/apps"
+  chmod 0750 "$PRIVOS_DIR/data/hub-marketplace/apps"
   install_docker_user_rules
 
   set_stage "bringing up the stack (docker compose)"
