@@ -437,8 +437,8 @@ Key, that complies with Limitation 1.
 "Active Human User" means a natural person who, on or at any time during the
 thirty (30) days preceding any date on which the software is used:
 
-  (a) has accessed or interacted with a deployment, including without a user
-      account, as a guest or anonymously, and including through an embedded,
+  (a) has signed in to a deployment with a user account and accessed or
+      interacted with it while signed in, including through an embedded,
       proxied, or white-labeled interface;
 
   (b) has directed a bot, integration, application, or AI agent that acts on a
@@ -446,15 +446,20 @@ thirty (30) days preceding any date on which the software is used:
 
   (c) is you, is within your company, is an employee or contractor of you or
       your company, or otherwise performs work for or on behalf of you or your
-      company, and has submitted content or a request to a deployment, or has
-      had content or a request submitted to a deployment on that person's
-      behalf, whether directly, through any other system, or by any route that
-      delivers it to a deployment.
+      company, holds a user account on a deployment, and has submitted content
+      or a request to that deployment through that account, whether directly or
+      through another system that acts under that account.
 
 A natural person directs an agent under (b) if that person gives the agent
 instructions or requests through the software or through an interface to a
 deployment, and the agent carries them out on a deployment. Paragraph (c)
-governs instructions and requests given through any other system.
+governs instructions and requests given through any other system under that
+person's user account.
+
+A natural person who holds no user account on any deployment — including a
+guest or anonymous visitor, and a person who reaches a deployment only through
+an embedded, proxied, or white-labeled interface without signing in — is not an
+Active Human User.
 
 Where several natural persons use the software through one user account, each
 of them is counted separately. A bot, integration, application, or AI agent is

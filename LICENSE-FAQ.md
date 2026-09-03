@@ -36,19 +36,21 @@ have not committed to a date.
 
 ### What does "10 Active Human Users" count?
 
-**People, not accounts.** Any natural person who used PrivOS in the last 30
-days counts once, however many deployments they touch.
+**People with accounts, not logins.** Any natural person who signed in to
+PrivOS with a user account and used it in the last 30 days counts once, however
+many accounts or deployments they use.
 
 - Someone who has not used PrivOS in the last 30 days: not counted.
 - A bot, integration, or AI agent: never counted as a user in itself.
 - A person who *directs* an agent through PrivOS or an interface to it —
   counted, as one person.
 - One shared login used by four people: counts as four.
-- Guests, anonymous access, and people reaching PrivOS through a widget or a
-  front end you built: counted — they are accessing a deployment.
+- Guests, anonymous visitors, and people reaching PrivOS through a widget or a
+  front end you built *without signing in to a user account*: not counted. Only
+  people who sign in with an account count.
 - Your own people, and anyone doing work for you (contractors, agencies,
-  outsourced teams), whose content or requests reach PrivOS: counted, whichever
-  system they send them through.
+  outsourced teams), who hold an account and send content or requests through
+  it — directly, or via another system acting under that account: counted.
 - Someone outside your company who emails you and whose message you relay into
   PrivOS: not counted. They never access the deployment and they are not
   working for you.
@@ -82,8 +84,9 @@ other people, or putting your brand on it.
 
 ### Do our customers or external guests count?
 
-Yes, they count, whether or not you give them accounts. And there is a second
-question behind that one: if what you are doing is providing PrivOS to them,
+Only if you give them a user account and they sign in. Anonymous or guest
+access without an account does not count. But there is a second question behind
+that one: if what you are doing is providing PrivOS to them,
 Limitation 3 requires a Partner License regardless of how few of them there
 are. Giving three partner-company colleagues an account in your workspace is
 collaboration. Putting a PrivOS-powered chat in front of your customers is a

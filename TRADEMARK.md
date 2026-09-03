@@ -10,7 +10,9 @@ itself grants none. Questions: legal@privos.ai
 ## The marks
 
 "PrivOS", the PrivOS logo, and "PrivOS Hub" are trademarks of Roxane, Inc.
-__TRADEMARK_REGISTRATION_STATUS__
+The PrivOS marks are currently unregistered; Roxane, Inc. asserts common-law
+trademark rights in them. This paragraph will be updated when a registration
+application is filed or granted.
 
 The software license and the trademark are separate. The PrivOS Community
 License lets you use, copy, and modify the software. Any right to use the marks
