@@ -63,34 +63,19 @@ minisign -G -p privos-self-hosted.pub -s privos-self-hosted.key
   published signature as untrusted going forward — `install.sh` has no
   key-rotation/trust-on-first-use logic, it hardcodes exactly one public key.
 
-## DEV-ONLY scaffold keypair (this task)
+## DEV-ONLY scaffold keypair (tests only)
 
-For local development and the `tests/` signature-verify fixtures, a
-throwaway keypair was generated with **no password** (`-W`) and lives at
-`infra/self-hosted/.secrets/` (gitignored — see `.gitignore` in this
-directory):
-
-```
-infra/self-hosted/.secrets/dev-minisign.key   # DEV-ONLY, unencrypted, disposable
-infra/self-hosted/.secrets/dev-minisign.pub   # embedded in install.sh as the DEV default
-```
-
-`install.sh` embeds this DEV public key with an explicit
-`MINISIGN_PUBLIC_KEY_IS_DEV_ONLY=true` marker and an unmissable comment —
-**this key must be replaced before any real publish.** With the marker set,
-`install.sh` **refuses to run** (fails closed with a clear error) unless
-explicitly overridden with `--allow-dev-signing-key` or
-`PRIVOS_ALLOW_DEV_KEY=1` — a disposable DEV key must never become an
-install's trust root just because someone scrolled past a warning under
-`curl | bash`. The escape hatch exists purely so
-`publish-self-hosted-bundle.sh --check` and the `tests/` signature fixtures
-have something to sign against without a human generating a real keypair
-first. Regenerate at any time with:
+A throwaway, un-passphrased keypair lives at `infra/self-hosted/.secrets/`
+(gitignored) and is used **only** by the `tests/` signature fixtures. It is
+**not** embedded in `install.sh` any more (the production key above is), and
+`MINISIGN_PUBLIC_KEY_IS_DEV_ONLY` is `false`. The `--allow-dev-signing-key` /
+`PRIVOS_ALLOW_DEV_KEY=1` escape hatch remains in `install.sh` for local test
+builds that deliberately re-embed a dev key. Regenerate the fixture key with:
 
 ```bash
 minisign -G -f -W -p infra/self-hosted/.secrets/dev-minisign.pub \
   -s infra/self-hosted/.secrets/dev-minisign.key \
-  -c "PrivOS self-hosted bundle DEV-ONLY signing key (scaffold, not for production)"
+  -c "PrivOS self-hosted bundle DEV-ONLY signing key (tests only)"
 ```
 
 ## What minisign covers, and what it does not
@@ -122,13 +107,13 @@ a stronger guarantee on
 against a value published on a different channel), and run the local copy
 instead of piping directly from `curl`.
 
-## Before production go-live
+## Before each publish
 
-1. Generate the real keypair as above (offline, password-protected).
-2. Replace the `MINISIGN_PUBLIC_KEY` in `install.sh` and
-   `docs/self-hosted-install.md` with the real public key; delete the
-   `MINISIGN_PUBLIC_KEY_IS_DEV_ONLY` marker.
-3. Run `publish-self-hosted-bundle.sh` with `--minisign-key <path to the real
-   secret key>` (never the DEV key) to resolve digests, sign, and publish.
-4. Confirm `infra/self-hosted/.secrets/` never left this machine and is not
-   referenced anywhere in the published artifacts.
+1. Sign with the production key: `--minisign-key ~/.ssh/privos-minisign.key`
+   (never the tests-only key in `.secrets/`).
+2. `publish-self-hosted-bundle.sh --check` on the assembled bundle must pass:
+   signatures, real `@sha256` digests, file hashes, and no leftover
+   `__PRIVOS_STACK_VERSION__` / `__SBOM_LICENSE_INVENTORY__` tokens in
+   `OPEN-SOURCE-NOTICES` (use `syft`, or `--skip-sbom` only with a reason).
+3. Confirm `infra/self-hosted/.secrets/` and `~/.ssh/privos-minisign.key` are
+   not referenced anywhere in the published artifacts.
