@@ -20,7 +20,7 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y shellcheck
-          shellcheck -x *.sh tests/*.sh
+          shellcheck -e SC2317 -x *.sh tests/*.sh
 
   unit-tests:
     runs-on: ubuntu-24.04

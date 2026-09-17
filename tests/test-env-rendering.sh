@@ -32,7 +32,7 @@ COMPOSE_PROFILES="knowledge-vector"
 
 write_env_file "$WORK/.env"
 
-mode="$(stat -f '%Lp' "$WORK/.env" 2>/dev/null || stat -c '%a' "$WORK/.env" 2>/dev/null)"
+mode="$(stat -c '%a' "$WORK/.env" 2>/dev/null || stat -f '%Lp' "$WORK/.env" 2>/dev/null)"
 assert_eq "600" "$mode" "write_env_file: file mode is 0600"
 
 content="$(cat "$WORK/.env")"
