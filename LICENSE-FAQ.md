@@ -180,7 +180,7 @@ clicking; talk to legal@privos.ai.
 
 ## Third-party software and data
 
-### PrivOS ships MongoDB, Redis, MinIO. What licenses are those under?
+### PrivOS ships MongoDB, Redis, RustFS. What licenses are those under?
 
 Their own, listed in [OPEN-SOURCE-NOTICES](OPEN-SOURCE-NOTICES) together with
 where to get their source. We do not license them to you and cannot grant you
@@ -190,7 +190,7 @@ Read the "network and service-side obligations" section of that file if you
 plan to make your deployment available to other people. Some of those
 components (AGPL, SSPL) place obligations on operators. A PrivOS Partner
 License covers PrivOS; it cannot waive obligations that belong to MongoDB,
-MinIO, or Redis.
+RustFS, or Redis.
 
 ### PrivOS Hub is based on Rocket.Chat. Does that make it MIT?
 

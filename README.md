@@ -8,7 +8,7 @@ source-available installer, commercial rights reserved. Not open source — see 
 > routes are not yet public or deployed. Published for review and integration only.
 
 Single-host Docker Compose install of **privos-hub + privos-sandbox** (mongo, redis,
-minio, board, proxy, VM pool) with host port-conflict detection, loopback-only exposure
+rustfs, board, proxy, VM pool) with host port-conflict detection, loopback-only exposure
 of internal services, minisign-verified bundle, and digest-pinned images. After install
 the hub prints a **license request code** to redeem at
 `https://client.privos.io/self-hosted/activate`.
@@ -35,10 +35,10 @@ Host prerequisites: Linux x86_64/arm64, Docker ≥ 24 with compose v2 (or pass `
 
 | File | Purpose |
 |---|---|
-| `install.sh` | Preflight, port checks, license acceptance, secret gen, MinIO init, DOCKER-USER rules, **minisign verify**, digest-pinned pull, wait + print request code |
+| `install.sh` | Preflight, port checks, license acceptance, secret gen, RustFS init, DOCKER-USER rules, **minisign verify**, digest-pinned pull, wait + print request code |
 | `compose.yml` | Fleet-renderer-matched stack; only the hub port public, sandbox plane on loopback; `knowledge-vector` / `local-runtime` opt-in profiles |
 | `env.template` | Documented knobs; secrets generated locally by the installer |
-| `minio-init.sh` | Bucket + scoped service account (mirrors the fleet provisioner) |
+| `rustfs-init.sh` | Bucket + scoped service account (mirrors the fleet provisioner) |
 | `docker-user-rules.sh` | Firewall rules so a later `ports:` edit can't expose the sandbox plane |
 | `versions.json` | Bundle version + `@sha256` image digests + file hashes (resolved at publish) |
 | `publish-self-hosted-bundle.sh` | Resolve digests, sign with minisign, publish a GitHub Release |
@@ -51,7 +51,7 @@ Host prerequisites: Linux x86_64/arm64, Docker ≥ 24 with compose v2 (or pass `
 The installer verifies a **minisign** signature over `versions.json` + `compose.yml`, checks
 every other bundle file against the sha256 hashes carried in the signed `versions.json`, and
 pulls images by immutable `@sha256` digest. Only the hub port is published on `0.0.0.0`;
-board, proxy, MinIO and the VM pool bind `127.0.0.1`. See `SIGNING.md` for the public key.
+board, proxy, RustFS and the VM pool bind `127.0.0.1`. See `SIGNING.md` for the public key.
 The current published key is **DEV-only**; production releases are re-signed with a securely
 held key. Found a vulnerability? Please email `security@privos.ai` rather than opening a
 public issue.
