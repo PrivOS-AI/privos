@@ -1,10 +1,10 @@
 # PrivOS self-hosted bundle — CI.
 #
-# This repository IS the published bundle: install.sh, compose.yml, env.template,
-# rustfs-init.sh and the rest live at the repo root (they are exactly what a
-# self-hoster downloads from a GitHub Release). Every path below is repo-root
-# relative. The mt-manage template this was copied from
-# (infra/self-hosted/tests/ci.yml) nests the same files under infra/self-hosted/.
+# This repository IS the published bundle: install.sh, compose.yml,
+# env.template, rustfs-init.sh and the rest live at the repo ROOT (exactly
+# what a self-hoster downloads from a GitHub Release), so every path below is
+# repo-root relative. Kept in sync with the mt-manage template
+# (infra/self-hosted/tests/ci.yml), which nests the same files one level down.
 name: self-hosted-bundle-ci
 
 on:
@@ -31,7 +31,9 @@ jobs:
       - name: Generate a throwaway DEV signing key (fixture for verify tests)
         run: |
           mkdir -p .secrets
-          minisign -G -W -f -p .secrets/dev-minisign.pub -s .secrets/dev-minisign.key
+          minisign -G -W -f \
+            -p .secrets/dev-minisign.pub \
+            -s .secrets/dev-minisign.key
       - name: Run bash unit tests
         run: bash tests/run-tests.sh
 
@@ -65,15 +67,19 @@ jobs:
             echo "VAPID_PRIVATE_KEY=dummy"
             echo "SANDBOX_API_KEY=dummy"
             echo "PRIVOS_DOCKER_SOCKET_GID=999"
+            echo "PRIVOS_APP_CLUSTER_BOOTSTRAP_TOKEN=dummy"
+            echo "PRIVOS_SECRET_STORE_KEY=dummy"
           } >> ci-dummy.env
           docker compose -f compose.yml --env-file ci-dummy.env config >/dev/null
-          docker compose -f compose.yml --env-file ci-dummy.env --profile knowledge-vector --profile local-runtime config >/dev/null
+          docker compose -f compose.yml --env-file ci-dummy.env --profile knowledge-vector --profile app-cluster config >/dev/null
           rm -f ci-dummy.env
 
   # Digest-pinned images are not resolvable until publish-self-hosted-bundle.sh
-  # has run for real (see SIGNING.md). A DinD smoke test that actually starts the
-  # stack therefore no-ops here: it only runs once every image in versions.json
-  # carries a real (non-placeholder) digest.
+  # has run for real (this task never does — see SIGNING.md
+  # and RENDERER-DIFF.md). A DinD smoke test that actually starts the stack
+  # therefore no-ops here: it only runs once every image in versions.json
+  # carries a real (non-placeholder) digest, which `publish-self-hosted-
+  # bundle.sh --check` verifies.
   dind-smoke:
     runs-on: ubuntu-24.04
     needs: [compose-config]
@@ -91,4 +97,7 @@ jobs:
       - name: docker compose up (public images only)
         if: steps.gate.outputs.run == 'true'
         run: |
-          echo "TODO: exercise install.sh end-to-end once G2/G3 (see the install docs) are live."
+          # A real run resolves PRIVOS_DOCKER_SOCKET_GID, generates secrets,
+          # etc. the way install.sh does — left as a follow-up once G3 (ghcr
+          # packages public) is green and a real bundle has been published.
+          echo "TODO: exercise install.sh end-to-end once G2/G3 (see docs/self-hosted-install.md) are live."
