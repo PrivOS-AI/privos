@@ -336,6 +336,7 @@ detect_platform() {
     *) die "unsupported architecture: ${arch} (supported: x86_64)." ;;
   esac
 
+  # shellcheck disable=SC1091  # /etc/os-release is absent at lint time; guarded by 2>/dev/null
   distro="$(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-${ID:-unknown}}")"
   [[ -n "$distro" ]] || distro="unknown"
   virt="$(systemd-detect-virt 2>/dev/null || true)"
@@ -887,7 +888,7 @@ auto_resolve_port_conflicts() {
         || die "no free port at or above ${cur} for ${name} — free one or pass a port flag/env."
       log "Port ${cur} (${name}) is in use — using ${new} instead (pin it with a flag/env to override)."
       printf -v "$var" '%s' "$new"
-      claimed[$(( ${#claimed[@]} - 1 ))]="$new"
+      claimed[${#claimed[@]} - 1]="$new"
     fi
   done
   if (( PORT_EXPLICIT_RANGE == 0 )); then
@@ -1269,6 +1270,7 @@ initiate_replica_set() {
   # root (an unauthenticated mongosh gets "requires authentication"). Expand the
   # credentials inside the container (they live there as MONGO_INITDB_ROOT_*),
   # never on the host command line, so they never reach the host's process list.
+  # shellcheck disable=SC2016  # $ expands inside the mongo container, not the host shell
   compose exec -T mongo sh -c '
     mongosh --quiet \
       -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" \
@@ -1288,6 +1290,7 @@ initiate_replica_set() {
 # blocks the install rather than silently proceeding blind.
 # ---------------------------------------------------------------------------
 guard_local_runtime_installations() {
+  # shellcheck disable=SC2016  # $ expands inside the mongo container, not the host shell
   compose exec -T mongo sh -c '
     mongosh --quiet \
       -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" \
