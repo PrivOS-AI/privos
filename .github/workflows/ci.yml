@@ -1,19 +1,15 @@
 # PrivOS self-hosted bundle — CI.
 #
-# NOT wired into this repository's own Actions (privos-mt-manage does not
-# publish the bundle; the controller publishes it separately — see the task
-# constraints in plans/). Copy this file to `.github/workflows/` in whichever
-# repo actually distributes `infra/self-hosted/` (adjust the checkout path
-# below to match) to get it running for real.
+# This repository IS the published bundle: install.sh, compose.yml,
+# env.template, rustfs-init.sh and the rest live at the repo ROOT (exactly
+# what a self-hoster downloads from a GitHub Release), so every path below is
+# repo-root relative. Kept in sync with the mt-manage template
+# (infra/self-hosted/tests/ci.yml), which nests the same files one level down.
 name: self-hosted-bundle-ci
 
 on:
   push:
-    paths:
-      - 'infra/self-hosted/**'
   pull_request:
-    paths:
-      - 'infra/self-hosted/**'
 
 jobs:
   shellcheck:
@@ -24,7 +20,7 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y shellcheck
-          shellcheck -x infra/self-hosted/*.sh infra/self-hosted/tests/*.sh
+          shellcheck -e SC2317 -x *.sh tests/*.sh
 
   unit-tests:
     runs-on: ubuntu-24.04
@@ -34,12 +30,12 @@ jobs:
         run: sudo apt-get update -y && sudo apt-get install -y minisign jq
       - name: Generate a throwaway DEV signing key (fixture for verify tests)
         run: |
-          mkdir -p infra/self-hosted/.secrets
+          mkdir -p .secrets
           minisign -G -W -f \
-            -p infra/self-hosted/.secrets/dev-minisign.pub \
-            -s infra/self-hosted/.secrets/dev-minisign.key
+            -p .secrets/dev-minisign.pub \
+            -s .secrets/dev-minisign.key
       - name: Run bash unit tests
-        run: bash infra/self-hosted/tests/run-tests.sh
+        run: bash tests/run-tests.sh
 
   compose-config:
     runs-on: ubuntu-24.04
@@ -48,7 +44,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: docker compose config (no pull, no build)
         run: |
-          cd infra/self-hosted
           cp env.template ci-dummy.env
           {
             echo "PRIVOS_DIR=/opt/privos"
@@ -72,13 +67,15 @@ jobs:
             echo "VAPID_PRIVATE_KEY=dummy"
             echo "SANDBOX_API_KEY=dummy"
             echo "PRIVOS_DOCKER_SOCKET_GID=999"
+            echo "PRIVOS_APP_CLUSTER_BOOTSTRAP_TOKEN=dummy"
+            echo "PRIVOS_SECRET_STORE_KEY=dummy"
           } >> ci-dummy.env
           docker compose -f compose.yml --env-file ci-dummy.env config >/dev/null
-          docker compose -f compose.yml --env-file ci-dummy.env --profile knowledge-vector --profile local-runtime config >/dev/null
+          docker compose -f compose.yml --env-file ci-dummy.env --profile knowledge-vector --profile app-cluster config >/dev/null
           rm -f ci-dummy.env
 
   # Digest-pinned images are not resolvable until publish-self-hosted-bundle.sh
-  # has run for real (this task never does — see infra/self-hosted/SIGNING.md
+  # has run for real (this task never does — see SIGNING.md
   # and RENDERER-DIFF.md). A DinD smoke test that actually starts the stack
   # therefore no-ops here: it only runs once every image in versions.json
   # carries a real (non-placeholder) digest, which `publish-self-hosted-
@@ -91,7 +88,7 @@ jobs:
       - name: Skip unless every image digest is resolved
         id: gate
         run: |
-          if grep -q '__[A-Z_]*_DIGEST__' infra/self-hosted/compose.yml; then
+          if grep -q '__[A-Z_]*_DIGEST__' compose.yml; then
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "Unresolved digest placeholders — bundle has not been published yet, skipping the live smoke test."
           else
@@ -100,7 +97,6 @@ jobs:
       - name: docker compose up (public images only)
         if: steps.gate.outputs.run == 'true'
         run: |
-          cd infra/self-hosted
           # A real run resolves PRIVOS_DOCKER_SOCKET_GID, generates secrets,
           # etc. the way install.sh does — left as a follow-up once G3 (ghcr
           # packages public) is green and a real bundle has been published.

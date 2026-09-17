@@ -30,7 +30,8 @@ POLICY_NAME="privos-rw"
 # rc takes the alias from RC_HOST_m (percent-encoded, so any generated secret
 # works); the root credential never becomes an rc argv inside this container.
 enc() { jq -rn --arg s "$1" '$s|@uri'; }
-export RC_HOST_m="${RUSTFS_URL%%://*}://$(enc "$RUSTFS_ROOT_USER"):$(enc "$RUSTFS_ROOT_PASSWORD")@${RUSTFS_URL#*://}"
+RC_HOST_m="${RUSTFS_URL%%://*}://$(enc "$RUSTFS_ROOT_USER"):$(enc "$RUSTFS_ROOT_PASSWORD")@${RUSTFS_URL#*://}"
+export RC_HOST_m
 
 rc bucket create "m/${RUSTFS_BUCKET}" >/dev/null
 

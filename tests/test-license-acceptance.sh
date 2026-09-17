@@ -84,7 +84,7 @@ assert_eq "true" "${LICENSE_ACCEPTED:-}" "require_license_acceptance: --yes sets
 write_license_marker
 assert_contains "$(cat "$PRIVOS_DIR/$LICENSE_MARKER_FILE" 2>/dev/null)" "$LICENSE_VERSION" \
   "write_license_marker: writes a marker containing the license version after --yes"
-marker_mode="$(stat -f '%Lp' "$PRIVOS_DIR/$LICENSE_MARKER_FILE" 2>/dev/null || stat -c '%a' "$PRIVOS_DIR/$LICENSE_MARKER_FILE" 2>/dev/null)"
+marker_mode="$(stat -c '%a' "$PRIVOS_DIR/$LICENSE_MARKER_FILE" 2>/dev/null || stat -f '%Lp' "$PRIVOS_DIR/$LICENSE_MARKER_FILE" 2>/dev/null)"
 assert_eq "644" "$marker_mode" "write_license_marker: marker file is mode 0644"
 
 # --- require_license_acceptance: --accept-license accepts too --------------
@@ -117,9 +117,9 @@ reset_flags
 ( require_license_acceptance </dev/null ) >/dev/null 2>&1
 assert_status 0 "$?" "require_license_acceptance: an existing marker succeeds even non-TTY with no flags"
 
-before_mtime="$(stat -f '%m' "$PRIVOS_DIR/$LICENSE_MARKER_FILE" 2>/dev/null || stat -c '%Y' "$PRIVOS_DIR/$LICENSE_MARKER_FILE" 2>/dev/null)"
+before_mtime="$(stat -c '%Y' "$PRIVOS_DIR/$LICENSE_MARKER_FILE" 2>/dev/null || stat -f '%m' "$PRIVOS_DIR/$LICENSE_MARKER_FILE" 2>/dev/null)"
 write_license_marker
-after_mtime="$(stat -f '%m' "$PRIVOS_DIR/$LICENSE_MARKER_FILE" 2>/dev/null || stat -c '%Y' "$PRIVOS_DIR/$LICENSE_MARKER_FILE" 2>/dev/null)"
+after_mtime="$(stat -c '%Y' "$PRIVOS_DIR/$LICENSE_MARKER_FILE" 2>/dev/null || stat -f '%m' "$PRIVOS_DIR/$LICENSE_MARKER_FILE" 2>/dev/null)"
 assert_eq "$before_mtime" "$after_mtime" "write_license_marker: does not rewrite an already-existing accepted marker"
 
 # --- BUNDLE_FILES / UNSIGNED_HASHED_FILES: LICENSE is on the C1 trust path -
