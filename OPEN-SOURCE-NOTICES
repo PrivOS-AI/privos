@@ -57,22 +57,21 @@ Redis
              install time; the bundle distributes only the image reference and
              its digest (see versions.json).
 
-MinIO Object Storage
-  Image:     minio/minio:RELEASE.2025-04-08T15-41-24Z
-  License:   GNU Affero General Public License, Version 3 (AGPL-3.0)
-  Notice:    Copyright (c) MinIO, Inc.
-  Source:    https://github.com/minio/minio
-  Conveyed:  Not conveyed by Roxane. Your deployment pulls this image from Docker Hub (minio/minio) at
+RustFS
+  Image:     ghcr.io/rustfs/rustfs:1.0.0-rc.6
+  License:   Apache License, Version 2.0
+  Notice:    Copyright the RustFS contributors.
+  Source:    https://github.com/rustfs/rustfs
+  Conveyed:  Not conveyed by Roxane. Your deployment pulls this image from ghcr.io (rustfs/rustfs) at
              install time; the bundle distributes only the image reference and
              its digest (see versions.json).
-  Note:      See section 2. MinIO is a trademark of MinIO, Inc.
 
-MinIO Client (mc)
-  Image:     minio/mc:RELEASE.2025-04-08T15-39-49Z
-  License:   GNU Affero General Public License, Version 3 (AGPL-3.0)
-  Notice:    Copyright (c) MinIO, Inc.
-  Source:    https://github.com/minio/mc
-  Conveyed:  Not conveyed by Roxane. Your deployment pulls this image from Docker Hub (minio/mc) at
+RustFS Client (rc)
+  Image:     docker.io/rustfs/rc:v0.1.35
+  License:   Apache License, Version 2.0
+  Notice:    Copyright the RustFS contributors.
+  Source:    https://github.com/rustfs/rustfs
+  Conveyed:  Not conveyed by Roxane. Your deployment pulls this image from Docker Hub (rustfs/rc) at
              install time; the bundle distributes only the image reference and
              its digest (see versions.json).
 
@@ -106,12 +105,6 @@ at no more than Roxane's cost of distribution, by writing to legal@privos.ai.
 
 Some components carry obligations that are triggered by making the software
 available to other people over a network, not by distributing it:
-
-MinIO and MinIO Client (AGPL-3.0), section 13
-  If you modify MinIO and make the modified version available to users over a
-  network, you must offer those users the corresponding source code of your
-  modified version. Running the unmodified image as shipped does not create
-  that obligation.
 
 MongoDB (SSPL-1.0), section 13
   If you offer the functionality of MongoDB to third parties as a service, the

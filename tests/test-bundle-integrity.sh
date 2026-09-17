@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Unit tests for install.sh's bundle integrity chain (C1 fix): every fetched
 # bundle file must be verified — compose.yml/versions.json by minisign,
-# minio-init.sh/docker-user-rules.sh/LICENSE/NOTICE/OPEN-SOURCE-NOTICES/
+# rustfs-init.sh/docker-user-rules.sh/LICENSE/NOTICE/OPEN-SOURCE-NOTICES/
 # rocketchat-upstream-files.txt/TRADEMARK.md by sha256 recorded INSIDE the
 # (signed) versions.json — before any of them is installed, mounted,
 # executed, or (LICENSE/NOTICE) presented to the operator as what they
@@ -24,7 +24,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 printf 'echo hello from docker-user-rules\n' > "$WORK/docker-user-rules.sh"
-printf 'echo hello from minio-init\n' > "$WORK/minio-init.sh"
+printf 'echo hello from rustfs-init\n' > "$WORK/rustfs-init.sh"
 printf 'PrivOS Community License 1.0 (PCL-1.0) — test fixture text\n' > "$WORK/LICENSE"
 printf 'PrivOS — NOTICE test fixture text\n' > "$WORK/NOTICE"
 
@@ -45,17 +45,17 @@ assert_eq "$expected_hello" "$(sha256_file "$tmp_hello")" "sha256_file: matches 
 
 jq -n \
   --arg dur "$(real_sha "$WORK/docker-user-rules.sh")" \
-  --arg mi "$(real_sha "$WORK/minio-init.sh")" \
+  --arg mi "$(real_sha "$WORK/rustfs-init.sh")" \
   --arg lic "$(real_sha "$WORK/LICENSE")" \
   --arg not "$(real_sha "$WORK/NOTICE")" \
-  '{files: {"docker-user-rules.sh": {sha256: $dur}, "minio-init.sh": {sha256: $mi}, "LICENSE": {sha256: $lic}, "NOTICE": {sha256: $not}}}' \
+  '{files: {"docker-user-rules.sh": {sha256: $dur}, "rustfs-init.sh": {sha256: $mi}, "LICENSE": {sha256: $lic}, "NOTICE": {sha256: $not}}}' \
   > "$WORK/versions.json"
 
 ( verify_bundle_file_hash "docker-user-rules.sh" "$WORK" "$WORK/versions.json" ) >/dev/null 2>&1
 assert_status 0 "$?" "verify_bundle_file_hash: accepts a file matching versions.json's recorded sha256"
 
-( verify_bundle_file_hash "minio-init.sh" "$WORK" "$WORK/versions.json" ) >/dev/null 2>&1
-assert_status 0 "$?" "verify_bundle_file_hash: accepts minio-init.sh matching its recorded sha256"
+( verify_bundle_file_hash "rustfs-init.sh" "$WORK" "$WORK/versions.json" ) >/dev/null 2>&1
+assert_status 0 "$?" "verify_bundle_file_hash: accepts rustfs-init.sh matching its recorded sha256"
 
 ( verify_bundle_file_hash "LICENSE" "$WORK" "$WORK/versions.json" ) >/dev/null 2>&1
 assert_status 0 "$?" "verify_bundle_file_hash: accepts LICENSE matching its recorded sha256"
@@ -73,10 +73,10 @@ assert_contains "$out" "sha256 mismatch" "verify_bundle_file_hash: reports the m
 # restore for the next block
 printf 'echo hello from docker-user-rules\n' > "$WORK/docker-user-rules.sh"
 
-printf 'echo PWNED — malicious minio-init\n' > "$WORK/minio-init.sh"
-( verify_bundle_file_hash "minio-init.sh" "$WORK" "$WORK/versions.json" ) >/dev/null 2>&1
-assert_status 1 "$?" "verify_bundle_file_hash: rejects a tampered minio-init.sh"
-printf 'echo hello from minio-init\n' > "$WORK/minio-init.sh"
+printf 'echo PWNED — malicious rustfs-init\n' > "$WORK/rustfs-init.sh"
+( verify_bundle_file_hash "rustfs-init.sh" "$WORK" "$WORK/versions.json" ) >/dev/null 2>&1
+assert_status 1 "$?" "verify_bundle_file_hash: rejects a tampered rustfs-init.sh"
+printf 'echo hello from rustfs-init\n' > "$WORK/rustfs-init.sh"
 
 # A tampered LICENSE is just as much a trust-path violation as tampered
 # executable code here: an operator must accept the SAME text that was
@@ -115,7 +115,7 @@ DEV_KEY="$SELF_DIR/../.secrets/dev-minisign.key"
 if [[ -f "$DEV_KEY" ]] && command -v minisign >/dev/null 2>&1; then
   cp "$SELF_DIR/../compose.yml" "$WORK/compose.yml"
   printf 'echo hello from docker-user-rules\n' > "$WORK/docker-user-rules.sh"
-  printf 'echo hello from minio-init\n' > "$WORK/minio-init.sh"
+  printf 'echo hello from rustfs-init\n' > "$WORK/rustfs-init.sh"
   printf 'PrivOS Community License 1.0 (PCL-1.0) — test fixture text\n' > "$WORK/LICENSE"
   printf 'PrivOS — NOTICE test fixture text\n' > "$WORK/NOTICE"
   printf 'OPEN SOURCE AND THIRD-PARTY NOTICES — test fixture text\n' > "$WORK/OPEN-SOURCE-NOTICES"
@@ -124,13 +124,13 @@ if [[ -f "$DEV_KEY" ]] && command -v minisign >/dev/null 2>&1; then
   # A minimal, self-consistent versions.json for this scratch dir only.
   jq -n \
     --arg dur "$(real_sha "$WORK/docker-user-rules.sh")" \
-    --arg mi "$(real_sha "$WORK/minio-init.sh")" \
+    --arg mi "$(real_sha "$WORK/rustfs-init.sh")" \
     --arg lic "$(real_sha "$WORK/LICENSE")" \
     --arg not "$(real_sha "$WORK/NOTICE")" \
     --arg osn "$(real_sha "$WORK/OPEN-SOURCE-NOTICES")" \
     --arg rcu "$(real_sha "$WORK/rocketchat-upstream-files.txt")" \
     --arg tm "$(real_sha "$WORK/TRADEMARK.md")" \
-    '{files: {"docker-user-rules.sh": {sha256: $dur}, "minio-init.sh": {sha256: $mi}, "LICENSE": {sha256: $lic}, "NOTICE": {sha256: $not}, "OPEN-SOURCE-NOTICES": {sha256: $osn}, "rocketchat-upstream-files.txt": {sha256: $rcu}, "TRADEMARK.md": {sha256: $tm}}}' \
+    '{files: {"docker-user-rules.sh": {sha256: $dur}, "rustfs-init.sh": {sha256: $mi}, "LICENSE": {sha256: $lic}, "NOTICE": {sha256: $not}, "OPEN-SOURCE-NOTICES": {sha256: $osn}, "rocketchat-upstream-files.txt": {sha256: $rcu}, "TRADEMARK.md": {sha256: $tm}}}' \
     > "$WORK/versions.json"
   minisign -S -s "$DEV_KEY" -m "$WORK/compose.yml" -t "test" >/dev/null 2>&1
   minisign -S -s "$DEV_KEY" -m "$WORK/versions.json" -t "test" >/dev/null 2>&1

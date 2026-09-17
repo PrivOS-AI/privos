@@ -3,13 +3,13 @@
 #
 #   curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh | sudo bash
 #
-# Installs hub + sandbox (mongo, redis, minio, board, proxy, VM pool) as a
+# Installs hub + sandbox (mongo, redis, rustfs, board, proxy, VM pool) as a
 # single-host Docker Compose stack. Idempotent: safe to re-run. See
 # docs/self-hosted-install.md for the full model this implements.
 #
 # Flags: --version <tag> --dir <path> --url <root-url> --hub-port <port>
 #        --vm-port-range <lo-hi> --yes --accept-license --upgrade --uninstall
-#        [--purge] --with-knowledge-vector --with-local-runtime
+#        [--purge] --with-knowledge-vector --without-app-cluster
 #        --install-docker --allow-dev-signing-key
 #
 # Distributed under the PrivOS Community License 1.0 (LICENSE, PCL-1.0) — a
@@ -27,7 +27,7 @@ set -euo pipefail
 # Constants
 # ---------------------------------------------------------------------------
 
-# The bundle (compose.yml, versions.json, minio-init.sh, docker-user-rules.sh,
+# The bundle (compose.yml, versions.json, rustfs-init.sh, docker-user-rules.sh,
 # .minisig files) is served as flat GitHub Release assets — no apex domain,
 # no Cloudflare Worker. `releases/latest/download/install.sh` is how a user
 # curls THIS file; publish-self-hosted-bundle.sh bakes the concrete release
@@ -74,7 +74,7 @@ DEFAULT_DIR="/opt/privos"
 DEFAULT_HUB_PORT=3000
 DEFAULT_BOARD_PORT=8556
 DEFAULT_PROXY_PORT=8557
-DEFAULT_MINIO_PORT=9000
+DEFAULT_RUSTFS_PORT=9000
 DEFAULT_VM_PORT_RANGE="30000-30999"
 MIN_RAM_MB=3800
 MIN_DISK_KB=$(( 20 * 1024 * 1024 ))
@@ -83,19 +83,19 @@ PROJECT_NAME="privos"
 NETWORK_NAME="privos-sandbox-net"
 STACK_READY_TIMEOUT_SEC=600
 
-BUNDLE_FILES=(compose.yml versions.json minio-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md)
+BUNDLE_FILES=(compose.yml versions.json rustfs-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md)
 SIGNED_FILES=(compose.yml versions.json)
 # Not directly minisig-signed, but versions.json's files{} block (itself
 # covered by the versions.json signature) carries a sha256 for each of
 # these — verify_bundle_integrity() checks both before either file is
-# installed, mounted, or executed. minio-init.sh/docker-user-rules.sh run as
-# root / with root-equivalent access (systemd unit + iptables; MinIO root
-# creds in the mc container); LICENSE is hashed the same way so the text an
+# installed, mounted, or executed. rustfs-init.sh/docker-user-rules.sh run as
+# root / with root-equivalent access (systemd unit + iptables; RustFS root
+# creds in the rc container); LICENSE is hashed the same way so the text an
 # operator accepts can never silently diverge from what was actually signed.
 # NOTICE/OPEN-SOURCE-NOTICES/rocketchat-upstream-files.txt/TRADEMARK.md are
 # on the same trust path for the same reason: NOTICE requires all five files
 # to be passed on together, so none of them may be swapped after signing.
-UNSIGNED_HASHED_FILES=(minio-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md)
+UNSIGNED_HASHED_FILES=(rustfs-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md)
 LICENSE_MARKER_FILE=".license-accepted"
 LICENSE_VERSION="PCL-1.0"
 MAX_PORT_RANGE_SPAN=5000
@@ -104,17 +104,18 @@ DANGEROUS_DIRS=(/ /root /home /usr /usr/local /etc /bin /sbin /lib /lib64 /var /
 # .env keys, in the order they are written — must match env.template.
 ENV_KEYS=(
   PRIVOS_DIR PRIVOS_PROJECT PRIVOS_NETWORK PRIVOS_STACK_VERSION PRIVOS_ROOT_URL PRIVOS_DEPLOYMENT_ID
-  PRIVOS_HUB_PORT PRIVOS_BOARD_PORT PRIVOS_PROXY_PORT PRIVOS_MINIO_PORT PRIVOS_VM_PORT_RANGE
+  PRIVOS_HUB_PORT PRIVOS_BOARD_PORT PRIVOS_PROXY_PORT PRIVOS_RUSTFS_PORT PRIVOS_VM_PORT_RANGE
   MONGO_ROOT_USER MONGO_ROOT_PASSWORD MONGO_URL MONGO_OPLOG_URL MONGODB_URL
   PRIVOS_MONGO_CACHE_GB PRIVOS_MONGO_MEM PRIVOS_MONGO_CPUS
-  MINIO_ROOT_USER MINIO_ROOT_PASSWORD MINIO_ACCESS_KEY MINIO_SECRET_KEY MINIO_BUCKET
-  PRIVOS_MINIO_MEM PRIVOS_MINIO_CPUS
+  RUSTFS_ROOT_USER RUSTFS_ROOT_PASSWORD RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY RUSTFS_BUCKET
+  PRIVOS_RUSTFS_MEM PRIVOS_RUSTFS_CPUS
   ADMIN_PASS ADMIN_EMAIL REG_TOKEN VAPID_SUBJECT VAPID_PUBLIC_KEY VAPID_PRIVATE_KEY SANDBOX_API_KEY
-  SERVICE_USAGE_AUTHORIZATION_FAIL_CLOSED
+  SERVICE_USAGE_AUTHORIZATION_FAIL_CLOSED PRIVOS_SECRET_STORE_KEY
   PRIVOS_HUB_MEM PRIVOS_HUB_CPUS PRIVOS_BOARD_MEM PRIVOS_BOARD_CPUS PRIVOS_PROXY_MEM PRIVOS_PROXY_CPUS
   PRIVOS_LLM_PROVIDER ANTHROPIC_API_KEY OPENAI_API_KEY PRIVOS_LLM_BASE_URL
   PRIVOS_WITH_KNOWLEDGE_VECTOR PRIVOS_WEAVIATE_URL WEAVIATE_ROOT_KEY PRIVOS_WEAVIATE_MEM PRIVOS_WEAVIATE_CPUS
-  PRIVOS_WITH_LOCAL_RUNTIME PRIVOS_DOCKER_SOCKET_GID PRIVOS_LOCAL_RUNTIME_ENDPOINT_HOSTS PRIVOS_LOCAL_RUNTIME_MEM PRIVOS_LOCAL_RUNTIME_CPUS
+  PRIVOS_WITH_APP_CLUSTER PRIVOS_DOCKER_SOCKET_GID PRIVOS_APP_CLUSTER_BOOTSTRAP_TOKEN PRIVOS_APP_CLUSTER_MEM PRIVOS_APP_CLUSTER_CPUS
+  PRIVOS_PUBLISHER_URL PRIVOS_PUBLISHER_BIND PRIVOS_PUBLISHER_PORT PRIVOS_PUBLISHER_MEM
   COMPOSE_PROFILES
 )
 
@@ -125,6 +126,15 @@ ENV_KEYS=(
 log()  { printf '[privos-install] %s\n' "$*" >&2; }
 die()  { printf '[privos-install] ERROR: %s\n' "$*" >&2; exit 1; }
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
+
+# Hostname (no scheme, no userinfo, no port, no path) from an absolute http(s) URL;
+# empty on anything without a scheme:// . Used to keep the publisher off the hub host.
+url_hostname() {
+  local u="$1"
+  [[ "$u" == *"://"* ]] || { echo ""; return; }
+  u="${u#*://}"; u="${u%%/*}"; u="${u#*@}"; u="${u%%:*}"
+  echo "$u"
+}
 
 # ---------------------------------------------------------------------------
 # Failure reporting — nothing here rolls back partial state (a mid-`compose
@@ -149,8 +159,40 @@ on_err() {
       echo "[privos-install] Install did not complete (stage: ${CURRENT_STAGE}, exit ${rc})."
       echo "[privos-install] Nothing here rolls back destructively — re-running install.sh is safe and reuses what was already written (secrets, .env), retrying only what failed."
     } >&2
+    write_diagnostics_bundle "$rc" || true
   fi
   exit "$rc"
+}
+
+# Support bundle on failure: system facts, docker state, and the last lines of
+# each stack container's log. Deliberately EXCLUDES .env and secrets/. Goes to
+# /tmp so it works even before PRIVOS_DIR exists. Best-effort, never fatal.
+write_diagnostics_bundle() {
+  local rc="$1" ts dir out c
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  dir="$(mktemp -d 2>/dev/null)" || return 0
+  {
+    echo "stage=${CURRENT_STAGE} exit=${rc} time=${ts}"
+    echo "uname: $(uname -a)"; cat /etc/os-release 2>/dev/null
+    echo "virt=$(systemd-detect-virt 2>/dev/null || echo n/a) systemd=${HAS_SYSTEMD:-?} wsl=${IS_WSL:-?} pkg=${HOST_PKG_MGR:-?}"
+    echo "--- mem ---"; free -h 2>/dev/null
+    echo "--- disk ---"; df -h "${PRIVOS_DIR:-/}" 2>/dev/null
+    echo "--- ipv6 disabled ---"; sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null
+    echo "--- selinux ---"; getenforce 2>/dev/null || echo n/a
+  } > "$dir/system.txt" 2>&1
+  if command -v docker >/dev/null 2>&1; then
+    docker version > "$dir/docker-version.txt" 2>&1 || true
+    docker ps -a > "$dir/docker-ps.txt" 2>&1 || true
+    for c in $(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E "^${PRIVOS_PROJECT:-privos}-"); do
+      docker inspect -f 'status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{end}} restarts={{.RestartCount}} oom={{.State.OOMKilled}} exit={{.State.ExitCode}}' "$c" > "$dir/state-${c}.txt" 2>&1 || true
+      docker logs --tail 80 "$c" > "$dir/log-${c}.txt" 2>&1 || true
+    done
+  fi
+  out="/tmp/privos-install-diagnostics-${ts}.tar.gz"
+  if tar -czf "$out" -C "$dir" . 2>/dev/null; then
+    echo "[privos-install] Diagnostics written to ${out} (no .env/secrets) — attach it when asking for help." >&2
+  fi
+  rm -rf "$dir"
 }
 
 usage() {
@@ -172,7 +214,9 @@ Flags:
   --uninstall               Stop and remove the stack (add --purge to also delete data)
   --purge                   With --uninstall: also delete data, volumes, network, firewall rules
   --with-knowledge-vector    Enable the Weaviate knowledge-vector sidecar
-  --with-local-runtime       Enable the local-runtime (MCP apps on this host) sidecar
+  --without-app-cluster      Opt out of the App Cluster (marketplace MCP-app
+                            runtime; needs Docker socket access). ON by
+                            default — see docs/self-hosted-install.md.
   --install-docker          Install Docker + compose v2 automatically if missing
   --allow-dev-signing-key   Local testing only: proceed despite a DEV-ONLY minisign key
   -h, --help                Show this help
@@ -202,7 +246,7 @@ URL_FLAG=""
 HUB_PORT_FLAG=""
 VM_PORT_RANGE_FLAG=""
 WITH_KNOWLEDGE_VECTOR_FLAG=""
-WITH_LOCAL_RUNTIME_FLAG=""
+WITHOUT_APP_CLUSTER_FLAG=""
 ALLOW_DEV_KEY_FLAG=""
 ACCEPT_LICENSE_FLAG=""
 
@@ -219,7 +263,7 @@ parse_args() {
       --uninstall) MODE="uninstall"; shift ;;
       --purge) PURGE="true"; shift ;;
       --with-knowledge-vector) WITH_KNOWLEDGE_VECTOR_FLAG="true"; shift ;;
-      --with-local-runtime) WITH_LOCAL_RUNTIME_FLAG="true"; shift ;;
+      --without-app-cluster) WITHOUT_APP_CLUSTER_FLAG="true"; shift ;;
       --install-docker) INSTALL_DOCKER="true"; shift ;;
       --allow-dev-signing-key) ALLOW_DEV_KEY_FLAG="true"; shift ;;
       --accept-license) ACCEPT_LICENSE_FLAG="true"; shift ;;
@@ -274,16 +318,45 @@ validate_port() {
   (( val >= 1 && val <= 65535 )) || die "${label} must be between 1 and 65535 (got: ${val})"
 }
 
+# Environment facts other checks branch on. Set once here.
+HAS_SYSTEMD="false"
+HOST_PKG_MGR=""
+IS_WSL="false"
+
 detect_platform() {
-  local os arch
+  local os arch distro virt
   os="$(uname -s)"
   arch="$(uname -m)"
   [[ "$os" == "Linux" ]] || die "this installer supports Linux only (found: ${os})."
+  # The published images are linux/amd64 only. Saying so up front beats a
+  # cryptic "no matching manifest" from docker pull minutes later.
   case "$arch" in
-    x86_64|aarch64|arm64) ;;
-    *) die "unsupported architecture: ${arch} (supported: x86_64, aarch64/arm64)." ;;
+    x86_64) ;;
+    aarch64|arm64) die "unsupported architecture: ${arch} — the self-hosted images are currently published for x86_64 (amd64) only. arm64 is not available yet." ;;
+    *) die "unsupported architecture: ${arch} (supported: x86_64)." ;;
   esac
-  log "Platform: ${os} ${arch}"
+
+  distro="$(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-${ID:-unknown}}")"
+  [[ -n "$distro" ]] || distro="unknown"
+  virt="$(systemd-detect-virt 2>/dev/null || true)"
+  command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]] && HAS_SYSTEMD="true"
+  if grep -qiE 'microsoft.*wsl|wsl2' /proc/version 2>/dev/null; then IS_WSL="true"; fi
+
+  # Package manager for host-tool auto-install (first match wins).
+  for pm in apt-get dnf yum apk zypper; do
+    command -v "$pm" >/dev/null 2>&1 && { HOST_PKG_MGR="$pm"; break; }
+  done
+
+  log "Platform: ${os} ${arch} · ${distro}${virt:+ · virt=${virt}}${HOST_PKG_MGR:+ · pkg=${HOST_PKG_MGR}}$([[ "$HAS_SYSTEMD" == "true" ]] || printf ' · no-systemd')"
+
+  if [[ "$IS_WSL" == "true" ]]; then
+    log "WARNING: running under WSL2. It is not a supported production host (networking,"
+    log "systemd and disk-IO quirks); use a real Linux VM or server for anything durable."
+  fi
+  if [[ "$HAS_SYSTEMD" != "true" ]]; then
+    log "WARNING: no systemd detected — the firewall backstop rules will apply now but"
+    log "will NOT persist across reboots, and Docker cannot be auto-started here."
+  fi
 }
 
 # Everything the trust chain and secret generation call: a stock Ubuntu/Debian
@@ -294,7 +367,150 @@ require_host_tools() {
   for c in curl jq minisign openssl; do
     command -v "$c" >/dev/null 2>&1 || missing+=("$c")
   done
-  (( ${#missing[@]} == 0 )) || die "missing host tools: ${missing[*]} — install them first (Debian/Ubuntu: apt-get install -y ${missing[*]}) and re-run."
+  (( ${#missing[@]} == 0 )) && return 0
+  # Stock images ship neither jq nor minisign. We already run as root, so
+  # auto-install through whichever package manager the host has, rather than
+  # dying and making the operator hand-install mid-run. Best-effort: anything
+  # still missing afterwards is a hard stop with the exact command.
+  if [[ -n "$HOST_PKG_MGR" ]]; then
+    log "Installing missing host tools via ${HOST_PKG_MGR}: ${missing[*]}"
+    # Bound every install: a fresh cloud VM often has apt/dpkg locked by
+    # cloud-init/unattended-upgrades on first boot, or a slow/unreachable
+    # mirror — either makes a silenced apt-get look frozen for minutes.
+    # DPkg::Lock::Timeout waits for the lock (bounded) instead of stalling;
+    # `timeout` caps a dead mirror so we fall through to the manual-hint die().
+    case "$HOST_PKG_MGR" in
+      apt-get) timeout 300 apt-get update -qq -o DPkg::Lock::Timeout=120 >/dev/null 2>&1 || true
+               DEBIAN_FRONTEND=noninteractive timeout 300 apt-get install -y -o DPkg::Lock::Timeout=120 "${missing[@]}" >/dev/null 2>&1 || true ;;
+      dnf)     timeout 300 dnf install -y "${missing[@]}" >/dev/null 2>&1 || true ;;
+      yum)     timeout 300 yum install -y "${missing[@]}" >/dev/null 2>&1 || true ;;
+      apk)     timeout 300 apk add --no-cache "${missing[@]}" >/dev/null 2>&1 || true ;;
+      zypper)  timeout 300 zypper --non-interactive install "${missing[@]}" >/dev/null 2>&1 || true ;;
+    esac
+    missing=()
+    for c in curl jq minisign openssl; do
+      command -v "$c" >/dev/null 2>&1 || missing+=("$c")
+    done
+  fi
+  if (( ${#missing[@]} > 0 )); then
+    local hint="install them and re-run"
+    case "$HOST_PKG_MGR" in
+      apt-get) hint="apt-get install -y ${missing[*]}" ;;
+      dnf|yum) hint="${HOST_PKG_MGR} install -y ${missing[*]}   (minisign may need EPEL: ${HOST_PKG_MGR} install -y epel-release)" ;;
+      apk)     hint="apk add ${missing[*]}" ;;
+      zypper)  hint="zypper install ${missing[*]}" ;;
+    esac
+    die "missing host tools: ${missing[*]} — ${hint}, then re-run."
+  fi
+}
+
+# Persist an IPv6-disable sysctl and apply it now.
+disable_ipv6_persistent() {
+  printf 'net.ipv6.conf.all.disable_ipv6=1\nnet.ipv6.conf.default.disable_ipv6=1\nnet.ipv6.conf.lo.disable_ipv6=1\n' \
+    > /etc/sysctl.d/99-privos-disable-ipv6.conf 2>/dev/null || { log "could not write /etc/sysctl.d — skipping IPv6 disable"; return 0; }
+  sysctl --system >/dev/null 2>&1 || true
+  log "IPv6 disabled (persisted to /etc/sysctl.d/99-privos-disable-ipv6.conf)."
+}
+
+# Preflight: catch a host where IPv6 is advertised (DNS returns AAAA for the
+# release host) but has NO working route to the internet — typical behind
+# IPv4-only NAT / Hyper-V, where only link-local fe80 addresses exist. docker
+# image pulls and apt then try IPv6 first and stall for minutes. Detect the
+# REAL risk (AAAA present AND IPv6 egress fails), then ask (interactive) or warn
+# (--yes) — never mutate host networking silently.
+check_network_environment() {
+  # Already disabled, or the tools to judge are absent → nothing to do.
+  [[ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || echo 0)" == "1" ]] && return 0
+  command -v getent >/dev/null 2>&1 || return 0
+  # No AAAA for the release host → resolvers won't try IPv6 → no stall risk.
+  getent ahostsv6 github.com >/dev/null 2>&1 || return 0
+  # AAAA exists — if IPv6 actually reaches it, IPv6 is fine; leave it alone.
+  curl -6 -sS -m 5 -o /dev/null https://github.com 2>/dev/null && return 0
+
+  log "IPv6 is enabled and DNS returns IPv6 (AAAA) records, but this host has NO"
+  log "working IPv6 route to the internet (typical behind IPv4-only NAT). Docker"
+  log "image pulls and apt can stall for minutes trying IPv6 before falling back."
+  if [[ "$ASSUME_YES" != "true" && -r /dev/tty && -w /dev/tty ]]; then
+    printf 'Disable IPv6 on this host now to avoid stalls? [Y/n] ' > /dev/tty
+    local ans=""; read -r ans < /dev/tty || ans=""
+    if [[ ! "$ans" =~ ^[Nn] ]]; then
+      disable_ipv6_persistent
+    else
+      log "Leaving IPv6 enabled — if the image pull stalls, disable it and re-run."
+    fi
+  elif [[ "${PRIVOS_DISABLE_BROKEN_IPV6:-}" == "1" ]]; then
+    disable_ipv6_persistent
+  else
+    log "WARNING: proceeding with broken IPv6. If the pull stalls, either re-run"
+    log "with PRIVOS_DISABLE_BROKEN_IPV6=1, or disable IPv6 yourself:"
+    log "  printf 'net.ipv6.conf.all.disable_ipv6=1\\nnet.ipv6.conf.default.disable_ipv6=1\\n' | sudo tee /etc/sysctl.d/99-privos-disable-ipv6.conf && sudo sysctl --system"
+  fi
+}
+
+# Fail EARLY with the cause when the two hosts we depend on are unreachable,
+# instead of a stalled/failed `docker pull` minutes in. ghcr answers 401 (an
+# auth challenge) when reachable — that IS the success signal for a public pull.
+check_registry_reachability() {
+  local code
+  code="$(curl -sS -m 15 -o /dev/null -w '%{http_code}' https://ghcr.io/v2/ 2>/dev/null || echo 000)"
+  [[ "$code" =~ ^(200|401)$ ]] || die "cannot reach ghcr.io (HTTP ${code}) — the images are pulled from there. Check DNS, outbound firewall (TCP 443) and any corporate proxy; Docker's daemon needs its OWN proxy config (https://docs.docker.com/engine/daemon/proxy/)."
+  code="$(curl -sS -m 15 -o /dev/null -w '%{http_code}' -I https://github.com 2>/dev/null || echo 000)"
+  [[ "$code" =~ ^(200|301|302)$ ]] || die "cannot reach github.com (HTTP ${code}) — the bundle is downloaded from GitHub Releases. Check DNS / firewall / proxy."
+  if [[ -n "${HTTP_PROXY:-}${HTTPS_PROXY:-}${http_proxy:-}${https_proxy:-}" ]]; then
+    log "NOTE: a proxy is set in this shell. The Docker daemon does NOT inherit shell"
+    log "proxy env — image pulls need it in the daemon config (systemd drop-in"
+    log "docker.service.d/http-proxy.conf, or \"proxies\" in /etc/docker/daemon.json)."
+  fi
+}
+
+# A skewed clock breaks TLS and time-bounded signature checks in confusing ways.
+check_clock_skew() {
+  local hdr remote now skew
+  hdr="$(curl -sS -m 10 -I https://github.com 2>/dev/null | awk 'tolower($1)=="date:"{sub(/^[Dd]ate: /,""); print; exit}' | tr -d '\r')"
+  [[ -n "$hdr" ]] || return 0
+  remote="$(date -d "$hdr" +%s 2>/dev/null || true)"; [[ -n "$remote" ]] || return 0
+  now="$(date +%s)"; skew=$(( now - remote )); (( skew < 0 )) && skew=$(( -skew ))
+  if (( skew > 300 )); then
+    log "WARNING: system clock is off by ~${skew}s vs github.com — TLS and signature"
+    log "checks can fail. Fix: timedatectl set-ntp true  (or chrony/ntpdate), then re-run."
+  fi
+}
+
+# SELinux Enforcing (RHEL/Fedora/Rocky): unlabeled bind mounts are denied, so
+# containers cannot touch their data dirs. Warn with the two usual remedies.
+check_selinux() {
+  command -v getenforce >/dev/null 2>&1 || return 0
+  [[ "$(getenforce 2>/dev/null)" == "Enforcing" ]] || return 0
+  log "WARNING: SELinux is Enforcing. Bind mounts under ${PRIVOS_DIR} may be denied and"
+  log "the stack can fail to start. Remedies: relabel the data dir"
+  log "  chcon -Rt svirt_sandbox_file_t ${PRIVOS_DIR}/data   (or setenforce 0 / SELINUX=permissive)."
+}
+
+# Containers left over from a previous or foreign install collide on
+# container_name and make `compose up` fail with a name conflict (compose only
+# adopts containers carrying ITS project label). Offer to remove them.
+check_stale_stack() {
+  local n label stale=()
+  for n in mongo redis rustfs rustfs-init hub sandbox-board sandbox-proxy weaviate app-cluster; do
+    n="${PRIVOS_PROJECT}-${n}"
+    docker inspect "$n" >/dev/null 2>&1 || continue
+    label="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$n" 2>/dev/null)"
+    [[ "$label" == "$PRIVOS_PROJECT" ]] || stale+=("$n")
+  done
+  (( ${#stale[@]} == 0 )) && return 0
+  log "Found containers from a previous/foreign install that would collide on container_name:"
+  log "  ${stale[*]}"
+  if [[ "$ASSUME_YES" != "true" && -r /dev/tty && -w /dev/tty ]]; then
+    printf 'Remove them so this install can proceed? [Y/n] ' > /dev/tty
+    local ans=""; read -r ans < /dev/tty || ans=""
+    if [[ ! "$ans" =~ ^[Nn] ]]; then
+      docker rm -f "${stale[@]}" >/dev/null 2>&1 || true
+      log "Removed stale containers."
+      return 0
+    fi
+    die "stale containers left in place — remove them (docker rm -f ${stale[*]}) and re-run."
+  fi
+  die "stale containers would collide: ${stale[*]} — remove them (docker rm -f ${stale[*]}) and re-run, or run interactively to be prompted."
 }
 
 check_docker_version() {
@@ -310,7 +526,20 @@ check_compose_v2() {
   docker compose version >/dev/null 2>&1
 }
 
+# Docker binary present but the daemon is not running is a DIFFERENT problem
+# from "not installed" — try to start it, and if that fails say exactly that
+# instead of telling the operator to install Docker they already have.
+docker_daemon_up() { docker info >/dev/null 2>&1; }
+
 ensure_docker() {
+  if command -v docker >/dev/null 2>&1 && ! docker_daemon_up; then
+    log "Docker is installed but the daemon is not running — starting it…"
+    if [[ "$HAS_SYSTEMD" == "true" ]]; then systemctl start docker >/dev/null 2>&1 || true
+    else service docker start >/dev/null 2>&1 || true; fi
+    local waited=0
+    until docker_daemon_up || (( waited >= 30 )); do sleep 2; waited=$(( waited + 2 )); done
+    docker_daemon_up || die "Docker is installed but its daemon is not running and could not be started. Start it (systemctl start docker, or check 'journalctl -u docker') and re-run."
+  fi
   if check_docker_version && check_compose_v2; then
     return 0
   fi
@@ -381,9 +610,18 @@ require_license_acceptance() {
     return 0
   fi
 
-  if [[ -t 0 ]]; then
-    local ans=""
-    read -r -p "Accept the license? [y/N] " ans || ans=""
+  # Prompt on the controlling terminal, not stdin: under the canonical
+  # `curl … | sudo bash` stdin IS the piped script (never a TTY), but /dev/tty is
+  # the real terminal (it is what sudo just read the password from). Fall back to
+  # stdin when it is itself a TTY (a saved-file run), and only give up when there
+  # is genuinely no terminal (CI / fully headless).
+  local ans="" tty=""
+  if [[ -r /dev/tty && -w /dev/tty ]]; then tty=/dev/tty
+  elif [[ -t 0 ]]; then tty=/dev/stdin
+  fi
+  if [[ -n "$tty" ]]; then
+    printf 'Accept the license? [y/N] ' > /dev/tty 2>/dev/null || printf 'Accept the license? [y/N] '
+    read -r ans < "$tty" || ans=""
     if [[ "$ans" =~ ^[Yy] ]]; then
       LICENSE_ACCEPTED="true"
       return 0
@@ -440,7 +678,12 @@ fetch_bundle_file() {
   fi
   local url
   url="$(resolve_bundle_base_url)/${name}"
-  curl -fsSL "$url" -o "$dest" || die "failed to download ${url}"
+  # --connect-timeout bounds a black-holed route (a host with broken IPv6 would
+  # otherwise hang ~130s per file on the default 300s connect timeout before
+  # happy-eyeballs gives up); --retry rides out transient GitHub/CDN blips
+  # instead of aborting the whole install on the first flaky byte.
+  curl -fsSL --connect-timeout 20 --retry 3 --retry-delay 2 --retry-connrefused \
+    "$url" -o "$dest" || die "failed to download ${url}"
 }
 
 fetch_bundle() {
@@ -481,7 +724,7 @@ bundle_file_sha256_from_versions_json() {
 }
 
 # Not every bundle file is directly minisig-signed (only compose.yml and
-# versions.json are). minio-init.sh and docker-user-rules.sh are instead
+# versions.json are). rustfs-init.sh and docker-user-rules.sh are instead
 # hash-pinned INSIDE the signed versions.json (files{} block) — verify
 # against that hash before either file is ever installed, mounted, or
 # executed. Fails closed on a missing or mismatched hash.
@@ -492,7 +735,6 @@ verify_bundle_file_hash() {
   [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || die "versions.json files[\"${name}\"].sha256 is not a well-formed sha256 hex digest."
   actual="$(sha256_file "$dir/$name")"
   [[ "$expected" == "$actual" ]] || die "sha256 mismatch for ${name} (expected ${expected}, got ${actual}) — refusing to install/execute a tampered bundle file."
-  log "sha256 OK: ${name}"
 }
 
 # Full bundle trust chain: minisig-verify the two signed files, then
@@ -506,6 +748,9 @@ verify_bundle_integrity() {
   for f in "${UNSIGNED_HASHED_FILES[@]}"; do
     verify_bundle_file_hash "$f" "$dir" "$dir/versions.json"
   done
+  # One summary line instead of a per-file "sha256 OK:" for every hashed file
+  # (a mismatch still fails loudly via die above).
+  log "Bundle integrity verified (${#UNSIGNED_HASHED_FILES[@]} file hashes)."
 }
 
 # ---------------------------------------------------------------------------
@@ -573,7 +818,7 @@ collect_listeners() {
 
 port_already_ours() {
   local port="$1" name json
-  for name in hub sandbox-board sandbox-proxy minio; do
+  for name in hub sandbox-board sandbox-proxy rustfs; do
     json="$(docker_port_lookup "${PROJECT_NAME}-${name}")"
     [[ -n "$json" ]] || continue
     grep -q "\"HostPort\":\"${port}\"" <<<"$json" && return 0
@@ -592,6 +837,71 @@ expand_port_range() {
   span=$(( end - start + 1 ))
   (( span <= MAX_PORT_RANGE_SPAN )) || die "invalid port range: ${range} spans ${span} ports — refusing (max ${MAX_PORT_RANGE_SPAN})"
   seq "$start" "$end"
+}
+
+# ── Auto port fallback ──────────────────────────────────────────────────────
+# On a FRESH install a DEFAULT service port already held by an unrelated process
+# is moved to the next free port (announced) rather than aborting. Ports the
+# operator set explicitly (flag / env / a prior .env on re-run) are never moved
+# — they still hard-fail in check_ports so their intent is respected.
+
+port_is_free() {  # free = nobody listening, or the listener is our own container
+  local port="$1"
+  [[ -z "${LISTEN_PID[$port]:-}" ]] && return 0
+  port_already_ours "$port" && return 0
+  return 1
+}
+
+pick_free_port() {  # $1 start; $2.. ports to also avoid (claimed this run)
+  local p="$1"; shift; local -a avoid=("$@"); local a clash
+  while (( p <= 65535 )); do
+    if port_is_free "$p"; then
+      clash=0; for a in "${avoid[@]}"; do [[ "$a" == "$p" ]] && { clash=1; break; }; done
+      (( clash == 0 )) && { printf '%s' "$p"; return 0; }
+    fi
+    (( p++ ))
+  done
+  return 1
+}
+
+range_has_conflict() {  # $1 lo $2 hi — true if any port in [lo,hi] is foreign
+  local lo="$1" hi="$2" p
+  for (( p = lo; p <= hi; p++ )); do
+    port_is_free "$p" || return 0
+  done
+  return 1
+}
+
+auto_resolve_port_conflicts() {
+  collect_listeners
+  local -a claimed=()
+  local entry name expl var cur new
+  for entry in "HUB:$PORT_EXPLICIT_HUB" "BOARD:$PORT_EXPLICIT_BOARD" \
+               "PROXY:$PORT_EXPLICIT_PROXY" "RUSTFS:$PORT_EXPLICIT_RUSTFS"; do
+    name="${entry%%:*}"; expl="${entry##*:}"
+    var="PRIVOS_${name}_PORT"; cur="${!var}"
+    claimed+=("$cur")
+    (( expl == 1 )) && continue
+    if ! port_is_free "$cur"; then
+      new="$(pick_free_port "$cur" "${claimed[@]}")" \
+        || die "no free port at or above ${cur} for ${name} — free one or pass a port flag/env."
+      log "Port ${cur} (${name}) is in use — using ${new} instead (pin it with a flag/env to override)."
+      printf -v "$var" '%s' "$new"
+      claimed[$(( ${#claimed[@]} - 1 ))]="$new"
+    fi
+  done
+  if (( PORT_EXPLICIT_RANGE == 0 )); then
+    local lo hi span shifted=0
+    lo="${PRIVOS_VM_PORT_RANGE%-*}"; hi="${PRIVOS_VM_PORT_RANGE#*-}"; span=$(( hi - lo + 1 ))
+    while range_has_conflict "$lo" "$hi"; do
+      lo=$(( hi + 1 )); hi=$(( lo + span - 1 )); shifted=1
+      (( hi > 65535 )) && die "no free ${span}-port window for the sandbox VM pool — pass --vm-port-range."
+    done
+    if (( shifted == 1 )); then
+      log "Sandbox VM port range in use — using ${lo}-${hi} instead (override with --vm-port-range)."
+      PRIVOS_VM_PORT_RANGE="${lo}-${hi}"
+    fi
+  fi
 }
 
 check_ports() {
@@ -670,12 +980,27 @@ generate_secrets() {
   : "${ADMIN_EMAIL:=admin@localhost}"
   : "${REG_TOKEN:=$(rand_hex 32)}"
   : "${SANDBOX_API_KEY:=$(rand_hex 32)}"
-  : "${MINIO_ROOT_USER:=privos-root}"
-  : "${MINIO_ROOT_PASSWORD:=$(rand_hex 32)}"
-  : "${MINIO_ACCESS_KEY:=privos-$(rand_hex 6)}"
-  : "${MINIO_SECRET_KEY:=$(rand_hex 32)}"
-  : "${MINIO_BUCKET:=privos}"
+  : "${RUSTFS_ROOT_USER:=privos-root}"
+  : "${RUSTFS_ROOT_PASSWORD:=$(rand_hex 32)}"
+  : "${RUSTFS_ACCESS_KEY:=privos-$(rand_hex 6)}"
+  # RustFS caps a service-account secret key at 8-40 chars (rustfs-init.sh runs
+  # `rc admin service-account create ... <access-key> <secret-key>`); rand_hex 32
+  # = 64 chars fails "secret key length should be between 8 and 40". 16 bytes = 32 hex chars.
+  : "${RUSTFS_SECRET_KEY:=$(rand_hex 16)}"
+  : "${RUSTFS_BUCKET:=privos}"
   : "${WEAVIATE_ROOT_KEY:=$(rand_hex 32)}"
+  # Community bootstrap pairing (wire-contracts.md (b)) — the mutual HMAC
+  # challenge secret between the hub and the App Cluster; generated
+  # unconditionally (cheap, and PRIVOS_WITH_APP_CLUSTER can be flipped on
+  # later without a second secrets pass). Never sent over the wire itself,
+  # only HMAC(nonce) proofs.
+  : "${PRIVOS_APP_CLUSTER_BOOTSTRAP_TOKEN:=$(rand_hex 32)}"
+  # Encrypted-secret-store key (encrypted-secret-store.ts) — 32 raw bytes,
+  # base64-encoded. Without it the hub falls back to a plaintext secret store
+  # and refuses to pair an App Cluster at all (an RCE-grade credential is
+  # never written in the clear). Generated unconditionally so the hub is
+  # always pairing-capable.
+  : "${PRIVOS_SECRET_STORE_KEY:=$(openssl rand -base64 32)}"
   : "${PRIVOS_DEPLOYMENT_ID:=$(rand_uuid)}"
   : "${VAPID_SUBJECT:=mailto:${ADMIN_EMAIL}}"
   if [[ -z "${VAPID_PUBLIC_KEY:-}" || -z "${VAPID_PRIVATE_KEY:-}" ]]; then
@@ -733,6 +1058,39 @@ load_existing_env() {
   done < "$env_file"
 }
 
+# One-way migration guard (V6): a MinIO-era .env has no path forward through  # no-minio-gate
+# `--upgrade` — the store was renamed, not migrated, and object data is not
+# carried over. Fail closed rather than silently booting a renamed stack
+# against a directory an operator never touched.
+refuse_upgrade_across_rename() {
+  local env_file="$PRIVOS_DIR/.env"
+  [[ -f "$env_file" ]] || return 0
+  grep -qE '^MINIO_[A-Za-z_]*=' "$env_file" || return 0  # no-minio-gate: detect a MinIO-era env to refuse the upgrade
+  cat >&2 <<'EOF'
+[privos-install] ERROR: refusing --upgrade: this install's .env is from
+before the MinIO -> RustFS rename (it still has MINIO_* keys). --upgrade
+never migrates object data, so this refusal is not a data-loss regression —
+it is the only prompt you would otherwise not get before the rename silently
+breaks file upload. To move this install forward by hand:
+  1. stop the stack:  docker compose -f compose.yml down
+  2. in .env, copy the old values into the new keys, then delete the old ones:
+       MINIO_ROOT_USER     -> RUSTFS_ROOT_USER
+       MINIO_ROOT_PASSWORD -> RUSTFS_ROOT_PASSWORD
+       MINIO_ACCESS_KEY    -> RUSTFS_ACCESS_KEY
+       MINIO_SECRET_KEY    -> RUSTFS_SECRET_KEY
+       MINIO_BUCKET        -> RUSTFS_BUCKET
+       PRIVOS_MINIO_PORT   -> PRIVOS_RUSTFS_PORT
+       PRIVOS_MINIO_MEM    -> PRIVOS_RUSTFS_MEM
+       PRIVOS_MINIO_CPUS   -> PRIVOS_RUSTFS_CPUS
+  3. mv data/minio data/rustfs  (object DATA is not migrated by this move —
+     it only carries the bucket the old MinIO wrote; RustFS reads its own
+     format from the same mount point)
+  4. chown -R 10001:10001 data/rustfs
+  5. re-run install.sh --upgrade
+EOF
+  exit 1
+}
+
 write_env_file() {
   local dest="$1" key val tmp
   tmp="$(mktemp)"
@@ -755,23 +1113,33 @@ write_env_file() {
 resolve_config() {
   : "${PRIVOS_PROJECT:=$PROJECT_NAME}"
   : "${PRIVOS_NETWORK:=$NETWORK_NAME}"
+  # Record which ports were set explicitly (flag, env, or a prior .env loaded on
+  # re-run) BEFORE defaulting — only defaulted ports are eligible for
+  # auto-fallback; an explicit port that is busy still hard-fails in check_ports.
+  PORT_EXPLICIT_HUB=0;   [[ -n "$HUB_PORT_FLAG" || -n "${PRIVOS_HUB_PORT:-}" ]] && PORT_EXPLICIT_HUB=1
+  PORT_EXPLICIT_BOARD=0; [[ -n "${PRIVOS_BOARD_PORT:-}" ]] && PORT_EXPLICIT_BOARD=1
+  PORT_EXPLICIT_PROXY=0; [[ -n "${PRIVOS_PROXY_PORT:-}" ]] && PORT_EXPLICIT_PROXY=1
+  PORT_EXPLICIT_RUSTFS=0; [[ -n "${PRIVOS_RUSTFS_PORT:-}" ]] && PORT_EXPLICIT_RUSTFS=1
+  PORT_EXPLICIT_RANGE=0; [[ -n "$VM_PORT_RANGE_FLAG" || -n "${PRIVOS_VM_PORT_RANGE:-}" ]] && PORT_EXPLICIT_RANGE=1
   : "${PRIVOS_HUB_PORT:=$DEFAULT_HUB_PORT}"
   : "${PRIVOS_BOARD_PORT:=$DEFAULT_BOARD_PORT}"
   : "${PRIVOS_PROXY_PORT:=$DEFAULT_PROXY_PORT}"
-  : "${PRIVOS_MINIO_PORT:=$DEFAULT_MINIO_PORT}"
+  : "${PRIVOS_RUSTFS_PORT:=$DEFAULT_RUSTFS_PORT}"
   : "${PRIVOS_VM_PORT_RANGE:=$DEFAULT_VM_PORT_RANGE}"
   : "${PRIVOS_STACK_VERSION:=${VERSION_FLAG:-latest}}"
   : "${PRIVOS_MONGO_CACHE_GB:=1}" "${PRIVOS_MONGO_MEM:=1g}" "${PRIVOS_MONGO_CPUS:=2}"
-  : "${PRIVOS_MINIO_MEM:=512m}" "${PRIVOS_MINIO_CPUS:=1}"
+  : "${PRIVOS_RUSTFS_MEM:=512m}" "${PRIVOS_RUSTFS_CPUS:=1}"
   : "${PRIVOS_HUB_MEM:=2g}" "${PRIVOS_HUB_CPUS:=2}"
   : "${PRIVOS_BOARD_MEM:=512m}" "${PRIVOS_BOARD_CPUS:=1}"
   : "${PRIVOS_PROXY_MEM:=512m}" "${PRIVOS_PROXY_CPUS:=1}"
   : "${PRIVOS_WEAVIATE_MEM:=2g}" "${PRIVOS_WEAVIATE_CPUS:=1}"
-  : "${PRIVOS_LOCAL_RUNTIME_MEM:=256m}" "${PRIVOS_LOCAL_RUNTIME_CPUS:=1}"
+  : "${PRIVOS_APP_CLUSTER_MEM:=256m}" "${PRIVOS_APP_CLUSTER_CPUS:=1}"
   : "${SERVICE_USAGE_AUTHORIZATION_FAIL_CLOSED:=true}"
   : "${PRIVOS_LLM_PROVIDER:=byo}"
   : "${PRIVOS_WITH_KNOWLEDGE_VECTOR:=false}"
-  : "${PRIVOS_WITH_LOCAL_RUNTIME:=false}"
+  # The App Cluster is the community marketplace runtime — ON by default;
+  # --without-app-cluster / PRIVOS_WITH_APP_CLUSTER=false opts out.
+  : "${PRIVOS_WITH_APP_CLUSTER:=true}"
 
   # PRIVOS_DIR is resolved and validated once in main() (validate_privos_dir)
   # before this function ever runs — do not re-derive it from DIR_FLAG here,
@@ -782,20 +1150,24 @@ resolve_config() {
   [[ -n "$VM_PORT_RANGE_FLAG" ]] && PRIVOS_VM_PORT_RANGE="$VM_PORT_RANGE_FLAG"
   [[ -n "$VERSION_FLAG" ]] && PRIVOS_STACK_VERSION="$VERSION_FLAG"
   [[ -n "$WITH_KNOWLEDGE_VECTOR_FLAG" ]] && PRIVOS_WITH_KNOWLEDGE_VECTOR="true"
-  [[ -n "$WITH_LOCAL_RUNTIME_FLAG" ]] && PRIVOS_WITH_LOCAL_RUNTIME="true"
+  [[ -n "$WITHOUT_APP_CLUSTER_FLAG" ]] && PRIVOS_WITH_APP_CLUSTER="false"
+
+  # Move any busy DEFAULT ports before ROOT_URL is derived, so the summary URL
+  # reflects the port the hub actually binds.
+  auto_resolve_port_conflicts
 
   : "${PRIVOS_ROOT_URL:=http://localhost:${PRIVOS_HUB_PORT}}"
 
   validate_port "$PRIVOS_HUB_PORT" "--hub-port/PRIVOS_HUB_PORT"
   validate_port "$PRIVOS_BOARD_PORT" "PRIVOS_BOARD_PORT"
   validate_port "$PRIVOS_PROXY_PORT" "PRIVOS_PROXY_PORT"
-  validate_port "$PRIVOS_MINIO_PORT" "PRIVOS_MINIO_PORT"
+  validate_port "$PRIVOS_RUSTFS_PORT" "PRIVOS_RUSTFS_PORT"
 }
 
 prompt_sidecars() {
   # Only ever prompt on a genuinely fresh install (no prior .env). A re-run
   # or --upgrade keeps whatever was already persisted; an explicit
-  # --with-knowledge-vector / --with-local-runtime flag always wins.
+  # --with-knowledge-vector / --without-app-cluster flag always wins.
   [[ "$HAD_EXISTING_ENV" == "true" ]] && return 0
   [[ "$ASSUME_YES" == "true" || ! -t 0 ]] && return 0
   if [[ -z "$WITH_KNOWLEDGE_VECTOR_FLAG" ]]; then
@@ -808,34 +1180,30 @@ EOF
     read -r -p "  Enable? [y/N] " ans || ans=""
     [[ "$ans" =~ ^[Yy] ]] && PRIVOS_WITH_KNOWLEDGE_VECTOR="true" || PRIVOS_WITH_KNOWLEDGE_VECTOR="false"
   fi
-  if [[ -z "$WITH_LOCAL_RUNTIME_FLAG" ]]; then
+  # App Cluster is ON by default (it is the marketplace runtime) — this is
+  # an acknowledgement prompt, not an opt-in one: only an explicit "n"
+  # disables it. --without-app-cluster skips this prompt entirely.
+  if [[ -z "$WITHOUT_APP_CLUSTER_FLAG" ]]; then
     cat >&2 <<'EOF'
 
-Enable the local-runtime sidecar?
-  Run marketplace MCP apps as containers on THIS host instead of PrivOS's
-  app cluster. Needs Docker socket access
-  (TENANT_MCP_LOCAL_RUNTIME_DRIVER_ENABLED=true, dockerSocketGid from
-  `stat -c %g /var/run/docker.sock`).
+The App Cluster (community marketplace runtime) is enabled by default.
+  Runs marketplace MCP apps as containers on THIS host, over a dial-out
+  tunnel to the hub — no inbound port. Needs Docker socket access, which is
+  root-equivalent on this host (no-new-privileges, all capabilities dropped).
 EOF
-    read -r -p "  Enable? [y/N] " ans || ans=""
-    [[ "$ans" =~ ^[Yy] ]] && PRIVOS_WITH_LOCAL_RUNTIME="true" || PRIVOS_WITH_LOCAL_RUNTIME="false"
+    read -r -p "  Continue with Docker socket access enabled? [Y/n] " ans || ans=""
+    [[ "$ans" =~ ^[Nn] ]] && PRIVOS_WITH_APP_CLUSTER="false" || PRIVOS_WITH_APP_CLUSTER="true"
   fi
 }
 
 finalize_sidecar_config() {
-  if [[ "$PRIVOS_WITH_LOCAL_RUNTIME" == "true" ]]; then
+  if [[ "$PRIVOS_WITH_APP_CLUSTER" == "true" ]]; then
     : "${PRIVOS_DOCKER_SOCKET_GID:=$(stat -c %g /var/run/docker.sock 2>/dev/null || true)}"
-    [[ -n "$PRIVOS_DOCKER_SOCKET_GID" ]] || die "local-runtime is enabled but /var/run/docker.sock is not present — cannot resolve the docker socket group."
-    if [[ -z "${PRIVOS_LOCAL_RUNTIME_ENDPOINT_HOSTS:-}" ]]; then
-      if [[ -t 0 && "$ASSUME_YES" != "true" ]]; then
-        read -r -p "local-runtime endpoint hostname allowlist (comma-separated): " PRIVOS_LOCAL_RUNTIME_ENDPOINT_HOSTS
-      fi
-      [[ -n "$PRIVOS_LOCAL_RUNTIME_ENDPOINT_HOSTS" ]] || die "local-runtime requires PRIVOS_LOCAL_RUNTIME_ENDPOINT_HOSTS (an explicit hostname allowlist) — set it in the environment or answer the prompt."
-    fi
+    [[ -n "$PRIVOS_DOCKER_SOCKET_GID" ]] || die "the App Cluster is enabled but /var/run/docker.sock is not present — cannot resolve the docker socket group. Pass --without-app-cluster to opt out."
   fi
   local -a profiles=()
   [[ "$PRIVOS_WITH_KNOWLEDGE_VECTOR" == "true" ]] && profiles+=("knowledge-vector")
-  [[ "$PRIVOS_WITH_LOCAL_RUNTIME" == "true" ]] && profiles+=("local-runtime")
+  [[ "$PRIVOS_WITH_APP_CLUSTER" == "true" ]] && profiles+=("app-cluster")
   # shellcheck disable=SC2034 # consumed indirectly via ENV_KEYS in write_env_file
   if (( ${#profiles[@]} > 0 )); then
     COMPOSE_PROFILES="$(IFS=,; echo "${profiles[*]}")"
@@ -858,9 +1226,28 @@ ensure_network() {
   log "Created Docker network ${PRIVOS_NETWORK}"
 }
 
+# MANAGED-broker root (McpBrokerManager) for the App Cluster's outbound
+# node-identity attestation — copied from the fleet app-node recipe
+# (infra/setup-app-node.sh). /run is tmpfs, so a tmpfiles.d unit is needed to
+# recreate this directory on every boot; without it the broker root (and the
+# app-cluster container that bind-mounts it) never comes back after a reboot.
+install_mcp_broker_root() {
+  install -d -o 1000 -g 1000 -m 0700 /run/privos/mcp-broker
+  install -m 0644 /dev/stdin /etc/tmpfiles.d/privos-mcp-broker.conf <<'EOF'
+d /run/privos/mcp-broker 0700 1000 1000 -
+EOF
+  if command -v systemd-tmpfiles >/dev/null 2>&1; then
+    systemd-tmpfiles --create /etc/tmpfiles.d/privos-mcp-broker.conf
+  else
+    log "WARNING: systemd-tmpfiles not found — /run/privos/mcp-broker will not be"
+    log "recreated automatically after a reboot; the App Cluster will fail to start"
+    log "until this directory exists again (re-run install.sh to recreate it)."
+  fi
+}
+
 install_docker_user_rules() {
   install -m 0755 "$PRIVOS_DIR/docker-user-rules.sh" /usr/local/sbin/privos-docker-user-rules.sh
-  local ports="${PRIVOS_BOARD_PORT},${PRIVOS_PROXY_PORT},${PRIVOS_MINIO_PORT},${PRIVOS_VM_PORT_RANGE/-/:}"
+  local ports="${PRIVOS_BOARD_PORT},${PRIVOS_PROXY_PORT},${PRIVOS_RUSTFS_PORT},${PRIVOS_VM_PORT_RANGE/-/:}"
   /usr/local/sbin/privos-docker-user-rules.sh "$ports" >/dev/null
 }
 
@@ -876,56 +1263,260 @@ wait_for_compose_healthy() {
 }
 
 initiate_replica_set() {
-  compose exec -T mongo mongosh --quiet --eval '
-    try {
-      rs.status().ok;
-    } catch (e) {
-      rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "mongo:27017" }] });
-    }
+  # mongod runs with --keyFile, so auth is enforced, and the entrypoint already
+  # created the MONGO_INITDB_ROOT_* user during its init phase — which closes
+  # the localhost exception. replSetInitiate therefore MUST authenticate as
+  # root (an unauthenticated mongosh gets "requires authentication"). Expand the
+  # credentials inside the container (they live there as MONGO_INITDB_ROOT_*),
+  # never on the host command line, so they never reach the host's process list.
+  compose exec -T mongo sh -c '
+    mongosh --quiet \
+      -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" \
+      --authenticationDatabase admin \
+      --eval "try { rs.status().ok } catch (e) { rs.initiate({ _id: \"rs0\", members: [{ _id: 0, host: \"mongo:27017\" }] }) }"
   ' >/dev/null
 }
 
-run_minio_init() {
-  compose run --rm minio-init
+# ---------------------------------------------------------------------------
+# Driver-removal guard (D4) — this compose bundle no longer ships
+# local-runtime-driver (or its Hub-side unix-socket transport), so refuse to
+# proceed while any installation is still bound to a NON-tunnel App Cluster
+# row: only rows this phase creates carry connection:'tunnel', so any other
+# shape predates it and would be stranded by the removal. Runs only on a
+# re-run of an EXISTING install (a fresh install has no prior mcp_apps data
+# to strand) and only when mongo is already up. Fails CLOSED: a query error
+# blocks the install rather than silently proceeding blind.
+# ---------------------------------------------------------------------------
+guard_local_runtime_installations() {
+  compose exec -T mongo sh -c '
+    mongosh --quiet \
+      -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" \
+      --authenticationDatabase admin \
+      --eval "
+        const _db = db.getSiblingDB(\"privos\");
+        const bound = _db.mcp_apps.aggregate([
+          { \$match: { localRuntimeClusterId: { \$exists: true, \$ne: null } } },
+          { \$lookup: { from: \"app_clusters\", localField: \"localRuntimeClusterId\", foreignField: \"_id\", as: \"c\" } },
+          { \$match: { \$or: [ { c: { \$size: 0 } }, { \"c.0.connection\": { \$ne: \"tunnel\" } } ] } },
+          { \$project: { _id: 1, name: 1 } }
+        ]).toArray();
+        print(JSON.stringify(bound));
+      "
+  '
+}
+
+check_local_runtime_installations() {
+  [[ "$HAD_EXISTING_ENV" == "true" ]] || return 0
+  command -v jq >/dev/null 2>&1 || die "jq is required to check for existing local-runtime installations before this upgrade — install it and re-run."
+  local out rc json count
+  out="$(guard_local_runtime_installations 2>&1)"
+  rc=$?
+  (( rc == 0 )) || die "could not check for existing local-runtime installations before this upgrade — refusing to proceed blind. mongo output: ${out}"
+  # mongosh may print banner/warning lines before the eval's JSON output —
+  # take the last line that looks like a JSON array. No fallback to "[]" here
+  # on purpose: an output with no recognizable JSON array is itself a signal
+  # something is wrong (mongosh format change, truncated output, ...) and
+  # must fail closed, not be silently read as "nothing bound".
+  json="$(printf '%s\n' "$out" | grep -E '^\[' | tail -1)"
+  [[ -n "$json" ]] || die "could not parse the local-runtime installation check output — refusing to proceed blind (raw: ${out})"
+  count="$(printf '%s' "$json" | jq 'length' 2>/dev/null || true)"
+  [[ "$count" =~ ^[0-9]+$ ]] || die "could not parse the local-runtime installation check output — refusing to proceed blind (raw: ${json})"
+  if (( count > 0 )); then
+    log "Refusing to upgrade: ${count} installation(s) are still bound to a non-tunnel local-runtime cluster:"
+    printf '%s' "$json" | jq -r '.[] | "  - " + (.name // "?") + " (" + (.["_id"] | tostring) + ")"' >&2
+    die "uninstall the app(s) listed above while local-runtime-driver is still present (this install has not yet removed it), then re-run install.sh."
+  fi
+  log "No installations bound to a non-tunnel local-runtime cluster — safe to remove local-runtime-driver."
 }
 
 bring_up_stack() {
   compose pull
-  compose up -d mongo redis minio
+  compose up -d mongo redis rustfs
   wait_for_compose_healthy mongo 120 || die "mongo did not become healthy — inspect with: docker compose -f ${COMPOSE_FILE} logs mongo"
   initiate_replica_set
-  wait_for_compose_healthy minio 60 || die "minio did not become healthy — inspect with: docker compose -f ${COMPOSE_FILE} logs minio"
-  run_minio_init
+  check_local_runtime_installations
+  wait_for_compose_healthy rustfs 60 || die "rustfs did not become healthy — inspect with: docker compose -f ${COMPOSE_FILE} logs rustfs"
+  # rustfs-init runs once here: `compose up -d` starts it via its dependents'
+  # `service_completed_successfully` conditions after rustfs is healthy. A prior
+  # explicit `compose run --rm rustfs-init` made it run twice per install.
   compose up -d
 }
 
 wait_for_stack_ready() {
   local deadline hub_ok=0 proxy_ok=0
   deadline=$(( $(date +%s) + STACK_READY_TIMEOUT_SEC ))
+  # The hub (Meteor) can take a few minutes to boot; print live dots so the wait
+  # never looks like a hang, and note the proxy coming up separately.
+  printf '  Hub is booting (Meteor — up to %ss); this is normal' "$STACK_READY_TIMEOUT_SEC"
   while (( $(date +%s) < deadline )); do
-    if (( hub_ok == 0 )) && curl -fsS -o /dev/null "http://127.0.0.1:${PRIVOS_HUB_PORT}/api/info" 2>/dev/null; then hub_ok=1; fi
-    if (( proxy_ok == 0 )) && curl -fsS -o /dev/null "http://127.0.0.1:${PRIVOS_PROXY_PORT}/health" 2>/dev/null; then proxy_ok=1; fi
-    (( hub_ok == 1 && proxy_ok == 1 )) && return 0
+    if (( hub_ok == 0 )) && curl -fsS -o /dev/null "http://127.0.0.1:${PRIVOS_HUB_PORT}/api/info" 2>/dev/null; then
+      hub_ok=1; printf ' [hub up]'
+    fi
+    if (( proxy_ok == 0 )) && curl -fsS -o /dev/null "http://127.0.0.1:${PRIVOS_PROXY_PORT}/health" 2>/dev/null; then
+      proxy_ok=1; printf ' [proxy up]'
+    fi
+    (( hub_ok == 1 && proxy_ok == 1 )) && { printf ' ready.\n'; return 0; }
+    printf '.'
     sleep 5
   done
+  printf '\n'
   (( hub_ok == 1 )) || log "hub did not become healthy within ${STACK_READY_TIMEOUT_SEC}s"
   (( proxy_ok == 1 )) || log "sandbox-proxy did not become healthy within ${STACK_READY_TIMEOUT_SEC}s"
   return 1
 }
 
-print_summary() {
-  local code=""
-  code="$(compose exec -T hub cat /var/lib/privos/self-hosted/license-request-code 2>/dev/null || true)"
+# An upgrade re-runs against the .env of the previous install, whose
+# PRIVOS_STACK_VERSION names the tag that install was pinned to. compose.yml
+# pins every image by digest, so the pull is right either way, but the tag is
+# what operators (and `docker ps`) read — take it from the verified bundle
+# unless --version pinned one explicitly.
+adopt_bundle_stack_version() {
+  local dir="$1" bundle_version=""
+  [[ -n "$VERSION_FLAG" ]] && return 0
+  bundle_version="$(sed -n 's/^[[:space:]]*"stackVersion"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$dir/versions.json" | head -n1)"
+  [[ -n "$bundle_version" ]] || return 0
+  if [[ "$PRIVOS_STACK_VERSION" != "$bundle_version" ]]; then
+    log "Stack version: ${PRIVOS_STACK_VERSION} -> ${bundle_version} (from the verified bundle)"
+    PRIVOS_STACK_VERSION="$bundle_version"
+  fi
+}
+
+read_request_code() {  # echoes the code (or empty); never fails the caller
+  { compose exec -T hub cat /var/lib/privos/self-hosted/license-request-code 2>/dev/null || true; } | tr -d '\r\n'
+}
+
+read_license_status() {  # echoes the raw license-status JSON (or empty)
+  { compose exec -T hub cat /var/lib/privos/self-hosted/license-status 2>/dev/null || true; } | tr -d '\r\n'
+}
+
+print_ready() {
   echo ""
   echo "PrivOS is ready."
   echo "  Hub:            ${PRIVOS_ROOT_URL}"
   echo "  Install dir:    ${PRIVOS_DIR}  (.env is mode 0600 — contains secrets, never printed here)"
-  if [[ -n "$code" ]]; then
+  echo ""
+  echo "  Reach it locally at ${PRIVOS_ROOT_URL}. To serve it on a public domain,"
+  echo "  put your own reverse proxy in front (nginx, Apache, or a Cloudflare"
+  echo "  tunnel) — the hub binds ${PRIVOS_ROOT_URL} only."
+  echo ""
+  local pub_port="${PRIVOS_PUBLISHER_PORT:-8558}" pub_bind="${PRIVOS_PUBLISHER_BIND:-127.0.0.1}"
+  if [[ -n "${PRIVOS_PUBLISHER_URL:-}" ]]; then
+    echo "  Publisher:      ${PRIVOS_PUBLISHER_URL}  (published-files renderer)"
+    echo "                  Point your reverse proxy/tunnel for that host at ${pub_bind}:${pub_port}."
+  else
+    echo "  Publisher:      http://${pub_bind}:${pub_port}  (published-files renderer — LOCAL only)"
+    echo "                  Published files stay unreachable until you expose it. To turn it on:"
+    echo "                    1. Pick a SEPARATE hostname (e.g. publish.example.com) — never the"
+    echo "                       hub host: the publisher renders uploaded HTML in a sandboxed origin,"
+    echo "                       and sharing the hub origin would break that isolation (install refuses it)."
+    echo "                    2. Front ${pub_bind}:${pub_port} with your reverse proxy (nginx/Caddy) or a"
+    echo "                       Cloudflare tunnel + TLS — same as you did for the hub."
+    echo "                    3. Set PRIVOS_PUBLISHER_URL=https://publish.example.com in ${PRIVOS_DIR}/.env"
+    echo "                       and re-run install.sh (or 'docker compose up -d') so the hub shows the link."
+    echo "                  Full example (nginx + Cloudflare tunnel): docs/self-hosted-install.md"
+  fi
+}
+
+# Non-interactive summary (--yes, or no controlling terminal): print readiness
+# plus the request code + activate URL so the operator can finish activation
+# later, out of band.
+print_summary() {
+  local code status; code="$(read_request_code)"; status="$(read_license_status)"
+  print_ready
+  echo ""
+  if [[ "$status" == *'"status":"issued"'* ]]; then
+    echo "  License:        activated (self-hosted licence already applied — nothing to do)"
+  elif [[ -n "$code" ]]; then
     echo "  License request code: ${code}"
     echo "  Activate at:    https://client.privos.io/self-hosted/activate#code=${code}"
   else
     echo "  License request code not yet available — check again shortly with:"
     echo "    docker compose -f ${COMPOSE_FILE} --env-file ${ENV_FILE} exec hub cat /var/lib/privos/self-hosted/license-request-code"
+  fi
+}
+
+# Best-effort: offer to copy the code to the clipboard when a clipboard tool is
+# present (desktop). Headless servers usually have none — then it is a no-op
+# with a note. Reads a single keypress from the controlling terminal ($1).
+offer_clipboard_copy() {
+  local text="$1" tty="$2" copier="" key=""
+  if command -v pbcopy >/dev/null 2>&1; then copier="pbcopy"
+  elif command -v wl-copy >/dev/null 2>&1; then copier="wl-copy"
+  elif command -v xclip >/dev/null 2>&1; then copier="xclip -selection clipboard"
+  fi
+  if [[ -z "$copier" ]]; then
+    echo "  (No clipboard tool detected — copy the code above manually.)" >"$tty"
+    return 0
+  fi
+  printf '  Press [c] to copy the code, or any other key to continue… ' >"$tty"
+  read -rsn1 key <"$tty" || key=""
+  printf '\n' >"$tty"
+  if [[ "$key" == "c" || "$key" == "C" ]]; then
+    if printf '%s' "$text" | $copier >/dev/null 2>&1; then echo "  Copied to clipboard." >"$tty"
+    else echo "  Could not access the clipboard — copy the code manually." >"$tty"; fi
+  fi
+}
+
+# Interactive activation (a controlling terminal is present and NOT --yes):
+# wait for the request code, let the operator copy it and activate online, then
+# poll the hub's activation status until issued (≤30 min, Ctrl-C skips), show
+# who it activated as, and only then print readiness.
+interactive_activation() {
+  # PRIVOS_ACTIVATION_TTY is a test-only override; production uses /dev/tty.
+  local tty="${PRIVOS_ACTIVATION_TTY:-/dev/tty}" code="" waited=0
+  printf 'Waiting for the license request code' >"$tty"
+  while (( waited < 120 )); do
+    code="$(read_request_code)"
+    [[ -n "$code" ]] && break
+    sleep 3 || true; waited=$(( waited + 3 )); printf '.' >"$tty"
+  done
+  printf '\n' >"$tty"
+  if [[ -z "$code" ]]; then
+    echo "  License request code not ready yet — falling back to the non-interactive summary." >"$tty"
+    print_summary
+    return 0
+  fi
+
+  {
+    echo ""
+    echo "  ┌─ License request code ────────────────────────────────"
+    echo "  │   ${code}"
+    echo "  └───────────────────────────────────────────────────────"
+    echo ""
+    echo "  Activate this deployment:"
+    echo "    1. Open   https://client.privos.io/self-hosted/activate#code=${code}"
+    echo "    2. Sign in (or create a free PrivOS account)."
+    echo "    3. Choose your plan and complete activation."
+    echo ""
+  } >"$tty"
+  offer_clipboard_copy "$code" "$tty"
+
+  echo "" >"$tty"
+  echo "  Waiting for activation to complete (up to 30 min). Press Ctrl-C to skip and finish later." >"$tty"
+  local deadline status_json status_kind="" skipped=0
+  deadline=$(( $(date +%s) + 1800 ))
+  trap 'skipped=1' INT
+  while (( $(date +%s) < deadline )); do
+    status_json="$(read_license_status)"
+    status_kind="$(printf '%s' "$status_json" | jq -r '.status // empty' 2>/dev/null || true)"
+    [[ "$status_kind" == "issued" ]] && break
+    sleep 10 || true
+    (( skipped == 1 )) && break
+    printf '.' >"$tty"
+  done
+  trap - INT
+  printf '\n' >"$tty"
+
+  if [[ "$status_kind" == "issued" ]]; then
+    local email ws
+    email="$(printf '%s' "$status_json" | jq -r '.ownerEmail // empty' 2>/dev/null || true)"
+    ws="$(printf '%s' "$status_json" | jq -r '.workspaceName // empty' 2>/dev/null || true)"
+    echo "  ✓ Activated${email:+ — ${email}}${ws:+ (workspace: ${ws})}" >"$tty"
+    print_ready
+  else
+    echo "  Activation not completed yet — the hub keeps polling in the background." >"$tty"
+    echo "  Finish anytime at https://client.privos.io/self-hosted/activate#code=${code}" >"$tty"
+    print_ready
   fi
 }
 
@@ -974,18 +1565,39 @@ main() {
   warn_if_dev_signing_key
   detect_platform
   require_host_tools
+  check_network_environment
+  check_registry_reachability
+  check_clock_skew
+  check_selinux
   ensure_docker
   check_resources
   resolve_bundle_source
   HAD_EXISTING_ENV="false"
   [[ -f "$PRIVOS_DIR/.env" ]] && HAD_EXISTING_ENV="true"
+  [[ "$MODE" == "upgrade" ]] && refuse_upgrade_across_rename
   load_existing_env
   resolve_config
   prompt_sidecars
   finalize_sidecar_config
 
+  set_stage "publisher url check"
+  # The publisher renders arbitrary uploaded HTML in a sandboxed origin; hosting it
+  # on the hub's own host would defeat that isolation (cookies are not port-scoped),
+  # so a publisher URL on the ROOT_URL host is refused.
+  if [[ -n "${PRIVOS_PUBLISHER_URL:-}" ]]; then
+    local pub_host root_host
+    pub_host="$(url_hostname "$PRIVOS_PUBLISHER_URL")"
+    root_host="$(url_hostname "$PRIVOS_ROOT_URL")"
+    [[ -n "$pub_host" ]] || { echo "PRIVOS_PUBLISHER_URL is not a valid URL: ${PRIVOS_PUBLISHER_URL}" >&2; exit 1; }
+    if [[ "${pub_host,,}" == "${root_host,,}" ]]; then
+      echo "PRIVOS_PUBLISHER_URL host (${pub_host}) must differ from the hub host (${root_host}) —" >&2
+      echo "the publisher renders untrusted HTML in a sandboxed origin; front it on a separate hostname." >&2
+      exit 1
+    fi
+  fi
+
   set_stage "port conflict check"
-  local -a requested_ports=("$PRIVOS_HUB_PORT" "$PRIVOS_BOARD_PORT" "$PRIVOS_PROXY_PORT" "$PRIVOS_MINIO_PORT")
+  local -a requested_ports=("$PRIVOS_HUB_PORT" "$PRIVOS_BOARD_PORT" "$PRIVOS_PROXY_PORT" "$PRIVOS_RUSTFS_PORT" "${PRIVOS_PUBLISHER_PORT:-8558}")
   mapfile -t vm_ports < <(expand_port_range "$PRIVOS_VM_PORT_RANGE")
   requested_ports+=("${vm_ports[@]}")
   check_ports "${requested_ports[@]}" || exit 1
@@ -994,13 +1606,15 @@ main() {
   require_license_acceptance
 
   set_stage "creating directories"
-  mkdir -p "$PRIVOS_DIR"/data/{mongo,minio,hub-uploads,hub-marketplace/apps,sandbox-board,sandbox-proxy,sandbox-pool,weaviate,local-runtime-socket,local-runtime-state}
+  mkdir -p "$PRIVOS_DIR"/data/{mongo,rustfs,hub-uploads,hub-marketplace/apps,hub-lib,sandbox-board,sandbox-proxy,sandbox-pool,weaviate,app-cluster-state}
   mkdir -p "$PRIVOS_DIR"/secrets
+  [[ "$PRIVOS_WITH_APP_CLUSTER" == "true" ]] && install_mcp_broker_root
   write_license_marker
 
   set_stage "fetching and verifying the bundle"
   fetch_bundle "$PRIVOS_DIR"
   verify_bundle_integrity "$PRIVOS_DIR"
+  adopt_bundle_stack_version "$PRIVOS_DIR"
   chmod 0644 "$PRIVOS_DIR/LICENSE" "$PRIVOS_DIR/NOTICE" "$PRIVOS_DIR/OPEN-SOURCE-NOTICES" \
     "$PRIVOS_DIR/rocketchat-upstream-files.txt" "$PRIVOS_DIR/TRADEMARK.md"
 
@@ -1014,20 +1628,46 @@ main() {
 
   set_stage "network + firewall setup"
   ensure_network
+  # RustFS runs as uid/gid 10001 in its official image (compose.yml `user:`).
+  chown 10001:10001 "$PRIVOS_DIR/data/rustfs"
   chown -R 1001:1001 "$PRIVOS_DIR/data/sandbox-board" "$PRIVOS_DIR/data/sandbox-proxy" "$PRIVOS_DIR/data/sandbox-pool"
   # Hub (uid 1001) writes uploads and marketplace artifacts; the driver reads
   # apps/ as uid 1001 too and requires 0750 on it (compose-ssh-driver parity).
   chown 1001:1001 "$PRIVOS_DIR/data/hub-uploads" "$PRIVOS_DIR/data/hub-marketplace" "$PRIVOS_DIR/data/hub-marketplace/apps"
   chmod 0750 "$PRIVOS_DIR/data/hub-marketplace/apps"
+  # hub-lib holds the hub identity keypair + self-hosted license code/status;
+  # the hub (uid 1001) must be able to mkdir under it. 0700 — private to the hub.
+  chown 1001:1001 "$PRIVOS_DIR/data/hub-lib"
+  chmod 0700 "$PRIVOS_DIR/data/hub-lib"
+  # The official node:20-alpine image's built-in "node" user is uid/gid 1000
+  # — app-cluster (Dockerfile: `USER node`) must be able to write its state
+  # dir (credential file, temp artifact chunks) there.
+  chown 1000:1000 "$PRIVOS_DIR/data/app-cluster-state"
   install_docker_user_rules
 
   set_stage "bringing up the stack (docker compose)"
+  check_stale_stack
   bring_up_stack
   set_stage "waiting for hub + sandbox-proxy to become healthy"
   wait_for_stack_ready || die "stack did not become healthy in time — inspect with: docker compose -f ${COMPOSE_FILE} --env-file ${ENV_FILE} logs"
-  print_summary
+
+  # Interactive activation only when NOT --yes and a controlling terminal is
+  # reachable (works under `curl | bash`, where stdin is the pipe but /dev/tty
+  # is the real terminal). Otherwise print the non-interactive summary.
+  if [[ "$ASSUME_YES" != "true" && -r /dev/tty && -w /dev/tty ]]; then
+    set_stage "license activation"
+    interactive_activation
+  else
+    print_summary
+  fi
 }
 
-if [[ "$(resolve_script_path 2>/dev/null || true)" == "${0}" ]]; then
+# Run main unless the file is being *sourced* (tests/ source it to exercise
+# individual functions). `(return)` succeeds only in a sourced context, so this
+# correctly runs main for direct execution AND for the canonical
+# `curl ... | sudo bash -s -- ...` (piped stdin), where $0 is "bash" but
+# BASH_SOURCE[0] is "main" on bash 5 — a mismatch that made the old
+# `resolve_script_path == $0` guard skip main entirely and exit doing nothing.
+if ! (return 0 2>/dev/null); then
   main "$@"
 fi

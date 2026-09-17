@@ -34,15 +34,15 @@
       "tag": "7.2-alpine",
       "digest": "__REDIS_DIGEST__"
     },
-    "minio": {
-      "repository": "minio/minio",
-      "tag": "RELEASE.2025-04-08T15-41-24Z",
-      "digest": "__MINIO_DIGEST__"
+    "rustfs": {
+      "repository": "ghcr.io/rustfs/rustfs",
+      "tag": "1.0.0-rc.6",
+      "digest": "sha256:8d8bfa61f3a20cdcf644562bb8c3a314ca03c66a9827f6056f741e787bf0c804"
     },
-    "minioMc": {
-      "repository": "minio/mc",
-      "tag": "RELEASE.2025-04-08T15-39-49Z",
-      "digest": "__MINIO_MC_DIGEST__"
+    "rustfsRc": {
+      "repository": "docker.io/rustfs/rc",
+      "tag": "v0.1.35",
+      "digest": "sha256:6558b9777a1e75fc92e040a7bae67af93334703b4b4ab3a28cf45ecc08ee2404"
     },
     "weaviate": {
       "repository": "cr.weaviate.io/semitechnologies/weaviate",
@@ -50,17 +50,22 @@
       "digest": "__WEAVIATE_DIGEST__",
       "profile": "knowledge-vector"
     },
-    "localRuntimeDriver": {
-      "repository": "ghcr.io/privos-ai/privos-local-runtime-driver",
-      "tag": "v1",
-      "digest": "__LOCAL_RUNTIME_DRIVER_DIGEST__",
-      "profile": "local-runtime"
+    "appCluster": {
+      "repository": "ghcr.io/privos-ai/privos-app-cluster",
+      "tag": "PLACEHOLDER_STACK_VERSION",
+      "digest": "__APP_CLUSTER_DIGEST__",
+      "profile": "app-cluster"
+    },
+    "publisher": {
+      "repository": "ghcr.io/privos-ai/privos-publisher",
+      "tag": "PLACEHOLDER_STACK_VERSION",
+      "digest": "__PUBLISHER_DIGEST__"
     }
   },
   "files": {
     "compose.yml": { "sha256": null },
     "install.sh": { "sha256": null },
-    "minio-init.sh": { "sha256": null },
+    "rustfs-init.sh": { "sha256": null },
     "docker-user-rules.sh": { "sha256": null },
     "LICENSE": { "sha256": null },
     "NOTICE": { "sha256": null },

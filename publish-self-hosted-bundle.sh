@@ -38,17 +38,23 @@ IMAGE_REFS=(
   "sandboxVm|ghcr.io/privos-ai/privos-sandbox-vm|__SANDBOX_VM_DIGEST__"
   "mongo|mongo:7.0.14|__MONGO_DIGEST__"
   "redis|redis:7.2-alpine|__REDIS_DIGEST__"
-  "minio|minio/minio:RELEASE.2025-04-08T15-41-24Z|__MINIO_DIGEST__"
-  "minioMc|minio/mc:RELEASE.2025-04-08T15-39-49Z|__MINIO_MC_DIGEST__"
+  # sha256:8d8bfa61f3a20cdcf644562bb8c3a314ca03c66a9827f6056f741e787bf0c804 (D6): linux/amd64 child digest, resolved by hand on
+  # ctl-01 and patched into both lines below before a real publish run — the
+  # two entries share the sentinel text on purpose (neither has a real digest
+  # yet); resolve_all_digests's sed step is per-entry so once BOTH are patched
+  # with distinct real digests, publishing proceeds normally.
+  "rustfs|ghcr.io/rustfs/rustfs:1.0.0-rc.6|8d8bfa61f3a20cdcf644562bb8c3a314ca03c66a9827f6056f741e787bf0c804"
+  "rustfsRc|docker.io/rustfs/rc:v0.1.35|6558b9777a1e75fc92e040a7bae67af93334703b4b4ab3a28cf45ecc08ee2404"
   # Digest-pinned: cr.weaviate.io enforces a strict unauthenticated pull rate
   # limit that blocks digest resolution from developer machines. Pin explicitly
   # (resolved on the fleet build host) and bump alongside the tag.
   "weaviate|cr.weaviate.io/semitechnologies/weaviate:1.38.2@sha256:9969db903c76cbaf17f40b7b33d3432e111c494713d1065ee050d742aeeaebfe|__WEAVIATE_DIGEST__"
-  "localRuntimeDriver|ghcr.io/privos-ai/privos-local-runtime-driver:v1|__LOCAL_RUNTIME_DRIVER_DIGEST__"
+  "appCluster|ghcr.io/privos-ai/privos-app-cluster|__APP_CLUSTER_DIGEST__"
+  "publisher|ghcr.io/privos-ai/privos-publisher|__PUBLISHER_DIGEST__"
 )
 
 SIGNED_FILES=(compose.yml versions.json)
-HASHED_FILES=(compose.yml install.sh minio-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md)
+HASHED_FILES=(compose.yml install.sh rustfs-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md)
 
 # OPEN-SOURCE-NOTICES ships with two release-time template tokens that must
 # never reach a published bundle unresolved (see fill_open_source_notices_tokens
@@ -194,9 +200,9 @@ resolve_all_digests() {
   declare -gA RESOLVED_DIGEST=()
   for entry in "${IMAGE_REFS[@]}"; do
     IFS='|' read -r name ref_template placeholder <<<"$entry"
-    # Entries with no tag baked into ref_template (hub/sandbox-*) are versioned
-    # by --stack-version; entries that already carry a tag (mongo, redis,
-    # minio, weaviate, local-runtime-driver) are pinned independently.
+    # Entries with no tag baked into ref_template (hub/sandbox-*, appCluster)
+    # are versioned by --stack-version; entries that already carry a tag
+    # (mongo, redis, rustfs, weaviate) are pinned independently.
     ref="$ref_template"
     [[ "$ref" == *:* ]] || ref="${ref_template}:${STACK_VERSION}"
     log "Resolving digest for ${name} (${ref})…"
@@ -217,7 +223,7 @@ resolve_all_digests() {
 # Generates "name  version  license" rows per ghcr.io/privos-ai/* image
 # (grouped per image, sorted), via `syft <image@digest> -o json`. Only images
 # Roxane builds and conveys get an inventory here — third-party images
-# (mongo, redis, minio, weaviate) are already covered by OPEN-SOURCE-NOTICES
+# (mongo, redis, rustfs, weaviate) are already covered by OPEN-SOURCE-NOTICES
 # section 1, which states they are pulled by the deployment, not conveyed.
 build_sbom_inventory() {
   require_cmd syft
@@ -231,7 +237,19 @@ build_sbom_inventory() {
     repo="${ref_template%%:*}"
     ref="${repo}@${digest}"
     log "Generating SBOM inventory for ${ref}…"
-    json="$(syft "$ref" -o json 2>/dev/null)" || die "syft failed to generate an SBOM for ${ref}"
+    # --platform: the fleet builds these images for linux/amd64 (x86 build hosts)
+    # and the bundle targets amd64 servers, so a multi-arch index has no arm64
+    # child. Without this an Apple-Silicon ops box fails with "no child with
+    # platform linux/arm64". Overridable for a future multi-arch build.
+    # syft's stderr carries the real cause, so surface it instead of swallowing it.
+    local syft_err
+    syft_err="$(mktemp)"
+    json="$(syft --platform "${SBOM_PLATFORM:-linux/amd64}" "$ref" -o json 2>"$syft_err")" || {
+      log "syft stderr: $(tail -3 "$syft_err")"
+      rm -f "$syft_err"
+      die "syft failed to generate an SBOM for ${ref}"
+    }
+    rm -f "$syft_err"
     rows="$(jq -r '
         [ .artifacts[]? |
           {
@@ -257,11 +275,12 @@ build_sbom_inventory() {
 # Replaces a standalone-line placeholder ($2) with (possibly multi-line)
 # content ($3) — used for __SBOM_LICENSE_INVENTORY__, which occupies its own
 # line. awk (not sed) because the replacement text is multi-line and may
-# contain sed-special characters (/, &, |).
+# contain sed-special characters (/, &, |). The content travels via ENVIRON,
+# not -v: BSD awk (macOS) rejects a -v value containing a newline.
 replace_placeholder_line() {
   local file="$1" token="$2" content="$3"
-  awk -v token="$token" -v content="$content" '
-    $0 == token { print content; next }
+  PLACEHOLDER_CONTENT="$content" awk -v token="$token" '
+    $0 == token { print ENVIRON["PLACEHOLDER_CONTENT"]; next }
     { print }
   ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
 }
@@ -301,7 +320,7 @@ apply_digests_and_sign() {
 
   cp "$BUNDLE_DIR/compose.yml" "$work/compose.yml"
   cp "$BUNDLE_DIR/versions.json" "$work/versions.json"
-  for f in install.sh minio-init.sh docker-user-rules.sh env.template SIGNING.md \
+  for f in install.sh rustfs-init.sh docker-user-rules.sh env.template SIGNING.md \
     LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md; do
     cp "$BUNDLE_DIR/$f" "$work/$f"
   done
@@ -348,9 +367,12 @@ apply_digests_and_sign() {
   printf '%s\n' "$json" | jq . > "$work/versions.json"
 
   [[ -n "$MINISIGN_KEY" ]] || die "--minisign-key is required to sign (see SIGNING.md)"
-  local f2
+  # MINISIGN_PASSWORDLESS=1 passes -W so an unencrypted key signs without a
+  # tty prompt (detached tmux/CI runs would otherwise hang on "Password:").
+  local f2 sign_opts=()
+  [[ "${MINISIGN_PASSWORDLESS:-0}" == "1" ]] && sign_opts=(-W)
   for f2 in "${SIGNED_FILES[@]}"; do
-    minisign -S -s "$MINISIGN_KEY" -m "$work/$f2" -t "PrivOS self-hosted bundle ${STACK_VERSION}" \
+    minisign -S "${sign_opts[@]}" -s "$MINISIGN_KEY" -m "$work/$f2" -t "PrivOS self-hosted bundle ${STACK_VERSION}" \
       || die "signing failed for ${f2}"
     log "Signed ${f2}"
   done
@@ -383,7 +405,7 @@ publish() {
     "$work/install.sh"
     "$work/compose.yml" "$work/compose.yml.minisig"
     "$work/versions.json" "$work/versions.json.minisig"
-    "$work/minio-init.sh"
+    "$work/rustfs-init.sh"
     "$work/docker-user-rules.sh"
     "$work/env.template"
     "$work/SIGNING.md"

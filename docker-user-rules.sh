@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs ON the self-hosted install host. Locks the sandbox plane (board,
-# proxy, MinIO, VM pool range) to loopback-only at the DOCKER-USER level, as
+# proxy, RustFS, VM pool range) to loopback-only at the DOCKER-USER level, as
 # a backstop against a LATER `ports:` edit in compose.yml republishing one of
 # them on 0.0.0.0 — the compose.yml bind (127.0.0.1:PORT:PORT) is the primary
 # control; this is defense-in-depth so a manual edit mistake alone cannot
@@ -36,7 +36,10 @@ apply() {
 
   IFS=',' read -ra ports <<< "$protected_ports"
   for p in "${ports[@]}"; do
-    port_range="${p/:/-}"
+    # iptables/conntrack port RANGES use a colon (30000:30999); a dash makes
+    # iptables treat it as a service name -> "Port 30000-30999 does not resolve
+    # to anything". Normalize either form to the colon iptables wants.
+    port_range="${p/-/:}"
     iptables -I DOCKER-USER 1 -p tcp -s 127.0.0.1/8 -m conntrack --ctorigdstport "$port_range" \
       -m comment --comment "privos-self-hosted-sandbox-plane" -j RETURN
     iptables -A DOCKER-USER -p tcp -m conntrack --ctstate NEW --ctorigdstport "$port_range" \
@@ -54,6 +57,14 @@ apply
 # obscure `install: cannot stat 'bash'` after the rules are already live.
 if [[ ! -r "$0" || "$0" == bash || "$0" == sh ]]; then
   echo "WARNING: rules applied but NOT made persistent — install.sh copies this script to disk before running it; if you invoked it manually over a pipe, copy it to a file and run it from there to install the boot unit" >&2
+  iptables -L DOCKER-USER -n --line-numbers | tail -n +3
+  exit 0
+fi
+# No systemd (containers, some minimal/alternative-init distros): the rules are
+# live for this boot but there is nothing to persist them with. Say so and stop
+# here instead of dying on `systemctl` under set -e after the rules are applied.
+if ! command -v systemctl >/dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; then
+  echo "WARNING: no systemd on this host — rules applied for this boot only; re-run install.sh (or this script) after each reboot to reapply" >&2
   iptables -L DOCKER-USER -n --line-numbers | tail -n +3
   exit 0
 fi

@@ -81,7 +81,7 @@ minisign -G -f -W -p infra/self-hosted/.secrets/dev-minisign.pub \
 ## What minisign covers, and what it does not
 
 `install.sh` minisig-verifies `compose.yml` and `versions.json` directly.
-`minio-init.sh`, `docker-user-rules.sh`, `LICENSE`, `NOTICE`,
+`rustfs-init.sh`, `docker-user-rules.sh`, `LICENSE`, `NOTICE`,
 `OPEN-SOURCE-NOTICES`, `rocketchat-upstream-files.txt`, and `TRADEMARK.md`
 are **not** separately minisig-signed — they are hash-pinned instead:
 `versions.json`'s `files{}` block (itself inside the signature) carries a
@@ -98,7 +98,7 @@ them the same as a change to `compose.yml`: it only takes effect once
 (TLS-from-GitHub, no application-level integrity check) and is the thing
 that *performs* the minisign verification —
 it cannot verify itself. The minisign boundary protects the bundle
-(`compose.yml`, `versions.json`, and by extension `minio-init.sh`,
+(`compose.yml`, `versions.json`, and by extension `rustfs-init.sh`,
 `docker-user-rules.sh`, `LICENSE`, `NOTICE`, `OPEN-SOURCE-NOTICES`,
 `rocketchat-upstream-files.txt`, and `TRADEMARK.md`) it downloads and runs;
 TLS is the only protection on `install.sh` in transit. An operator who wants

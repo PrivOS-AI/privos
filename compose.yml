@@ -24,14 +24,12 @@ networks:
     name: ${PRIVOS_NETWORK:-privos-sandbox-net}
     external: true
 
-volumes:
-  # Hub instance identity (P-256 keypair) + the self-hosted license-request
-  # code live under here. A true named volume (not a host bind) per the
-  # phase-4 spec — this is the one piece of hub state that must survive
-  # --uninstall (no --purge) and re-creation without any host-side chown
-  # gymnastics.
-  hub-lib:
-    name: ${PRIVOS_PROJECT:-privos}-hub-lib
+# Hub instance identity (P-256 keypair) + the self-hosted license-request code
+# and activation status live under /var/lib/privos. A host bind (not a named
+# volume) so install.sh can chown it to the hub's uid (1001) — a fresh named
+# volume is root-owned, and the hub (uid 1001) then cannot mkdir there, which
+# silently fails the license-request-code + status bootstrap (EACCES). Under
+# ${PRIVOS_DIR}/data it still survives --uninstall (only --purge removes it).
 
 services:
   mongo:
@@ -48,6 +46,15 @@ services:
       - ${PRIVOS_DIR}/secrets/mongo-keyfile:/run/secrets/mongo-keyfile:ro
     mem_limit: ${PRIVOS_MONGO_MEM:-1g}
     cpus: ${PRIVOS_MONGO_CPUS:-2}
+    # WiredTiger holds one OS file per collection+index. Rocket.Chat's bootstrap
+    # creates hundreds on first start, blowing past a host whose dockerd default
+    # nofile is 1024 (fresh Ubuntu): open() returns EMFILE (errno 24) mid
+    # __wt_block_manager_create -> WT_PANIC -> fassert abort. Pin the mongod
+    # recommended limit so the container never inherits a low host default.
+    ulimits:
+      nofile:
+        soft: 64000
+        hard: 64000
     security_opt: ["no-new-privileges:true"]
     healthcheck:
       test: ["CMD-SHELL", "mongosh --host $$(hostname -i) --quiet --eval \"db.adminCommand({ping:1})\""]
@@ -71,52 +78,69 @@ services:
       retries: 10
       start_period: 10s
 
-  minio:
-    image: minio/minio:RELEASE.2025-04-08T15-41-24Z@sha256:__MINIO_DIGEST__
-    container_name: ${PRIVOS_PROJECT:-privos}-minio
+  rustfs:
+    image: ghcr.io/rustfs/rustfs:1.0.0-rc.6@sha256:8d8bfa61f3a20cdcf644562bb8c3a314ca03c66a9827f6056f741e787bf0c804  # linux/amd64 child digest resolved on ctl-01 (D6)
+    container_name: ${PRIVOS_PROJECT:-privos}-rustfs
     restart: unless-stopped
     networks: [privos]
-    command: ["server", "/data", "--console-address", ":9001"]
+    user: "10001:10001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      # RustFS-owned env names (D9, never mapped) — our own RUSTFS_ROOT_USER/
+      # PASSWORD (env.template) are mapped into them here so a missing value
+      # fails closed instead of booting the sample admin identity.
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ROOT_USER:?RUSTFS_ROOT_USER is required}
+      RUSTFS_SECRET_KEY: ${RUSTFS_ROOT_PASSWORD:?RUSTFS_ROOT_PASSWORD is required}
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_VOLUMES: /data
+      # The bundle never publishes a console.
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_HEALTH_ENDPOINT_ENABLE: "true"
+      # No OTLP collector here; keep an audit trail on stdout instead.
+      RUSTFS_OBS_LOG_STDOUT_ENABLED: "true"
+      RUSTFS_OBS_TRACES_EXPORT_ENABLED: "false"
+      RUSTFS_OBS_METRICS_EXPORT_ENABLED: "false"
+      RUSTFS_OBS_LOGS_EXPORT_ENABLED: "false"
+      RUSTFS_OBS_PROFILING_EXPORT_ENABLED: "false"
     volumes:
-      - ${PRIVOS_DIR}/data/minio:/data
-    # API only — loopback. Console (9001) is intentionally never published;
-    # reach it with `docker compose exec minio ...` or an SSH tunnel.
+      - ${PRIVOS_DIR}/data/rustfs:/data
+    # API only — loopback. RustFS ships no console on this port; nothing else
+    # to publish.
     ports:
-      - "127.0.0.1:${PRIVOS_MINIO_PORT:-9000}:9000"
-    mem_limit: ${PRIVOS_MINIO_MEM:-512m}
-    cpus: ${PRIVOS_MINIO_CPUS:-1}
+      - "127.0.0.1:${PRIVOS_RUSTFS_PORT:-9000}:9000"
+    mem_limit: ${PRIVOS_RUSTFS_MEM:-512m}
+    cpus: ${PRIVOS_RUSTFS_CPUS:-1}
     security_opt: ["no-new-privileges:true"]
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live"]
+      # /minio/health/live is a liveness probe that answers 200 even when
+      # storage is not usable; /health/ready reflects storage + IAM readiness.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/health/ready"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 15s
 
-  # One-shot: mirrors minio-provisioner.ts (mc mb -p, versioning, scoped
+  # One-shot: mirrors rustfs-provisioner.ts (rc bucket create, versioning, scoped
   # service account). Exits 0 on success; install.sh runs it explicitly via
-  # `docker compose run --rm minio-init` after minio is healthy, then
+  # `docker compose run --rm rustfs-init` after rustfs is healthy, then
   # `docker compose up -d` brings it up again as a no-op on every re-run
-  # (idempotent — see minio-init.sh).
-  minio-init:
-    image: minio/mc:RELEASE.2025-04-08T15-39-49Z@sha256:__MINIO_MC_DIGEST__
-    container_name: ${PRIVOS_PROJECT:-privos}-minio-init
+  # (idempotent — see rustfs-init.sh).
+  rustfs-init:
+    image: docker.io/rustfs/rc:v0.1.35@sha256:6558b9777a1e75fc92e040a7bae67af93334703b4b4ab3a28cf45ecc08ee2404  # linux/amd64 child digest resolved on ctl-01 (D6)
+    container_name: ${PRIVOS_PROJECT:-privos}-rustfs-init
     networks: [privos]
     depends_on:
-      minio:
+      rustfs:
         condition: service_healthy
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
-      MINIO_BUCKET: ${MINIO_BUCKET:-privos}
+      RUSTFS_ROOT_USER: ${RUSTFS_ROOT_USER:?RUSTFS_ROOT_USER is required}
+      RUSTFS_ROOT_PASSWORD: ${RUSTFS_ROOT_PASSWORD:?RUSTFS_ROOT_PASSWORD is required}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY is required}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY is required}
+      RUSTFS_BUCKET: ${RUSTFS_BUCKET:-privos}
+      RC_CONFIG_DIR: /tmp/rc
     volumes:
-      - ${PRIVOS_DIR}/minio-init.sh:/minio-init.sh:ro
-    entrypoint: ["/bin/sh", "/minio-init.sh"]
+      - ${PRIVOS_DIR}/rustfs-init.sh:/rustfs-init.sh:ro
+    entrypoint: ["/bin/sh", "/rustfs-init.sh"]
     security_opt: ["no-new-privileges:true"]
 
   hub:
@@ -129,7 +153,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio-init:
+      rustfs-init:
         condition: service_completed_successfully
     environment:
       ROOT_URL: ${PRIVOS_ROOT_URL:?PRIVOS_ROOT_URL is required}
@@ -146,6 +170,12 @@ services:
       ADMIN_PASS: ${ADMIN_PASS:?ADMIN_PASS is required}
       ADMIN_EMAIL: ${ADMIN_EMAIL:?ADMIN_EMAIL is required}
       REG_TOKEN: ${REG_TOKEN:?REG_TOKEN is required}
+      # encrypted_secrets vault key (encrypted-secret-store.ts) — without it
+      # the hub falls back to a plaintext secret store and refuses to pair
+      # an App Cluster (an RCE-grade credential is never written in the
+      # clear). Always generated by install.sh, independent of whether the
+      # app-cluster profile is enabled.
+      PRIVOS_SECRET_STORE_KEY: ${PRIVOS_SECRET_STORE_KEY:?PRIVOS_SECRET_STORE_KEY is required}
       VAPID_SUBJECT: ${VAPID_SUBJECT:?VAPID_SUBJECT is required}
       OVERWRITE_SETTING_WebPush_public_key: ${VAPID_PUBLIC_KEY:?VAPID_PUBLIC_KEY is required}
       OVERWRITE_SETTING_WebPush_private_key: ${VAPID_PRIVATE_KEY:?VAPID_PRIVATE_KEY is required}
@@ -154,6 +184,12 @@ services:
       # Self-hosted signal — fleet derives this from Workspace.selfHosted; a
       # self-hosted hub has no portal Workspace row to read it from.
       PRIVOS_SELF_HOSTED: "true"
+      # Community bootstrap pairing is a mutual HMAC challenge, so the SAME seed
+      # has to reach both ends — the App Cluster below gets it too. Without it
+      # here the hub answers `not_configured` to every attempt and the bundled
+      # App Cluster never pairs, while its healthcheck still reports healthy.
+      # Only meaningful under the app-cluster profile; harmless otherwise.
+      PRIVOS_APP_CLUSTER_BOOTSTRAP_TOKEN: ${PRIVOS_APP_CLUSTER_BOOTSTRAP_TOKEN:?PRIVOS_APP_CLUSTER_BOOTSTRAP_TOKEN is required}
       # See RENDERER-DIFF.md: these four live on board/proxy on the fleet;
       # the hub also needs them here for BYO-vs-credit LLM routing and
       # self-hosted license polling (phase 2/5).
@@ -168,27 +204,66 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       # --- knowledge-vector profile (off by default) ---
-      WEAVIATE_URL: ${PRIVOS_WEAVIATE_URL:-}
+      WEAVIATE_URL: ${PRIVOS_WEAVIATE_URL:-http://weaviate:8080}
       WEAVIATE_COLLECTION: KnowledgeObject
       KNOWLEDGE_WORKSPACE_ID: ${PRIVOS_DEPLOYMENT_ID:-}
       WEAVIATE_API_KEY: ${WEAVIATE_ROOT_KEY:-}
-      # --- local-runtime profile (off by default) ---
-      MCP_APP_LOCAL_RUNTIME_V3: ${PRIVOS_WITH_LOCAL_RUNTIME:-false}
-      MCP_LOCAL_RUNTIME_DRIVER_SOCKET: /run/privos-local-runtime/driver.sock
-      MCP_LOCAL_RUNTIME_DRIVER_SOCKET_UID: "65532"
-      MCP_LOCAL_RUNTIME_DRIVER_SOCKET_GID: "1001"
-      MCP_LOCAL_RUNTIME_ENDPOINT_HOSTS: ${PRIVOS_LOCAL_RUNTIME_ENDPOINT_HOSTS:-}
+      # --- App Cluster (community marketplace runtime, app-cluster profile) ---
+      # Live whenever the app-cluster service is enabled (the default) — both
+      # are what phase 7 makes load-bearing: MCP_APP_LOCAL_RUNTIME_V3 gates
+      # the v3 SELF_HOSTED_LOCAL runtime path, and the endpoint hostname
+      # allowlist must match the fixed `*.app-cluster.internal` suffix the
+      # hub's runtime-endpoint validator grants App Cluster endpoints under.
+      MCP_APP_LOCAL_RUNTIME_V3: "true"
+      MCP_LOCAL_RUNTIME_ENDPOINT_HOSTS: "*.app-cluster.internal"
+      # The hub still stages marketplace artifacts locally before handing
+      # them to the App Cluster over the tunnel (D9).
       MARKETPLACE_LOCAL_APP_DIR: /var/lib/privos/marketplace/apps
+      # RustFS-hosted app UI assets (phase 8) — the kill switch is
+      # `enabledUnlessDisabled`, so only an explicit "false" turns it off.
+      MCP_APP_UI_RUSTFS: ${PRIVOS_MCP_APP_UI_RUSTFS:-true}
+      # --- Hub -> RustFS wiring -------------------------------------------
+      # rustfs-init provisions the bucket, policy and access key, and compose
+      # hands RUSTFS_* to board/proxy — but the hub was given none of it, and it
+      # reads this config from SETTINGS (buildRustfsConfigFromSettings), not env.
+      # Every one of them was empty, so uploading any file returned
+      # "RustFS is not configured. Please configure RustFS settings in the admin
+      # panel." — i.e. file upload was dead on arrival on every self-hosted
+      # install. Seeded through the same OVERWRITE_SETTING_ mechanism the
+      # WebPush keys above already use.
+      OVERWRITE_SETTING_FileUpload_S3_Bucket: ${RUSTFS_BUCKET:-privos}
+      OVERWRITE_SETTING_FileUpload_S3_AWSAccessKeyId: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY is required}
+      OVERWRITE_SETTING_FileUpload_S3_AWSSecretAccessKey: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY is required}
+      # The host baked into every presigned URL, signed via
+      # X-Amz-SignedHeaders=host so clients cannot rewrite it. `rustfs` is the
+      # compose-network name, reachable by every service on this network (hub,
+      # app-cluster, board, proxy). RustFS itself stays published on
+      # 127.0.0.1 only — an object store on a single-host install has no
+      # business being internet-facing. NOTE: sandbox VMs are spawned with
+      # host-port publishing and are NOT on this network (see VM_NETWORK below),
+      # so presigned URLs still do not reach them; that needs either VM_NETWORK
+      # attachment or a host-reachable RustFS bind, and is deliberately left as a
+      # separate decision rather than guessed at here.
+      OVERWRITE_SETTING_FileUpload_S3_BucketURL: ${RUSTFS_PUBLIC_URL:-http://rustfs:9000}
+      # --- Hub -> sandbox wiring -----------------------------------------
+      # SANDBOX_PROXY_URL above is already correct, but the hub only consults it
+      # when this is true; it defaults to false, so admin showed "no global
+      # sandbox configured" while the proxy sat there running.
+      OVERWRITE_SETTING_PrivOSSandbox_Use_Env: "true"
+      # File publisher (published-files renderer). Empty (default) hides the
+      # public publish link in the hub UI. Set it to the publisher's OWN
+      # hostname — never the hub host: the publisher renders arbitrary uploaded
+      # HTML in a sandboxed origin, and co-hosting it with the hub would defeat
+      # that isolation. install.sh preflight refuses a URL on the ROOT_URL host.
+      PRIVOS_PUBLISHER_URL: ${PRIVOS_PUBLISHER_URL:-}
     volumes:
-      - hub-lib:/var/lib/privos
+      - ${PRIVOS_DIR}/data/hub-lib:/var/lib/privos
       - ${PRIVOS_DIR}/data/hub-uploads:/app/bundle/uploads
-      # Marketplace app artifacts: a host bind (as on the fleet) so the
-      # local-runtime-driver below can mount exactly the apps/ subtree at the
-      # SAME absolute path the hub writes to — a named volume cannot be
-      # sub-mounted, and mounting all of hub-lib there would both shift the
-      # path and hand the driver the hub's identity keypair.
+      # Marketplace app artifacts: a host bind (as on the fleet), kept as the
+      # hub's local staging area for MARKETPLACE_LOCAL_APP_DIR (D9) — the App
+      # Cluster never mounts this; it receives artifacts streamed over the
+      # dial-out tunnel (phase 6), not a shared volume.
       - ${PRIVOS_DIR}/data/hub-marketplace:/var/lib/privos/marketplace
-      - ${PRIVOS_DIR}/data/local-runtime-socket:/run/privos-local-runtime:ro
     # Only the hub is published, and only the hub is published on all
     # interfaces — everything else in this file binds 127.0.0.1 or is not
     # published at all.
@@ -204,6 +279,37 @@ services:
       retries: 5
       start_period: 480s
 
+  # File publisher (published-files renderer, SINGLE mode: fronts this one hub).
+  # Binds loopback by default (PRIVOS_PUBLISHER_BIND) — front it with your own
+  # reverse proxy + TLS on a DEDICATED hostname, never the hub's own host (the
+  # publisher renders uploaded HTML in a sandboxed origin; sharing the hub origin
+  # defeats that). Leaving PRIVOS_PUBLISHER_URL empty on the hub simply hides the
+  # public link; this service is then idle and harmless.
+  publisher:
+    image: ghcr.io/privos-ai/privos-publisher:${PRIVOS_STACK_VERSION:?PRIVOS_STACK_VERSION is required}@sha256:__PUBLISHER_DIGEST__
+    container_name: ${PRIVOS_PROJECT:-privos}-publisher
+    restart: unless-stopped
+    networks: [privos]
+    depends_on:
+      hub:
+        condition: service_healthy
+    environment:
+      PUBLISHER_MODE: single
+      PRIVOS_HUB_API_URL: http://hub:3000/api/v1
+      HOSTNAME: 0.0.0.0
+      PORT: "5000"
+    ports:
+      - "${PRIVOS_PUBLISHER_BIND:-127.0.0.1}:${PRIVOS_PUBLISHER_PORT:-8558}:5000"
+    mem_limit: ${PRIVOS_PUBLISHER_MEM:-256m}
+    cpus: ${PRIVOS_PUBLISHER_CPUS:-0.5}
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:5000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
   sandbox-board:
     image: ghcr.io/privos-ai/privos-sandbox-board:${PRIVOS_STACK_VERSION:?PRIVOS_STACK_VERSION is required}@sha256:__SANDBOX_BOARD_DIGEST__
     container_name: ${PRIVOS_PROJECT:-privos}-sandbox-board
@@ -213,15 +319,15 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
-      minio-init:
+      rustfs-init:
         condition: service_completed_successfully
     environment:
       DB_DIALECT: mongo
       MONGODB_URL: ${MONGODB_URL:?MONGODB_URL is required}
       NODE_ENV: production
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+      RUSTFS_ENDPOINT: http://rustfs:9000
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY is required}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY is required}
       PRIVOS_SANDBOX_MODE: "true"
       AGENT_PROVIDER: privos-agent-sdk
       ROXANE_PROXIED_BASE_URL: ${PRIVOS_LLM_BASE_URL:-}
@@ -266,15 +372,15 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
-      minio-init:
+      rustfs-init:
         condition: service_completed_successfully
     environment:
       DB_DIALECT: mongo
       MONGODB_URL: ${MONGODB_URL:?MONGODB_URL is required}
       NODE_ENV: production
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+      RUSTFS_ENDPOINT: http://rustfs:9000
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY is required}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY is required}
       PRIVOS_SANDBOX_MODE: "true"
       AGENT_PROVIDER: privos-agent-sdk
       ROXANE_PROXIED_BASE_URL: ${PRIVOS_LLM_BASE_URL:-}
@@ -361,47 +467,61 @@ services:
       retries: 10
       start_period: 60s
 
-  # --- local-runtime profile: opt-in, off by default -----------------------
-  # Run marketplace MCP apps as containers on this host instead of PrivOS's
-  # app cluster. Needs Docker socket access; dockerSocketGid is resolved by
-  # install.sh (`stat -c %g /var/run/docker.sock`) into PRIVOS_DOCKER_SOCKET_GID.
-  local-runtime-driver:
-    image: ghcr.io/privos-ai/privos-local-runtime-driver:v1@sha256:__LOCAL_RUNTIME_DRIVER_DIGEST__
-    container_name: ${PRIVOS_PROJECT:-privos}-local-runtime-driver
+  # --- app-cluster profile: on by default (--without-app-cluster opts out) -
+  # The community marketplace runtime. Dials OUT to the hub over the
+  # dial-out tunnel (phase 3/4) — opens no local listener, so it needs no
+  # port mapping and no HOST/PORT/JWT_SECRET. DOCKER_NETWORK/APP_NETWORK_NAME
+  # are intentionally left at the image's own defaults, never
+  # ${PRIVOS_NETWORK}: runtime containers it deploys join their own private
+  # per-runtime network, never this compose stack's network (phase 6) — that
+  # is what stops an app container from ever reaching `hub` on this bridge
+  # and spoofing it during the bootstrap exchange. Needs Docker socket
+  # access — root-equivalent on this host, the same posture the community
+  # bundle's earlier Python-driven marketplace runtime had; dockerSocketGid
+  # is resolved by install.sh (`stat -c %g /var/run/docker.sock`) into
+  # PRIVOS_DOCKER_SOCKET_GID.
+  app-cluster:
+    image: ghcr.io/privos-ai/privos-app-cluster:${PRIVOS_STACK_VERSION:?PRIVOS_STACK_VERSION is required}@sha256:__APP_CLUSTER_DIGEST__
+    container_name: ${PRIVOS_PROJECT:-privos}-app-cluster
     restart: unless-stopped
-    profiles: ["local-runtime"]
+    profiles: ["app-cluster"]
     networks: [privos]
-    user: "65532:65532"
-    # Same interpolation-before-profile-filtering reasoning as
-    # WEAVIATE_ROOT_KEY above — install.sh resolves and validates the real
-    # gid before ever running compose with local-runtime enabled.
-    group_add: ["1001", "${PRIVOS_DOCKER_SOCKET_GID:-0}"]
+    # install.sh resolves and validates the real docker-socket gid before
+    # ever running compose with the app-cluster profile enabled (same
+    # interpolation-before-profile-filtering reasoning as WEAVIATE_ROOT_KEY
+    # above).
+    group_add: ["${PRIVOS_DOCKER_SOCKET_GID:-0}"]
     environment:
-      PRIVOS_LOCAL_RUNTIME_DRIVER_ENABLED: "true"
-      PRIVOS_LOCAL_RUNTIME_SOCKET_PATH: /run/privos-local-runtime/driver.sock
-      PRIVOS_LOCAL_RUNTIME_STATE_DB: /var/lib/privos/local-runtime-driver/state.sqlite3
-      PRIVOS_LOCAL_RUNTIME_ARTIFACT_ROOT: /var/lib/privos/marketplace/apps
-      PRIVOS_LOCAL_RUNTIME_DOCKER_SOCKET: /var/run/docker.sock
-      PRIVOS_LOCAL_RUNTIME_PRIVATE_NETWORK: ${PRIVOS_NETWORK:-privos-sandbox-net}
-      PRIVOS_LOCAL_RUNTIME_SOCKET_MODE: "0660"
-      PRIVOS_LOCAL_RUNTIME_SOCKET_GID: "1001"
-      PRIVOS_LOCAL_RUNTIME_ALLOWED_PEER_UID: "1001"
-      PRIVOS_LOCAL_RUNTIME_ARTIFACT_UID: "1001"
-      PRIVOS_LOCAL_RUNTIME_ARTIFACT_GID: "1001"
+      PRIVOS_HUB_URL: http://hub:3000
+      PRIVOS_APP_CLUSTER_BOOTSTRAP_TOKEN: ${PRIVOS_APP_CLUSTER_BOOTSTRAP_TOKEN:?PRIVOS_APP_CLUSTER_BOOTSTRAP_TOKEN is required}
+      PRIVOS_STATE_DIR: /var/lib/privos-app-cluster
+      CLUSTER_OPERATOR_ROUTES: "off"
+      # Node identity keypair (outbound MANAGED-broker attestation signer) —
+      # pinned onto the already-persisted state volume below. The image's
+      # default path is unwritable by uid 1000 and not on a volume, which
+      # would rotate the key on every container recreate.
+      MCP_NODE_IDENTITY_KEY_PATH: /var/lib/privos-app-cluster/node-identity.json
+      # Origin locally executed apps call for Hub API requests. Must be the
+      # hub's public ROOT_URL: workload DPoP proofs are checked against it, and
+      # it must be reachable from app containers (not localhost).
+      PRIVOS_HUB_PUBLIC_URL: ${PRIVOS_ROOT_URL:?PRIVOS_ROOT_URL is required}
     volumes:
-      - ${PRIVOS_DIR}/data/local-runtime-socket:/run/privos-local-runtime
-      - ${PRIVOS_DIR}/data/hub-marketplace/apps:/var/lib/privos/marketplace/apps:ro
-      - ${PRIVOS_DIR}/data/local-runtime-state:/var/lib/privos/local-runtime-driver
+      - ${PRIVOS_DIR}/data/app-cluster-state:/var/lib/privos-app-cluster
+      # MANAGED-broker root (McpBrokerManager) — identical path host↔container
+      # (prepare() chmods the root; a mismatched path breaks that). /run is
+      # tmpfs, so install.sh recreates this dir via tmpfiles.d on every boot.
+      - /run/privos/mcp-broker:/run/privos/mcp-broker
       - /var/run/docker.sock:/var/run/docker.sock
-    mem_limit: ${PRIVOS_LOCAL_RUNTIME_MEM:-256m}
-    cpus: ${PRIVOS_LOCAL_RUNTIME_CPUS:-1}
+    mem_limit: ${PRIVOS_APP_CLUSTER_MEM:-256m}
+    cpus: ${PRIVOS_APP_CLUSTER_CPUS:-1}
     security_opt: ["no-new-privileges:true"]
-    read_only: true
     cap_drop: ["ALL"]
-    pids_limit: 256
-    tmpfs: ["/tmp:rw,nosuid,nodev,noexec,size=32m"]
     healthcheck:
-      test: ["CMD-SHELL", "python -m privos_local_runtime_driver.healthcheck"]
+      # No TCP listener in tunnel mode (src/server.ts: isTunnelMode() skips
+      # fastify.listen()) — the image's own baked-in HEALTHCHECK targets the
+      # HTTP/fleet deployment path and would never pass here. Check process
+      # liveness instead.
+      test: ["CMD-SHELL", "pgrep -f 'dist/server.js' >/dev/null 2>&1 || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 10
