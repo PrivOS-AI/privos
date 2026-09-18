@@ -381,8 +381,15 @@ require_host_tools() {
     # DPkg::Lock::Timeout waits for the lock (bounded) instead of stalling;
     # `timeout` caps a dead mirror so we fall through to the manual-hint die().
     case "$HOST_PKG_MGR" in
-      apt-get) timeout 300 apt-get update -qq -o DPkg::Lock::Timeout=120 >/dev/null 2>&1 || true
-               DEBIAN_FRONTEND=noninteractive timeout 300 apt-get install -y -o DPkg::Lock::Timeout=120 "${missing[@]}" >/dev/null 2>&1 || true ;;
+      apt-get) # Try the cached index first; `apt-get update` is the slow step
+               # on a fresh VM, so only pay for it when the install fails.
+               apt_install() { DEBIAN_FRONTEND=noninteractive timeout 300 apt-get install -y -o DPkg::Lock::Timeout=120 "${missing[@]}" >/dev/null 2>&1; }
+               apt_install || {
+                 log "Package index is stale — running 'apt-get update' (can take a few minutes on a fresh VM while it waits for the apt lock and refreshes mirrors)…"
+                 timeout 300 apt-get update -qq -o DPkg::Lock::Timeout=120 >/dev/null 2>&1 || true
+                 log "apt-get update done — retrying install of: ${missing[*]}"
+                 apt_install || true
+               } ;;
       dnf)     timeout 300 dnf install -y "${missing[@]}" >/dev/null 2>&1 || true ;;
       yum)     timeout 300 yum install -y "${missing[@]}" >/dev/null 2>&1 || true ;;
       apk)     timeout 300 apk add --no-cache "${missing[@]}" >/dev/null 2>&1 || true ;;
