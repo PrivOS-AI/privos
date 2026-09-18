@@ -19,7 +19,7 @@ fi
 DEV_KEY="$SELF_DIR/../.secrets/dev-minisign.key"
 DEV_PUB="$SELF_DIR/../.secrets/dev-minisign.pub"
 if [[ ! -f "$DEV_KEY" || ! -f "$DEV_PUB" ]]; then
-  echo "# SKIP: DEV scaffold keypair not present at infra/self-hosted/.secrets/ (see SIGNING.md)"
+  echo "# SKIP: DEV scaffold keypair not present at .secrets/ (see SIGNING.md)"
   exit 0
 fi
 

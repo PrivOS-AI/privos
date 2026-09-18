@@ -440,8 +440,28 @@ publish() {
   log "Published ${tag} to ${REPO} (${#assets[@]} release assets)."
 }
 
+# A real publish must ship exactly what this repository holds on its remote:
+# this repo is the bundle's only source, so a dirty or unpushed checkout would
+# publish signed bytes nobody can find in history. Dry runs are not gated.
+require_published_source() {
+  [[ "$DRY_RUN" == "false" ]] || return 0
+  git -C "$BUNDLE_DIR" rev-parse --git-dir >/dev/null 2>&1 \
+    || die "--yes needs ${BUNDLE_DIR} to be a git checkout of the bundle repository"
+  [[ -z "$(git -C "$BUNDLE_DIR" status --porcelain)" ]] \
+    || die "uncommitted changes in ${BUNDLE_DIR} — commit and push before publishing"
+  git -C "$BUNDLE_DIR" fetch -q origin \
+    || die "could not fetch origin to confirm the checkout is pushed"
+  local upstream
+  upstream="$(git -C "$BUNDLE_DIR" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)" \
+    || die "current branch has no upstream — push it before publishing"
+  [[ "$(git -C "$BUNDLE_DIR" rev-parse HEAD)" == "$(git -C "$BUNDLE_DIR" rev-parse "$upstream")" ]] \
+    || die "HEAD differs from ${upstream} — pull or push so the published bundle matches the remote"
+  log "Source check: ${BUNDLE_DIR} is clean and at ${upstream} ($(git -C "$BUNDLE_DIR" rev-parse --short HEAD))"
+}
+
 main() {
   parse_args "$@"
+  require_published_source
 
   if [[ "$CHECK_ONLY" == "true" ]]; then
     run_check

@@ -3,8 +3,8 @@
 # This repository IS the published bundle: install.sh, compose.yml,
 # env.template, rustfs-init.sh and the rest live at the repo ROOT (exactly
 # what a self-hoster downloads from a GitHub Release), so every path below is
-# repo-root relative. Kept in sync with the mt-manage template
-# (infra/self-hosted/tests/ci.yml), which nests the same files one level down.
+# repo-root relative. This repository is the only copy of the bundle — edit
+# here, never in a downstream checkout.
 name: self-hosted-bundle-ci
 
 on:

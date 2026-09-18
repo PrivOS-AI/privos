@@ -65,7 +65,7 @@ minisign -G -p privos-self-hosted.pub -s privos-self-hosted.key
 
 ## DEV-ONLY scaffold keypair (tests only)
 
-A throwaway, un-passphrased keypair lives at `infra/self-hosted/.secrets/`
+A throwaway, un-passphrased keypair lives at `.secrets/`
 (gitignored) and is used **only** by the `tests/` signature fixtures. It is
 **not** embedded in `install.sh` any more (the production key above is), and
 `MINISIGN_PUBLIC_KEY_IS_DEV_ONLY` is `false`. The `--allow-dev-signing-key` /
@@ -73,8 +73,8 @@ A throwaway, un-passphrased keypair lives at `infra/self-hosted/.secrets/`
 builds that deliberately re-embed a dev key. Regenerate the fixture key with:
 
 ```bash
-minisign -G -f -W -p infra/self-hosted/.secrets/dev-minisign.pub \
-  -s infra/self-hosted/.secrets/dev-minisign.key \
+minisign -G -f -W -p .secrets/dev-minisign.pub \
+  -s .secrets/dev-minisign.key \
   -c "PrivOS self-hosted bundle DEV-ONLY signing key (tests only)"
 ```
 
@@ -115,5 +115,5 @@ instead of piping directly from `curl`.
    signatures, real `@sha256` digests, file hashes, and no leftover
    `__PRIVOS_STACK_VERSION__` / `__SBOM_LICENSE_INVENTORY__` tokens in
    `OPEN-SOURCE-NOTICES` (use `syft`, or `--skip-sbom` only with a reason).
-3. Confirm `infra/self-hosted/.secrets/` and `~/.ssh/privos-minisign.key` are
+3. Confirm `.secrets/` and `~/.ssh/privos-minisign.key` are
    not referenced anywhere in the published artifacts.
