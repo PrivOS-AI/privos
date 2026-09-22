@@ -3,9 +3,13 @@
 **PrivOS is [fair-code](https://faircode.io):** free to run for your own team (up to 10 signed-in users across your company),
 source-available installer, commercial rights reserved. Not open source — see [License](#license).
 
-> 🚧 **Pre-release — do NOT `curl | bash` yet.** The bundle is not production-signed,
-> image digests are placeholders, and the backing container images / control-plane
-> routes are not yet public or deployed. Published for review and integration only.
+> **Beta — install at your own risk.** PrivOS Community Edition is in a testing phase.
+> The installer, images and upgrade path are still changing, and an install or upgrade
+> can fail or leave a half-configured host. Before you run it: use a fresh VM or a host
+> you can rebuild, keep backups of anything you care about, and expect breaking changes
+> between releases. No warranty and no support commitment apply during the beta; report
+> problems as GitHub issues, and security issues to security@privos.ai. By running the
+> installer you accept these risks.
 
 Single-host Docker Compose install of **privos-hub + privos-sandbox** (mongo, redis,
 rustfs, board, proxy, VM pool) with host port-conflict detection, loopback-only exposure
