@@ -33,7 +33,7 @@ curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.
 #            --with-knowledge-vector  --with-local-runtime  --upgrade  --uninstall [--purge]
 ```
 
-Host prerequisites: Linux x86_64/arm64, Docker ≥ 24 with compose v2 (or pass `--install-docker`), and `curl`, `jq`, `minisign`, `openssl` on PATH (Debian/Ubuntu: `apt-get install -y jq minisign`). The installer stops before touching anything if one is missing.
+Host prerequisites: Linux x86_64 (arm64 images are not published yet; the installer stops on arm64 hosts), Docker ≥ 24 with compose v2 (or pass `--install-docker`), and `curl`, `jq`, `minisign`, `openssl` on PATH (Debian/Ubuntu: `apt-get install -y jq minisign`). The installer stops before touching anything if one is missing.
 
 ## Contents
 
