@@ -32,6 +32,16 @@ networks:
   privos:
     name: ${PRIVOS_NETWORK:-privos-sandbox-net}
     external: true
+  # Dedicated bridge for agent VM containers (sandbox-proxy's VM_NETWORK,
+  # below). Pre-created by install.sh (`ensure_agent_network`), like `privos`
+  # above — kept off the `privos` network so agent VMs can never reach
+  # Mongo/Redis/RustFS directly (Docker's inter-bridge isolation already
+  # closes that path; nothing here needs to enforce it further). sandbox-proxy
+  # is a member of BOTH networks, so agent VMs can still resolve and reach it
+  # by its Docker-DNS name for the LLM relay and skill/hub egress.
+  privos-agent:
+    name: ${PRIVOS_AGENT_NETWORK:-privos-agent-net}
+    external: true
 
 # Hub instance identity (P-256 keypair) + the self-hosted license-request code
 # and activation status live under /var/lib/privos. A host bind (not a named
@@ -206,6 +216,17 @@ services:
       SANDBOX_PROXY_URL: http://sandbox-proxy:8557
       SANDBOX_APP_ORIGIN: http://sandbox-board:8556
       AGENT_PROVIDER: privos-agent-sdk
+      # --- Hub -> Sandbox bot-key push wiring ------------------------------
+      # OVERWRITE_SETTING_PrivOSSandbox_Use_Env below makes the hub resolve
+      # its Sandbox target from THESE two env vars (getEffectivePrivOSSandboxConfig
+      # / getSettings in privos-sandbox-agent-service.ts) — NOT from
+      # SANDBOX_PROXY_URL above (that one is unread on the hub; kept for the
+      # BYO-LLM-routing/license-polling uses called out above). Without them
+      # every bot-key push failed with reason=config-missing/sandbox-unreachable
+      # and the admin panel showed "no global sandbox configured" while the
+      # proxy sat there running healthy.
+      PRIVOS_SANDBOX_URL: http://sandbox-proxy:8557
+      PRIVOS_SANDBOX_API_KEY: ${SANDBOX_API_KEY:?SANDBOX_API_KEY is required}
       # BYO LLM key (Community self-hosted, no license). A paid+licensed hub
       # receives a LiteLLM key over its poll response instead — the installer
       # never touches that path.
@@ -248,15 +269,18 @@ services:
       # compose-network name, reachable by every service on this network (hub,
       # app-cluster, board, proxy). RustFS itself stays published on
       # 127.0.0.1 only — an object store on a single-host install has no
-      # business being internet-facing. NOTE: sandbox VMs are spawned with
-      # host-port publishing and are NOT on this network (see VM_NETWORK below),
-      # so presigned URLs still do not reach them; that needs either VM_NETWORK
-      # attachment or a host-reachable RustFS bind, and is deliberately left as a
-      # separate decision rather than guessed at here.
+      # business being internet-facing. NOTE: sandbox VMs are on the separate
+      # `privos-agent` network (VM_NETWORK below), deliberately NOT this one
+      # (agent VMs must never reach Mongo/Redis/RustFS directly), so presigned
+      # URLs still do not reach them from inside a VM; that needs either a
+      # host-reachable RustFS bind or routing VM->RustFS traffic through the
+      # proxy, and is deliberately left as a separate decision rather than
+      # guessed at here.
       OVERWRITE_SETTING_FileUpload_S3_BucketURL: ${RUSTFS_PUBLIC_URL:-http://rustfs:9000}
       # --- Hub -> sandbox wiring -----------------------------------------
-      # SANDBOX_PROXY_URL above is already correct, but the hub only consults it
-      # when this is true; it defaults to false, so admin showed "no global
+      # Makes the hub read PRIVOS_SANDBOX_URL/PRIVOS_SANDBOX_API_KEY above
+      # instead of the (empty, on a fresh install) admin-panel setting; it
+      # defaults to false, so without this the admin panel showed "no global
       # sandbox configured" while the proxy sat there running.
       OVERWRITE_SETTING_PrivOSSandbox_Use_Env: "true"
       # File publisher (published-files renderer). Empty (default) hides the
@@ -371,7 +395,13 @@ services:
     image: ghcr.io/privos-ai/privos-sandbox-proxy:${PRIVOS_STACK_VERSION:?PRIVOS_STACK_VERSION is required}@sha256:__SANDBOX_PROXY_DIGEST__
     container_name: ${PRIVOS_PROJECT:-privos}-sandbox-proxy
     restart: unless-stopped
-    networks: [privos]
+    # Member of BOTH networks: `privos` to reach Mongo/RustFS/board like every
+    # other sandbox-plane service, and `privos-agent` because it is also the
+    # one bridge agent VM containers themselves land on (VM_NETWORK below) —
+    # this is what lets a VM resolve and reach `sandbox-proxy` by Docker-DNS
+    # name at all. VM containers are NOT given `privos` membership, so they
+    # still cannot reach Mongo/Redis/RustFS directly.
+    networks: [privos, privos-agent]
     # Root, like the fleet: the proxy spawns per-bot agent VM containers via
     # the Docker API (docker.sock bind below) — root-equivalent on this host.
     # ACCEPTED RISK, same as the fleet's compose-ssh-driver comment; contained
@@ -399,13 +429,23 @@ services:
       ROXANE_DEFAULT_GRANIC_MODEL: granic
       PORT: "8557"
       SANDBOX_PROXY_URL: http://sandbox-proxy:8557
+      # The board forwards /api/bot-key's catalog-entry provisioning here
+      # (routes/forward.ts forwardToBoard); without it every push 503'd
+      # "BOARD_URL is not configured" before ever reaching the catalog write.
+      BOARD_URL: http://sandbox-board:8556
       API_ACCESS_KEY: ${SANDBOX_API_KEY:?SANDBOX_API_KEY is required}
       POOL_DATA_BASE: ${PRIVOS_DIR}/data/sandbox-pool
       COLLOC_HUB_ID: ${PRIVOS_DEPLOYMENT_ID:?PRIVOS_DEPLOYMENT_ID is required}
       PRIVOS_COLLOCATION_ENABLED: "true"
-      # Legacy host-port pool (VM_NETWORK left unset — see RENDERER-DIFF.md):
-      # each spawned agent VM publishes its own host port from this range,
-      # bound to POOL_BIND_HOST so the whole range stays loopback-only.
+      # Agent VM containers are attached to the dedicated `privos-agent`
+      # bridge (network: block above) instead of the legacy host-port pool
+      # (container-pool.ts allocatePort() is dead code — "pool no longer
+      # exists" — so every VM create failed with "No available ports in
+      # pool" until this was set). POOL_PORT_RANGE/POOL_BIND_HOST below are
+      # then unused (container-pool.ts skips port allocation entirely once
+      # VM_NETWORK is set) but kept so a downgrade to an older sandbox-proxy
+      # build that predates VM_NETWORK still has a sane pool range.
+      VM_NETWORK: ${PRIVOS_AGENT_NETWORK:-privos-agent-net}
       POOL_PORT_RANGE: ${PRIVOS_VM_PORT_RANGE:-30000-30999}
       POOL_BIND_HOST: 127.0.0.1
       POOL_IMAGE: ghcr.io/privos-ai/privos-sandbox-vm:${PRIVOS_STACK_VERSION:?PRIVOS_STACK_VERSION is required}@sha256:__SANDBOX_VM_DIGEST__

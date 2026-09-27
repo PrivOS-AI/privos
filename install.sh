@@ -81,6 +81,13 @@ MIN_DISK_KB=$(( 20 * 1024 * 1024 ))
 MIN_DOCKER_MAJOR=24
 PROJECT_NAME="privos"
 NETWORK_NAME="privos-sandbox-net"
+# Dedicated bridge network for agent VM containers (sandbox-proxy's
+# VM_NETWORK) — kept separate from NETWORK_NAME so agent VMs can never reach
+# Mongo/Redis/RustFS directly (Docker's inter-bridge isolation). Its
+# host-side bridge interface is pinned via --opt so docker-user-rules.sh can
+# match it by a fixed name; must match that script's VM_BRIDGE_IFACE.
+AGENT_NETWORK_NAME="privos-agent-net"
+AGENT_NETWORK_BRIDGE_IFACE="privos-agent0"
 STACK_READY_TIMEOUT_SEC=600
 
 BUNDLE_FILES=(compose.yml versions.json rustfs-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md)
@@ -103,7 +110,7 @@ DANGEROUS_DIRS=(/ /root /home /usr /usr/local /etc /bin /sbin /lib /lib64 /var /
 
 # .env keys, in the order they are written — must match env.template.
 ENV_KEYS=(
-  PRIVOS_DIR PRIVOS_PROJECT PRIVOS_NETWORK PRIVOS_STACK_VERSION PRIVOS_ROOT_URL PRIVOS_DEPLOYMENT_ID
+  PRIVOS_DIR PRIVOS_PROJECT PRIVOS_NETWORK PRIVOS_AGENT_NETWORK PRIVOS_STACK_VERSION PRIVOS_ROOT_URL PRIVOS_DEPLOYMENT_ID
   PRIVOS_HUB_PORT PRIVOS_BOARD_PORT PRIVOS_PROXY_PORT PRIVOS_RUSTFS_PORT PRIVOS_VM_PORT_RANGE
   MONGO_ROOT_USER MONGO_ROOT_PASSWORD MONGO_URL MONGO_OPLOG_URL MONGODB_URL
   PRIVOS_MONGO_CACHE_GB PRIVOS_MONGO_MEM PRIVOS_MONGO_CPUS
@@ -1121,6 +1128,7 @@ write_env_file() {
 resolve_config() {
   : "${PRIVOS_PROJECT:=$PROJECT_NAME}"
   : "${PRIVOS_NETWORK:=$NETWORK_NAME}"
+  : "${PRIVOS_AGENT_NETWORK:=$AGENT_NETWORK_NAME}"
   # Record which ports were set explicitly (flag, env, or a prior .env loaded on
   # re-run) BEFORE defaulting — only defaulted ports are eligible for
   # auto-fallback; an explicit port that is busy still hard-fails in check_ports.
@@ -1232,6 +1240,17 @@ ensure_network() {
   docker network inspect "$PRIVOS_NETWORK" >/dev/null 2>&1 && return 0
   docker network create "$PRIVOS_NETWORK" >/dev/null
   log "Created Docker network ${PRIVOS_NETWORK}"
+}
+
+# Agent VM containers' dedicated bridge — see AGENT_NETWORK_NAME above for
+# why it is separate from ensure_network's data-plane network. The bridge
+# interface name is pinned via --opt so docker-user-rules.sh's DOCKER-USER
+# rules can match it by a fixed name instead of resolving an opaque
+# `br-<network-id>` name at runtime.
+ensure_agent_network() {
+  docker network inspect "$PRIVOS_AGENT_NETWORK" >/dev/null 2>&1 && return 0
+  docker network create --opt "com.docker.network.bridge.name=${AGENT_NETWORK_BRIDGE_IFACE}" "$PRIVOS_AGENT_NETWORK" >/dev/null
+  log "Created Docker network ${PRIVOS_AGENT_NETWORK} (bridge ${AGENT_NETWORK_BRIDGE_IFACE})"
 }
 
 # MANAGED-broker root (McpBrokerManager) for the App Cluster's outbound
@@ -1538,6 +1557,7 @@ do_uninstall() {
   compose down --remove-orphans || true
   if [[ "$PURGE" == "true" ]]; then
     docker network rm "$PRIVOS_NETWORK" >/dev/null 2>&1 || true
+    docker network rm "$PRIVOS_AGENT_NETWORK" >/dev/null 2>&1 || true
     docker volume rm "${PRIVOS_PROJECT}-hub-lib" >/dev/null 2>&1 || true
     systemctl disable --now privos-restrict-sandbox-plane.service >/dev/null 2>&1 || true
     rm -f /etc/systemd/system/privos-restrict-sandbox-plane.service /usr/local/sbin/privos-restrict-sandbox-plane.sh /usr/local/sbin/privos-docker-user-rules.sh
@@ -1566,6 +1586,7 @@ main() {
     require_root
     PRIVOS_PROJECT="${PRIVOS_PROJECT:-$PROJECT_NAME}"
     PRIVOS_NETWORK="${PRIVOS_NETWORK:-$NETWORK_NAME}"
+    PRIVOS_AGENT_NETWORK="${PRIVOS_AGENT_NETWORK:-$AGENT_NETWORK_NAME}"
     do_uninstall
     exit 0
   fi
@@ -1638,6 +1659,7 @@ main() {
 
   set_stage "network + firewall setup"
   ensure_network
+  ensure_agent_network
   # RustFS runs as uid/gid 10001 in its official image (compose.yml `user:`).
   chown 10001:10001 "$PRIVOS_DIR/data/rustfs"
   chown -R 1001:1001 "$PRIVOS_DIR/data/sandbox-board" "$PRIVOS_DIR/data/sandbox-proxy" "$PRIVOS_DIR/data/sandbox-pool"
