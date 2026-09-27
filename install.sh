@@ -826,7 +826,7 @@ collect_listeners() {
 
 port_already_ours() {
   local port="$1" name json
-  for name in hub sandbox-board sandbox-proxy rustfs; do
+  for name in hub sandbox-board sandbox-proxy rustfs publisher; do
     json="$(docker_port_lookup "${PROJECT_NAME}-${name}")"
     [[ -n "$json" ]] || continue
     grep -q "\"HostPort\":\"${port}\"" <<<"$json" && return 0
