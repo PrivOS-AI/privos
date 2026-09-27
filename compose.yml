@@ -225,7 +225,12 @@ services:
       # every bot-key push failed with reason=config-missing/sandbox-unreachable
       # and the admin panel showed "no global sandbox configured" while the
       # proxy sat there running healthy.
-      PRIVOS_SANDBOX_URL: http://sandbox-proxy:8557
+      # MUST be sandbox-board, not sandbox-proxy: /api/bot-key is served by the
+      # board's Next app (src/app/api/bot-key/route.ts); the proxy exposes no
+      # such route. The hub's bot-key push socket handshake also sends only an
+      # apiKey (no projectId) — sandbox-proxy's own socket auth requires a
+      # projectId and would reject it with "Socket authentication failed".
+      PRIVOS_SANDBOX_URL: http://sandbox-board:8556
       PRIVOS_SANDBOX_API_KEY: ${SANDBOX_API_KEY:?SANDBOX_API_KEY is required}
       # BYO LLM key (Community self-hosted, no license). A paid+licensed hub
       # receives a LiteLLM key over its poll response instead — the installer
@@ -283,6 +288,12 @@ services:
       # defaults to false, so without this the admin panel showed "no global
       # sandbox configured" while the proxy sat there running.
       OVERWRITE_SETTING_PrivOSSandbox_Use_Env: "true"
+      # The hub's Site_Url setting (used ahead of ROOT_URL by the bot-key
+      # push's own hub-origin resolution) is frozen at first boot and would
+      # otherwise stay whatever it was seeded from originally — pin it to the
+      # same PRIVOS_ROOT_URL every start so a later --url change actually
+      # takes effect instead of silently drifting from ROOT_URL.
+      OVERWRITE_SETTING_Site_Url: ${PRIVOS_ROOT_URL:?PRIVOS_ROOT_URL is required}
       # File publisher (published-files renderer). Empty (default) hides the
       # public publish link in the hub UI. Set it to the publisher's OWN
       # hostname — never the hub host: the publisher renders arbitrary uploaded
@@ -364,15 +375,33 @@ services:
       PRIVOS_SANDBOX_MODE: "true"
       AGENT_PROVIDER: privos-agent-sdk
       ROXANE_PROXIED_BASE_URL: ${PRIVOS_LLM_BASE_URL:-}
-      ROXANE_MODEL: gauga
-      ROXANE_DEFAULT_GAUGA_MODEL: gauga
-      ROXANE_DEFAULT_ISSUS_MODEL: issus
-      ROXANE_DEFAULT_GRANIC_MODEL: granic
+      # BYO key: llm-relay reads it from this process's own env, never the
+      # hub's. Real model names (PRIVOS_LLM_MODEL/PRIVOS_LLM_SMALL_MODEL) are
+      # required for any non-default-gateway provider — the gauga/issus/
+      # granic aliases only resolve against llm.privos.io.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ROXANE_MODEL: ${PRIVOS_LLM_MODEL:-gauga}
+      ROXANE_DEFAULT_GAUGA_MODEL: ${PRIVOS_LLM_MODEL:-gauga}
+      ROXANE_DEFAULT_ISSUS_MODEL: ${PRIVOS_LLM_MODEL:-issus}
+      ROXANE_DEFAULT_GRANIC_MODEL: ${PRIVOS_LLM_SMALL_MODEL:-granic}
       PORT: "8556"
       SANDBOX_APP_ORIGIN: http://sandbox-board:8556
       SANDBOX_PROXY_URL: http://sandbox-proxy:8557
       BOT_INTERNAL_API_BASE_URL: http://sandbox-board:8556
       API_ACCESS_KEY: ${SANDBOX_API_KEY:?SANDBOX_API_KEY is required}
+      CATALOG_SECRET_KEY: ${CATALOG_SECRET_KEY:?CATALOG_SECRET_KEY is required}
+      # Docker-compose-internal hub address, fixed by this file (PORT: "3000"
+      # above on the hub service) — NEVER the operator's public PRIVOS_ROOT_URL
+      # (which stock installs default to http://localhost:<port>, unreachable
+      # from this container and rejected by the sandbox-proxy's SSRF guard/
+      # catalog validator as a loopback/single-label host). The bot-key push
+      # (src/lib/bot-key-egress-catalog.ts) uses this for both the egress
+      # catalog pattern and the actual hub request host whenever it is set;
+      # sandbox-proxy is given the identical value below so its matching
+      # exemption (ssrf-guard.ts/catalog-matcher.ts) agrees on the one hostname
+      # that may bypass the single-label/private-address checks.
+      PRIVOS_HUB_INTERNAL_ORIGIN: http://hub:3000
       POOL_DATA_BASE: ${PRIVOS_DIR}/data/sandbox-pool
     volumes:
       - ${PRIVOS_DIR}/data/sandbox-board:/app/data
@@ -423,10 +452,16 @@ services:
       PRIVOS_SANDBOX_MODE: "true"
       AGENT_PROVIDER: privos-agent-sdk
       ROXANE_PROXIED_BASE_URL: ${PRIVOS_LLM_BASE_URL:-}
-      ROXANE_MODEL: gauga
-      ROXANE_DEFAULT_GAUGA_MODEL: gauga
-      ROXANE_DEFAULT_ISSUS_MODEL: issus
-      ROXANE_DEFAULT_GRANIC_MODEL: granic
+      # BYO key: llm-relay reads it from this process's own env, never the
+      # hub's. Real model names (PRIVOS_LLM_MODEL/PRIVOS_LLM_SMALL_MODEL) are
+      # required for any non-default-gateway provider — the gauga/issus/
+      # granic aliases only resolve against llm.privos.io.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ROXANE_MODEL: ${PRIVOS_LLM_MODEL:-gauga}
+      ROXANE_DEFAULT_GAUGA_MODEL: ${PRIVOS_LLM_MODEL:-gauga}
+      ROXANE_DEFAULT_ISSUS_MODEL: ${PRIVOS_LLM_MODEL:-issus}
+      ROXANE_DEFAULT_GRANIC_MODEL: ${PRIVOS_LLM_SMALL_MODEL:-granic}
       PORT: "8557"
       SANDBOX_PROXY_URL: http://sandbox-proxy:8557
       # The board forwards /api/bot-key's catalog-entry provisioning here
@@ -434,6 +469,16 @@ services:
       # "BOARD_URL is not configured" before ever reaching the catalog write.
       BOARD_URL: http://sandbox-board:8556
       API_ACCESS_KEY: ${SANDBOX_API_KEY:?SANDBOX_API_KEY is required}
+      CATALOG_SECRET_KEY: ${CATALOG_SECRET_KEY:?CATALOG_SECRET_KEY is required}
+      # Same fixed Docker-compose-internal hub address as sandbox-board (see
+      # comment there) — this is the ONE hostname this proxy's SSRF guard and
+      # catalog-pattern validator are allowed to exempt from the single-label/
+      # private-address rules (ssrf-guard.ts configuredHubInternalHost /
+      # catalog-matcher.ts validatePatternHost's allowExactHost). Never set
+      # from operator input; a stock CE install with no --url still gets a
+      # working built-in agent because bot-key sync targets this origin
+      # instead of the (localhost, unreachable-from-container) public URL.
+      PRIVOS_HUB_INTERNAL_ORIGIN: http://hub:3000
       POOL_DATA_BASE: ${PRIVOS_DIR}/data/sandbox-pool
       COLLOC_HUB_ID: ${PRIVOS_DEPLOYMENT_ID:?PRIVOS_DEPLOYMENT_ID is required}
       PRIVOS_COLLOCATION_ENABLED: "true"
