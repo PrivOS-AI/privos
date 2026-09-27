@@ -48,6 +48,24 @@ assert_eq "s3cr3t-admin-pass" "${ADMIN_PASS:-}" "load_existing_env: restores ADM
 assert_eq "https://example.test" "${PRIVOS_ROOT_URL:-}" "load_existing_env: restores PRIVOS_ROOT_URL"
 assert_eq "3000" "${PRIVOS_HUB_PORT:-}" "load_existing_env: restores PRIVOS_HUB_PORT"
 
+# --- write_env_file / load_existing_env: PRIVOS_EGRESS_ALLOWLIST round-trip -
+# Confirms the new ENV_KEYS entry actually gets written and restored, not
+# just declared — a key added to ENV_KEYS but never assigned before
+# write_env_file runs would silently write an empty value forever.
+
+# shellcheck disable=SC2034 # write_env_file reads this indirectly via ENV_KEYS
+PRIVOS_EGRESS_ALLOWLIST="10.20.0.0/16,192.168.1.5"
+write_env_file "$WORK/.env"
+content="$(cat "$WORK/.env")"
+assert_contains "$content" "PRIVOS_EGRESS_ALLOWLIST='10.20.0.0/16,192.168.1.5'" \
+  "write_env_file: PRIVOS_EGRESS_ALLOWLIST written correctly"
+
+unset PRIVOS_EGRESS_ALLOWLIST
+load_existing_env
+assert_eq "10.20.0.0/16,192.168.1.5" "${PRIVOS_EGRESS_ALLOWLIST:-}" \
+  "load_existing_env: restores PRIVOS_EGRESS_ALLOWLIST"
+unset PRIVOS_EGRESS_ALLOWLIST
+
 # --- load_existing_env: invocation-time env wins over the persisted file ----
 
 unset ADMIN_PASS

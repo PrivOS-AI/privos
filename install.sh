@@ -105,6 +105,7 @@ DANGEROUS_DIRS=(/ /root /home /usr /usr/local /etc /bin /sbin /lib /lib64 /var /
 ENV_KEYS=(
   PRIVOS_DIR PRIVOS_PROJECT PRIVOS_NETWORK PRIVOS_STACK_VERSION PRIVOS_ROOT_URL PRIVOS_DEPLOYMENT_ID
   PRIVOS_HUB_PORT PRIVOS_BOARD_PORT PRIVOS_PROXY_PORT PRIVOS_RUSTFS_PORT PRIVOS_VM_PORT_RANGE
+  PRIVOS_EGRESS_ALLOWLIST
   MONGO_ROOT_USER MONGO_ROOT_PASSWORD MONGO_URL MONGO_OPLOG_URL MONGODB_URL
   PRIVOS_MONGO_CACHE_GB PRIVOS_MONGO_MEM PRIVOS_MONGO_CPUS
   RUSTFS_ROOT_USER RUSTFS_ROOT_PASSWORD RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY RUSTFS_BUCKET
@@ -207,6 +208,11 @@ Flags:
   --url <root-url>          Public URL the hub is reachable at (rewrites ROOT_URL on re-run)
   --hub-port <port>         Host port for the hub (default: 3000)
   --vm-port-range <lo-hi>   Loopback host-port range for the sandbox VM pool (default: 30000-30999)
+  --egress-allowlist <list> Comma-separated IPv4 CIDRs/hosts agent VM containers may
+                            reach despite the default-deny on private/link-local/
+                            carrier-grade-NAT destinations (see docker-user-rules.sh).
+                            Hostname entries only take effect in the in-process
+                            WebFetch guard, not the host firewall. Empty by default.
   --yes                     Non-interactive: assume "no" for optional-sidecar prompts AND
                             accept the PrivOS Community License 1.0 (see LICENSE)
   --accept-license          Accept the PrivOS Community License 1.0 without --yes's other effects
@@ -245,6 +251,7 @@ DIR_FLAG=""
 URL_FLAG=""
 HUB_PORT_FLAG=""
 VM_PORT_RANGE_FLAG=""
+EGRESS_ALLOWLIST_FLAG=""
 WITH_KNOWLEDGE_VECTOR_FLAG=""
 WITHOUT_APP_CLUSTER_FLAG=""
 ALLOW_DEV_KEY_FLAG=""
@@ -258,6 +265,7 @@ parse_args() {
       --url) URL_FLAG="${2:?--url requires a value}"; shift 2 ;;
       --hub-port) HUB_PORT_FLAG="${2:?--hub-port requires a value}"; shift 2 ;;
       --vm-port-range) VM_PORT_RANGE_FLAG="${2:?--vm-port-range requires a value}"; shift 2 ;;
+      --egress-allowlist) EGRESS_ALLOWLIST_FLAG="${2:?--egress-allowlist requires a value}"; shift 2 ;;
       --yes) ASSUME_YES="true"; shift ;;
       --upgrade) MODE="upgrade"; shift ;;
       --uninstall) MODE="uninstall"; shift ;;
@@ -1134,6 +1142,9 @@ resolve_config() {
   : "${PRIVOS_PROXY_PORT:=$DEFAULT_PROXY_PORT}"
   : "${PRIVOS_RUSTFS_PORT:=$DEFAULT_RUSTFS_PORT}"
   : "${PRIVOS_VM_PORT_RANGE:=$DEFAULT_VM_PORT_RANGE}"
+  # Empty by default — no private-range destination is reachable from an
+  # agent VM container until an operator opts one in.
+  : "${PRIVOS_EGRESS_ALLOWLIST:=}"
   : "${PRIVOS_STACK_VERSION:=${VERSION_FLAG:-latest}}"
   : "${PRIVOS_MONGO_CACHE_GB:=1}" "${PRIVOS_MONGO_MEM:=1g}" "${PRIVOS_MONGO_CPUS:=2}"
   : "${PRIVOS_RUSTFS_MEM:=512m}" "${PRIVOS_RUSTFS_CPUS:=1}"
@@ -1156,6 +1167,7 @@ resolve_config() {
   [[ -n "$URL_FLAG" ]] && PRIVOS_ROOT_URL="$URL_FLAG"
   [[ -n "$HUB_PORT_FLAG" ]] && PRIVOS_HUB_PORT="$HUB_PORT_FLAG"
   [[ -n "$VM_PORT_RANGE_FLAG" ]] && PRIVOS_VM_PORT_RANGE="$VM_PORT_RANGE_FLAG"
+  [[ -n "$EGRESS_ALLOWLIST_FLAG" ]] && PRIVOS_EGRESS_ALLOWLIST="$EGRESS_ALLOWLIST_FLAG"
   [[ -n "$VERSION_FLAG" ]] && PRIVOS_STACK_VERSION="$VERSION_FLAG"
   [[ -n "$WITH_KNOWLEDGE_VECTOR_FLAG" ]] && PRIVOS_WITH_KNOWLEDGE_VECTOR="true"
   [[ -n "$WITHOUT_APP_CLUSTER_FLAG" ]] && PRIVOS_WITH_APP_CLUSTER="false"
@@ -1256,7 +1268,12 @@ EOF
 install_docker_user_rules() {
   install -m 0755 "$PRIVOS_DIR/docker-user-rules.sh" /usr/local/sbin/privos-docker-user-rules.sh
   local ports="${PRIVOS_BOARD_PORT},${PRIVOS_PROXY_PORT},${PRIVOS_RUSTFS_PORT},${PRIVOS_VM_PORT_RANGE/-/:}"
-  /usr/local/sbin/privos-docker-user-rules.sh "$ports" >/dev/null
+  # Agent VM egress: private/link-local/CGNAT destinations are dropped by
+  # default; PRIVOS_EGRESS_ALLOWLIST opts specific CIDRs back in; the hub
+  # port is always left reachable via the docker0 bridge (see
+  # docker-user-rules.sh — it is the one host-callback destination agent VM
+  # containers are known to need).
+  /usr/local/sbin/privos-docker-user-rules.sh "$ports" "${PRIVOS_EGRESS_ALLOWLIST:-}" "$PRIVOS_HUB_PORT" >/dev/null
 }
 
 wait_for_compose_healthy() {
