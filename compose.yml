@@ -17,7 +17,16 @@
 # paths that are valid on the real host filesystem, not merely inside its own
 # container namespace.
 
-name: privos-self-hosted
+
+# Must match install.sh's default PRIVOS_PROJECT/--project-name ("privos").
+# `docker compose up -d` in ${PRIVOS_DIR} without an explicit `-p`/env override
+# resolves the project name from this field, and every service's
+# `container_name:` below is independently pinned to `${PRIVOS_PROJECT:-privos}-<svc>`
+# — a mismatch here meant that "manually run docker compose up -d" (as this
+# repo's own docs tell operators to do) tried to create containers under a
+# different compose *project* while still colliding on those hardcoded
+# container names, so Docker refused with "container name already in use".
+name: ${PRIVOS_PROJECT:-privos}
 
 networks:
   privos:
