@@ -275,14 +275,18 @@ build_sbom_inventory() {
 # Replaces a standalone-line placeholder ($2) with (possibly multi-line)
 # content ($3) — used for __SBOM_LICENSE_INVENTORY__, which occupies its own
 # line. awk (not sed) because the replacement text is multi-line and may
-# contain sed-special characters (/, &, |). The content travels via ENVIRON,
-# not -v: BSD awk (macOS) rejects a -v value containing a newline.
+# contain sed-special characters (/, &, |). The content travels via a temp
+# file: BSD awk (macOS) rejects a -v value containing a newline, and Linux caps
+# a single env string at 128 KiB (the SBOM inventory exceeds it).
 replace_placeholder_line() {
-  local file="$1" token="$2" content="$3"
-  PLACEHOLDER_CONTENT="$content" awk -v token="$token" '
-    $0 == token { print ENVIRON["PLACEHOLDER_CONTENT"]; next }
+  local file="$1" token="$2" content="$3" content_file
+  content_file="$(mktemp)"
+  printf '%s\n' "$content" > "$content_file"
+  awk -v token="$token" -v cf="$content_file" '
+    $0 == token { while ((getline line < cf) > 0) print line; close(cf); next }
     { print }
   ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+  rm -f "$content_file"
 }
 
 fill_open_source_notices_tokens() {
