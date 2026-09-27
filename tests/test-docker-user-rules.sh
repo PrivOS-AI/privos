@@ -27,17 +27,17 @@ run_iptables() {
   return 0
 }
 
-IP_DOCKER0_PRESENT=1
-IP_DOCKER0_ADDR="172.17.0.1/16"
+IP_BRIDGE_PRESENT=1
+IP_BRIDGE_ADDR="172.17.0.1/16"
 
 # shellcheck disable=SC2329 # invoked indirectly via run_ip() in docker-user-rules.sh
 run_ip() {
   if [[ "$1" == "link" ]]; then
-    [[ "$IP_DOCKER0_PRESENT" -eq 1 ]] && return 0 || return 1
+    [[ "$IP_BRIDGE_PRESENT" -eq 1 ]] && return 0 || return 1
   fi
   if [[ "$1" == "-4" ]]; then
-    [[ "$IP_DOCKER0_PRESENT" -eq 1 && -n "$IP_DOCKER0_ADDR" ]] && \
-      printf '3: docker0    inet %s scope global docker0\n' "$IP_DOCKER0_ADDR"
+    [[ "$IP_BRIDGE_PRESENT" -eq 1 && -n "$IP_BRIDGE_ADDR" ]] && \
+      printf '3: privos-agent0    inet %s scope global privos-agent0\n' "$IP_BRIDGE_ADDR"
     return 0
   fi
   return 0
@@ -100,35 +100,35 @@ assert_not_contains "$all_calls" "-A DOCKER-USER -p tcp -m conntrack --ctstate N
 
 IPTABLES_CALLS=()
 IPTABLES_STUB_OUTPUT=""
-IP_DOCKER0_PRESENT=1
-IP_DOCKER0_ADDR="172.17.0.1/16"
+IP_BRIDGE_PRESENT=1
+IP_BRIDGE_ADDR="172.17.0.1/16"
 apply_vm_egress_rules "" "3000"
 
 all_calls="$(printf '%s\n' "${IPTABLES_CALLS[@]}")"
 for cidr in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 127.0.0.0/8; do
-  assert_contains "$all_calls" "-i docker0 -d ${cidr} -p tcp -m conntrack --ctstate NEW -m comment --comment privos-self-hosted-vm-egress -j DROP" \
-    "apply_vm_egress_rules: drops NEW docker0 connections to ${cidr}"
+  assert_contains "$all_calls" "-i privos-agent0 -d ${cidr} -p tcp -m conntrack --ctstate NEW -m comment --comment privos-self-hosted-vm-egress -j DROP" \
+    "apply_vm_egress_rules: drops NEW privos-agent0 connections to ${cidr}"
 done
-assert_contains "$all_calls" "-i docker0 -d 172.17.0.1 -p tcp --dport 3000 -m comment --comment privos-self-hosted-vm-egress -j RETURN" \
-  "apply_vm_egress_rules: allows the hub host-callback via the docker0 bridge address"
+assert_contains "$all_calls" "-i privos-agent0 -d 172.17.0.1 -p tcp --dport 3000 -m comment --comment privos-self-hosted-vm-egress -j RETURN" \
+  "apply_vm_egress_rules: allows the hub host-callback via the privos-agent0 bridge address"
 
-# --- apply_vm_egress_rules: no docker0 interface yet -> skip, no rules ----
+# --- apply_vm_egress_rules: no privos-agent0 interface yet -> skip, no rules --
 
 IPTABLES_CALLS=()
-IP_DOCKER0_PRESENT=0
+IP_BRIDGE_PRESENT=0
 out="$(apply_vm_egress_rules "" "3000" 2>&1)"
-assert_contains "$out" "no docker0 interface found" "apply_vm_egress_rules: warns when docker0 does not exist yet"
-assert_eq "0" "${#IPTABLES_CALLS[@]}" "apply_vm_egress_rules: adds no rules when docker0 does not exist yet"
-IP_DOCKER0_PRESENT=1
+assert_contains "$out" "no privos-agent0 interface found" "apply_vm_egress_rules: warns when privos-agent0 does not exist yet"
+assert_eq "0" "${#IPTABLES_CALLS[@]}" "apply_vm_egress_rules: adds no rules when privos-agent0 does not exist yet"
+IP_BRIDGE_PRESENT=1
 
 # --- apply_vm_egress_rules: operator allowlist — CIDR and IP entries ------
 
 IPTABLES_CALLS=()
 apply_vm_egress_rules "10.20.0.0/16,192.168.1.5" "3000"
 all_calls="$(printf '%s\n' "${IPTABLES_CALLS[@]}")"
-assert_contains "$all_calls" "-i docker0 -d 10.20.0.0/16 -m comment --comment privos-self-hosted-vm-egress -j RETURN" \
+assert_contains "$all_calls" "-i privos-agent0 -d 10.20.0.0/16 -m comment --comment privos-self-hosted-vm-egress -j RETURN" \
   "apply_vm_egress_rules: allowlisted CIDR gets a RETURN"
-assert_contains "$all_calls" "-i docker0 -d 192.168.1.5 -m comment --comment privos-self-hosted-vm-egress -j RETURN" \
+assert_contains "$all_calls" "-i privos-agent0 -d 192.168.1.5 -m comment --comment privos-self-hosted-vm-egress -j RETURN" \
   "apply_vm_egress_rules: allowlisted bare IP gets a RETURN"
 
 # --- apply_vm_egress_rules: allowlist hostname entry is firewall-inert -----
@@ -149,14 +149,14 @@ assert_contains "$all_calls" "--dport 3000 -m comment --comment privos-self-host
 assert_contains "$all_calls" "--dport 3001 -m comment --comment privos-self-hosted-vm-egress -j RETURN" \
   "apply_vm_egress_rules: second host-callback port allowed"
 
-# --- apply_vm_egress_rules: docker0 address unresolvable -------------------
+# --- apply_vm_egress_rules: privos-agent0 address unresolvable ---------------
 
 IPTABLES_CALLS=()
-IP_DOCKER0_ADDR=""
+IP_BRIDGE_ADDR=""
 out="$(apply_vm_egress_rules "" "3000" 2>&1)"
-assert_contains "$out" "could not determine docker0's address" "apply_vm_egress_rules: warns when docker0 has no address yet"
+assert_contains "$out" "could not determine privos-agent0's address" "apply_vm_egress_rules: warns when privos-agent0 has no address yet"
 assert_not_contains "$(printf '%s\n' "${IPTABLES_CALLS[@]}")" "--dport 3000" \
-  "apply_vm_egress_rules: adds no host-callback RETURN when docker0's address is unknown"
-IP_DOCKER0_ADDR="172.17.0.1/16"
+  "apply_vm_egress_rules: adds no host-callback RETURN when privos-agent0's address is unknown"
+IP_BRIDGE_ADDR="172.17.0.1/16"
 
 report_and_exit

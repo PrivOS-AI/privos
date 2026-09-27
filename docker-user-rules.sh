@@ -32,6 +32,14 @@ set -euo pipefail
 SANDBOX_PLANE_TAG="privos-self-hosted-sandbox-plane"
 VM_EGRESS_TAG="privos-self-hosted-vm-egress"
 
+# Host interface for the dedicated agent-VM bridge network (compose.yml's
+# `privos-agent-net`, `driver_opts.com.docker.network.bridge.name`). Fixed at
+# network-creation time via that driver opt specifically so this script never
+# has to resolve it at runtime (e.g. `docker network inspect ... .Id` + the
+# `br-<id>` convention) — a plain constant here stays correct as long as
+# compose.yml keeps pinning the same name.
+VM_BRIDGE_IFACE="privos-agent0"
+
 # Thin indirection over the two external commands this script shells out to,
 # purely so tests/test-docker-user-rules.sh can override them and assert on
 # the exact invocations made without mutating a real host firewall (same
@@ -89,27 +97,33 @@ apply_sandbox_plane_rules() {
 }
 
 # Agent VM containers are spawned by sandbox-proxy directly via the Docker
-# API (not through compose) and, in the shipped default configuration
-# (VM_NETWORK left unset — see compose.yml's sandbox-proxy service and
-# RENDERER-DIFF.md), land on Docker's DEFAULT bridge network — interface
-# docker0 — rather than the named `privos` network the rest of the stack
-# (hub, mongo, redis, rustfs, board, proxy) runs on. That split is what makes
-# `-i docker0` the right match for "traffic from an agent VM container" here:
-# nothing else in a stock install attaches to the default bridge, because
-# every compose service is pinned to the named network instead. The
-# alternative — giving agent VM containers their OWN dedicated bridge —
-# needs a sandbox-proxy code change (setting VM_NETWORK to a network that is
-# neither the default bridge nor the data-plane network `privos` itself,
-# since putting VMs on `privos` would reopen direct VM->Mongo/Redis/RustFS
-# access) and is out of scope for a firewall-only fix. `-i docker0` works
-# with the compose.yml and sandbox-proxy code shipped today and requires
-# changing neither.
+# API (not through compose), attached to compose.yml's dedicated
+# `privos-agent-net` bridge network (VM_NETWORK on sandbox-proxy) — a
+# separate bridge from the named `privos` network the rest of the stack
+# (hub, mongo, redis, rustfs, board, proxy) runs on, so agent VM containers
+# can never reach Mongo/Redis/RustFS directly (Docker's inter-bridge
+# isolation). compose.yml pins that network's host-side interface name to
+# $VM_BRIDGE_IFACE via `driver_opts.com.docker.network.bridge.name`
+# specifically so this script can match it by a fixed name instead of
+# resolving it at runtime (a plain compose-managed bridge otherwise gets an
+# opaque `br-<network-id>` name assigned at creation time).
+#
+# This used to be Docker's DEFAULT bridge (docker0, VM_NETWORK unset) with
+# the same reasoning — nothing else attached to it because every compose
+# service was pinned to the named network instead. Moving agent VMs to their
+# own named bridge (rather than leaving them on the default bridge) also
+# fixed a separate, pre-existing bug: sandbox-proxy is a member of BOTH
+# networks, so agent VM containers can now actually resolve and reach it by
+# its Docker-DNS name (`http://sandbox-proxy:8557`, as compose.yml's
+# SANDBOX_PROXY_URL already set it) — under the old default-bridge placement
+# that name was unresolvable from a VM container and the connection refused,
+# so no agent could ever relay an LLM call or hub-egress request at all.
 apply_vm_egress_rules() {
   local egress_allowlist="$1" host_callback_ports="$2"
   clear_tagged_rules "$VM_EGRESS_TAG"
 
-  if ! run_ip link show docker0 >/dev/null 2>&1; then
-    echo "WARNING: no docker0 interface found — skipping agent VM egress rules (Docker creates it lazily; re-run this script, or install.sh, after the sandbox stack has spawned at least one agent VM)" >&2
+  if ! run_ip link show "$VM_BRIDGE_IFACE" >/dev/null 2>&1; then
+    echo "WARNING: no ${VM_BRIDGE_IFACE} interface found — skipping agent VM egress rules (Docker creates the privos-agent-net bridge when the sandbox stack first comes up; re-run this script, or install.sh, after that)" >&2
     return 0
   fi
 
@@ -124,36 +138,34 @@ apply_vm_egress_rules() {
   # rule below is added via `-I DOCKER-USER 1`, never `-A`, or it would land
   # after — and be shadowed by — Docker's own unconditional RETURN.
   for dest in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 127.0.0.0/8; do
-    run_iptables -I DOCKER-USER 1 -i docker0 -d "$dest" -p tcp -m conntrack --ctstate NEW \
+    run_iptables -I DOCKER-USER 1 -i "$VM_BRIDGE_IFACE" -d "$dest" -p tcp -m conntrack --ctstate NEW \
       -m comment --comment "$VM_EGRESS_TAG" -j DROP
   done
 
   # The one destination agent VM containers are known to need directly
   # outside the ranges just blocked: the hub, published on all interfaces,
-  # reached via the docker0 bridge's own (host-side) address. Every OTHER
-  # sandbox-plane service — board, proxy, RustFS, Mongo, Redis — is either
-  # loopback-only (refused at the socket already; not a firewall concern) or
-  # lives on the separate `privos` network agent VM containers are not
-  # attached to (Docker's inter-bridge isolation already keeps that path
-  # closed, independent of anything in this file — confirmed empirically,
-  # network-and-egress-verification, 2026-09-27). NOTE: in the exact shipped
-  # configuration this script ships with (VM_NETWORK unset, SANDBOX_PROXY_URL
-  # set to the Docker-DNS form `http://sandbox-proxy:8557`), an agent VM
-  # container cannot actually resolve or reach sandbox-proxy at all today —
-  # that is a pre-existing connectivity gap independent of this firewall
-  # script (see compose.yml's own comment on presigned RustFS URLs not
-  # reaching VM containers), not something opened or closed by this rule.
-  local docker0_addr
-  docker0_addr="$(run_ip -4 -o addr show docker0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
-  if [[ -n "$docker0_addr" ]]; then
+  # reached via the privos-agent-net bridge's own (host-side) address. Every
+  # OTHER sandbox-plane service — board, proxy, RustFS, Mongo, Redis — is
+  # either loopback-only (refused at the socket already; not a firewall
+  # concern) or lives on the separate `privos` network (Docker's inter-bridge
+  # isolation already keeps that path closed, independent of anything in
+  # this file — confirmed empirically, network-and-egress-verification,
+  # 2026-09-27). sandbox-proxy is the one exception: it is a member of BOTH
+  # `privos` and `privos-agent-net`, so agent VM containers reach it directly
+  # by its Docker-DNS name over privos-agent-net — no DOCKER-USER rule is
+  # involved in that path at all (inter-container traffic on the SAME bridge
+  # network never traverses DOCKER-USER), so nothing below needs to allow it.
+  local bridge_addr
+  bridge_addr="$(run_ip -4 -o addr show "$VM_BRIDGE_IFACE" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+  if [[ -n "$bridge_addr" ]]; then
     IFS=',' read -ra callback_ports <<< "$host_callback_ports"
     for cb_port in "${callback_ports[@]}"; do
       [[ -z "$cb_port" ]] && continue
-      run_iptables -I DOCKER-USER 1 -i docker0 -d "$docker0_addr" -p tcp --dport "$cb_port" \
+      run_iptables -I DOCKER-USER 1 -i "$VM_BRIDGE_IFACE" -d "$bridge_addr" -p tcp --dport "$cb_port" \
         -m comment --comment "$VM_EGRESS_TAG" -j RETURN
     done
   else
-    echo "WARNING: could not determine docker0's address — the hub host-callback allowance was not added; agent VM containers may lose hub connectivity until this script is re-run" >&2
+    echo "WARNING: could not determine ${VM_BRIDGE_IFACE}'s address — the hub host-callback allowance was not added; agent VM containers may lose hub connectivity until this script is re-run" >&2
   fi
 
   # Operator allowlist last, so these RETURNs end up checked FIRST (every
@@ -170,7 +182,7 @@ apply_vm_egress_rules() {
       echo "WARNING: PRIVOS_EGRESS_ALLOWLIST entry '$entry' is not an IPv4 address/CIDR — the host firewall cannot match it and will ignore it here (the in-process WebFetch guard still honors it)" >&2
       continue
     fi
-    run_iptables -I DOCKER-USER 1 -i docker0 -d "$entry" \
+    run_iptables -I DOCKER-USER 1 -i "$VM_BRIDGE_IFACE" -d "$entry" \
       -m comment --comment "$VM_EGRESS_TAG" -j RETURN
   done
 }

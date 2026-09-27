@@ -1270,7 +1270,7 @@ install_docker_user_rules() {
   local ports="${PRIVOS_BOARD_PORT},${PRIVOS_PROXY_PORT},${PRIVOS_RUSTFS_PORT},${PRIVOS_VM_PORT_RANGE/-/:}"
   # Agent VM egress: private/link-local/CGNAT destinations are dropped by
   # default; PRIVOS_EGRESS_ALLOWLIST opts specific CIDRs back in; the hub
-  # port is always left reachable via the docker0 bridge (see
+  # port is always left reachable via the agent-VM bridge (see
   # docker-user-rules.sh — it is the one host-callback destination agent VM
   # containers are known to need).
   /usr/local/sbin/privos-docker-user-rules.sh "$ports" "${PRIVOS_EGRESS_ALLOWLIST:-}" "$PRIVOS_HUB_PORT" >/dev/null
