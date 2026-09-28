@@ -1674,6 +1674,20 @@ main() {
   # the hub (uid 1001) must be able to mkdir under it. 0700 — private to the hub.
   chown 1001:1001 "$PRIVOS_DIR/data/hub-lib"
   chmod 0700 "$PRIVOS_DIR/data/hub-lib"
+  # hub-lib/self-hosted is ALSO bind-mounted read-only into sandbox-board and
+  # sandbox-proxy (compose.yml), so they can pick up the gateway credential
+  # the hub writes to llm.env there after activation, without a container
+  # restart. Pre-create it here — with the SAME owner/mode as hub-lib above —
+  # rather than let the hub mkdir it lazily at boot, or let `docker compose up`
+  # auto-create the bind-mount path as root before the hub ever runs (which
+  # would leave the hub unable to write into its own directory). No group or
+  # mode widening is needed to make it readable: sandbox-board already runs
+  # as uid 1001 (compose.yml `user:`), the SAME owner set here, and
+  # sandbox-proxy runs as root (uid 0), which reads any file regardless of
+  # its mode — see the compose.yml comments on both volume mounts.
+  mkdir -p "$PRIVOS_DIR/data/hub-lib/self-hosted"
+  chown 1001:1001 "$PRIVOS_DIR/data/hub-lib/self-hosted"
+  chmod 0700 "$PRIVOS_DIR/data/hub-lib/self-hosted"
   # The official node:20-alpine image's built-in "node" user is uid/gid 1000
   # — app-cluster (Dockerfile: `USER node`) must be able to write its state
   # dir (credential file, temp artifact chunks) there.

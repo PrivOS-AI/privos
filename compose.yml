@@ -385,6 +385,12 @@ services:
       ROXANE_DEFAULT_GAUGA_MODEL: ${PRIVOS_LLM_MODEL:-gauga}
       ROXANE_DEFAULT_ISSUS_MODEL: ${PRIVOS_LLM_MODEL:-issus}
       ROXANE_DEFAULT_GRANIC_MODEL: ${PRIVOS_LLM_SMALL_MODEL:-granic}
+      # The hub writes the Roxane gateway credential (ROXANE_PROXIED_BASE_URL/
+      # ROXANE_AUTH_TOKEN/AGENT_PROVIDER) to this file after activation — see
+      # the volume mount below. The sandbox re-reads it by mtime at request
+      # time, so a completed activation takes effect without recreating this
+      # container. Unset (default llm-relay behaviour) until the file exists.
+      PRIVOS_SELF_HOSTED_LLM_ENV_PATH: /var/lib/privos/self-hosted/llm.env
       PORT: "8556"
       SANDBOX_APP_ORIGIN: http://sandbox-board:8556
       SANDBOX_PROXY_URL: http://sandbox-proxy:8557
@@ -406,6 +412,13 @@ services:
     volumes:
       - ${PRIVOS_DIR}/data/sandbox-board:/app/data
       - ${PRIVOS_DIR}/data/sandbox-pool:${PRIVOS_DIR}/data/sandbox-pool
+      # Read-only: mounts ONLY the self-hosted/ subdir of hub-lib (never the
+      # hub's identity keypair that lives alongside it at /var/lib/privos on
+      # the hub service). No gid widening is needed to read llm.env from here:
+      # this container already runs as uid 1001 (the `user:` line above), the
+      # SAME owner install.sh sets on hub-lib/self-hosted (chmod 0700) — an
+      # owner-uid match, not a new grant to a different user.
+      - ${PRIVOS_DIR}/data/hub-lib/self-hosted:/var/lib/privos/self-hosted:ro
     # Loopback only — reachable from the host (installer health check,
     # operator debugging), never from the network.
     ports:
@@ -462,6 +475,9 @@ services:
       ROXANE_DEFAULT_GAUGA_MODEL: ${PRIVOS_LLM_MODEL:-gauga}
       ROXANE_DEFAULT_ISSUS_MODEL: ${PRIVOS_LLM_MODEL:-issus}
       ROXANE_DEFAULT_GRANIC_MODEL: ${PRIVOS_LLM_SMALL_MODEL:-granic}
+      # See the identical setting on sandbox-board above — same file, same
+      # mtime-cached read-at-request-time contract.
+      PRIVOS_SELF_HOSTED_LLM_ENV_PATH: /var/lib/privos/self-hosted/llm.env
       PORT: "8557"
       SANDBOX_PROXY_URL: http://sandbox-proxy:8557
       # The board forwards /api/bot-key's catalog-entry provisioning here
@@ -502,6 +518,11 @@ services:
       - ${PRIVOS_DIR}/data/sandbox-proxy:/app/data
       - ${PRIVOS_DIR}/data/sandbox-pool:${PRIVOS_DIR}/data/sandbox-pool
       - /var/run/docker.sock:/var/run/docker.sock
+      # Read-only: same self-hosted/ subdir of hub-lib as sandbox-board above,
+      # for the same reason (llm.env after activation). No gid widening
+      # needed here either — this container runs as root (`user: "0:0"`
+      # above), which reads any file regardless of its mode.
+      - ${PRIVOS_DIR}/data/hub-lib/self-hosted:/var/lib/privos/self-hosted:ro
     ports:
       - "127.0.0.1:${PRIVOS_PROXY_PORT:-8557}:8557"
     mem_limit: ${PRIVOS_PROXY_MEM:-512m}
