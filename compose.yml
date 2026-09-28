@@ -34,9 +34,9 @@ networks:
     external: true
   # Dedicated bridge for agent VM containers (sandbox-proxy's VM_NETWORK,
   # below). Pre-created by install.sh (`ensure_agent_network`), like `privos`
-  # above — kept off the `privos` network so agent VMs can never reach
-  # Mongo/Redis/RustFS directly (Docker's inter-bridge isolation already
-  # closes that path; nothing here needs to enforce it further). sandbox-proxy
+  # above — kept off the `privos` network so agent VMs cannot reach
+  # Redis/RustFS directly (Docker's inter-bridge isolation closes that path).
+  # Mongo is the one exception: it joins this network too (see `mongo`). sandbox-proxy
   # is a member of BOTH networks, so agent VMs can still resolve and reach it
   # by its Docker-DNS name for the LLM relay and skill/hub egress.
   privos-agent:
@@ -65,7 +65,11 @@ services:
     image: mongo:7.0.14@sha256:__MONGO_DIGEST__
     container_name: ${PRIVOS_PROJECT:-privos}-mongo
     restart: unless-stopped
-    networks: [privos]
+    # Also on `privos-agent`: the shared collocation core (an agent VM on that
+    # network) keeps its board/agent state in this Mongo. Same reachability as
+    # the managed multi-tenant stack, where agent VMs share the tenant network
+    # with Mongo; Mongo auth, not the network, is the boundary.
+    networks: [privos, privos-agent]
     command: ["--replSet", "rs0", "--keyFile", "/run/secrets/mongo-keyfile", "--wiredTigerCacheSizeGB", "${PRIVOS_MONGO_CACHE_GB:-1}"]
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:?MONGO_ROOT_USER is required}
@@ -300,7 +304,7 @@ services:
       # 127.0.0.1 only — an object store on a single-host install has no
       # business being internet-facing. NOTE: sandbox VMs are on the separate
       # `privos-agent` network (VM_NETWORK below), deliberately NOT this one
-      # (agent VMs must never reach Mongo/Redis/RustFS directly), so presigned
+      # (agent VMs must never reach Redis/RustFS directly), so presigned
       # URLs still do not reach them from inside a VM; that needs either a
       # host-reachable RustFS bind or routing VM->RustFS traffic through the
       # proxy, and is deliberately left as a separate decision rather than
@@ -478,7 +482,7 @@ services:
     # one bridge agent VM containers themselves land on (VM_NETWORK below) —
     # this is what lets a VM resolve and reach `sandbox-proxy` by Docker-DNS
     # name at all. VM containers are NOT given `privos` membership, so they
-    # still cannot reach Mongo/Redis/RustFS directly.
+    # still cannot reach Redis/RustFS directly (Mongo joins `privos-agent`).
     networks: [privos, privos-agent]
     # Root, like the fleet: the proxy spawns per-bot agent VM containers via
     # the Docker API (docker.sock bind below) — root-equivalent on this host.

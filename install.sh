@@ -82,8 +82,8 @@ MIN_DOCKER_MAJOR=24
 PROJECT_NAME="privos"
 NETWORK_NAME="privos-sandbox-net"
 # Dedicated bridge network for agent VM containers (sandbox-proxy's
-# VM_NETWORK) — kept separate from NETWORK_NAME so agent VMs can never reach
-# Mongo/Redis/RustFS directly (Docker's inter-bridge isolation). Its
+# VM_NETWORK) — kept separate from NETWORK_NAME so agent VMs cannot reach
+# Redis/RustFS directly (Docker's inter-bridge isolation; Mongo joins it, see compose.yml). Its
 # host-side bridge interface is pinned via --opt so docker-user-rules.sh can
 # match it by a fixed name; must match that script's VM_BRIDGE_IFACE.
 AGENT_NETWORK_NAME="privos-agent-net"
