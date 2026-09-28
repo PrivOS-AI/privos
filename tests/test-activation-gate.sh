@@ -2,7 +2,7 @@
 # Unit tests for the CE mandatory-activation gate wiring this bundle owns:
 # compose.yml mounts the hub's self-hosted/ directory read-only into
 # sandbox-board and sandbox-proxy with PRIVOS_SELF_HOSTED_LLM_ENV_PATH set on
-# both (C4 — the sandbox re-reads llm.env by mtime, no restart needed after
+# both (the sandbox re-reads llm.env by mtime, no restart needed after
 # activation), and install.sh's printed summary states activation is
 # required and is a free registration, not a paid licence.
 set -uo pipefail
