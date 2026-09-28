@@ -48,7 +48,7 @@ PrivOS, not to enforce payment. There is no card and no cost to activate.
 **Flow:**
 
 1. Finish the setup wizard (or `install.sh` non-interactively). The hub writes a
-   `PRVOFF1.…`-prefixed **activation request code** to
+   `PRV-XXXX-XXXX-XXXX`-format **activation request code** to
    `/var/lib/privos/self-hosted/license-request-code` inside its container; `install.sh`
    prints it and the direct link (`--yes` prints it once and moves on; without `--yes` it
    waits for you, letting you skip with Ctrl-C and finish later).
@@ -65,32 +65,60 @@ agent shows a clear top-up message once that runs out, and you top up any time a
 — the hub enforces that server-side.
 
 **Custom providers.** The onboarding "AI models" step (also reachable later from Admin) lets
-you review providers and add your own: any Anthropic-/OpenAI-compatible endpoint, tested and
-optionally set as the default in place of Roxane. `env.template`'s `ANTHROPIC_API_KEY` /
-`OPENAI_API_KEY` / `PRIVOS_LLM_BASE_URL` pre-seed one automatically on first boot if you'd
-rather set it before ever opening the UI — see the comments there.
+you review providers and add your own: any **publicly reachable** Anthropic-/OpenAI-compatible
+endpoint, tested and optionally set as the default in place of Roxane. `env.template`'s
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `PRIVOS_LLM_BASE_URL` pre-seed one automatically on
+first boot if you'd rather set it before ever opening the UI — see the comments there. A
+provider on a **private/LAN address** (including a fully offline host) is a separate path —
+see "LAN / private LLM endpoints" in `env.template`.
 
 **Upgrading an existing unlicensed install.** An install that predates this gate is activated
 exactly once on upgrade — the same request-code flow above, run a single time. Its `.env` BYO
-key (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`), if it had one, reappears afterwards as a regular
-custom provider. If no default provider was chosen yet, that provider becomes the default, so
-the agent keeps answering with your own key and nothing you already configured is lost. Roxane
-stays listed and you can switch to it after a top-up.
+key (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`), if it pointed at a **publicly reachable** endpoint,
+reappears afterwards as a regular custom provider, and — if no default provider was chosen yet
+— becomes the default, so the agent keeps answering with your own key. A BYO key pointing at a
+**private/LAN address** needs a sandbox image with the LAN-LLM-provider change (see
+`env.template`) to keep answering the same way; without one, activation silently moves it to
+Roxane at $0 credit. Roxane stays listed either way, and you can switch to it after a top-up.
 
-**Licence expiry.** A licence that lapses past its grace period, fails validation, or no
-longer matches this host's identity re-arms the gate — you activate again the same way.
+**Licence expiry or reinstalling.** A licence that lapses past its grace period, fails
+validation, or no longer matches this host's identity re-arms the gate. Re-registering with
+**the same request code** is refused: the portal already has that exact code bound to this
+install (`CODE_ALREADY_CLAIMED`). What actually works:
 
-**Air-gapped install.** Roxane needs internet, so a fully offline host must set a custom
-provider pointing at a local OpenAI-/Anthropic-compatible endpoint (see `env.template`) —
-activation itself, however, still works with no direct internet access on the PrivOS host:
+1. At `https://client.privos.io`, delete the existing activation for this install (workspace
+   settings → self-hosted). This is also required after `--purge` or moving to a new host,
+   where the fresh identity's own free Community activation is refused
+   (`community_activation_exists`) until the old one is gone — one free Community activation
+   per cloud account.
+2. Same identity only (grace/validation failure, not `--purge`): as an admin, regenerate the
+   request code (Admin → License page's "Regenerate", or `POST /api/v1/cloud.selfHosted.regenerate`
+   — reachable even while the gate is armed) so the hub mints and re-registers a fresh code.
+   A fresh identity's own code needs no regenerate step.
+3. Activate with that code the normal way, above.
+
+`install.sh`'s printed summary and the interactive activation wait both read the hub's local
+activation-status file, which is not currently rewritten when the gate re-arms — they can keep
+reporting a stale "done"/"Activated" state after a re-arm. The gate itself (the UI shown to
+every signed-in user, and the REST allowlist) is the accurate signal.
+
+**Air-gapped install.** Roxane needs internet. Activation itself still works with no direct
+internet access on the PrivOS host:
 
 1. On the gate page, choose **Offline / air-gapped** to get an **offline request token**
-   instead of the normal code (valid 30 days, single use).
+   (`PRVOFF1.…`-prefixed, valid 30 days). Pasting it again later (e.g. after a retry) is safe —
+   it re-binds the same code to the same install rather than being rejected as already used.
 2. On any machine that *does* have internet access, open
    `https://client.privos.io/self-hosted/activate`, paste the token, sign in, and activate.
 3. Download the licence file from that workspace's page in the portal.
 4. Back on the air-gapped host, paste the downloaded licence into the hub's gate. It applies
    immediately — no polling and no outbound connection required for this step.
+
+A fully offline host still needs an LLM to talk to: point it at a private/LAN Anthropic-/
+OpenAI-compatible endpoint using the same `PRIVOS_EGRESS_ALLOWLIST` + BYO-provider path
+described under "LAN / private LLM endpoints" in `env.template`, which requires a sandbox
+image with the LAN-LLM-provider change. Nothing beyond exactly that path — an explicitly
+allowlisted and configured private endpoint — is promised for an air-gapped install.
 
 ## Contents
 
