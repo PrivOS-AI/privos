@@ -5,11 +5,11 @@
 # them on 0.0.0.0 — the compose.yml bind (127.0.0.1:PORT:PORT) is the primary
 # control; this is defense-in-depth so a manual edit mistake alone cannot
 # expose the sandbox plane off-host. It also restricts EGRESS from agent VM
-# containers to private/link-local/carrier-grade-NAT destinations and the
-# host itself, so a prompt-injected agent's Bash tool (which has no in-process
-# SSRF guard of its own — see packages/agentic-sdk in privos-sandbox) cannot
-# reach the operator's LAN, cloud metadata, or the sandbox's own data-plane
-# services by opening a raw TCP connection.
+# containers to private/link-local/carrier-grade-NAT destinations, so a
+# prompt-injected agent's Bash tool (which has no in-process SSRF guard of
+# its own — see packages/agentic-sdk in privos-sandbox) cannot reach the
+# operator's LAN or cloud metadata by opening a raw TCP connection. Both
+# layers are IPv4/TCP only: UDP, ICMP and IPv6 are not filtered here.
 #
 # Modelled on infra/node-onboarding/restrict-published-tenant-ports.sh — same
 # reasoning applies here:
@@ -24,9 +24,13 @@
 #     allowed. Only NEW connections may be judged.
 #
 # Unlike the tenant-ports script (an operator-supplied allowlist of trusted
-# source IPs), the sandbox plane has exactly one legitimate source: the host
-# itself. NEW connections are allowed only from 127.0.0.1/8; everything else
-# is dropped for the protected ports.
+# source IPs), the sandbox plane has no legitimate DNAT'd source at all:
+# these ports are compose-bound to 127.0.0.1 only, and a loopback-originated
+# connection to a loopback-published port never enters FORWARD in the first
+# place (docker-proxy handles it in userspace, or it is DNAT'd in OUTPUT when
+# userland-proxy is off — neither traverses DOCKER-USER). So every NEW,
+# DNAT'd connection this chain sees for these ports is by definition the
+# 0.0.0.0 misconfiguration this script guards against.
 set -euo pipefail
 
 SANDBOX_PLANE_TAG="privos-self-hosted-sandbox-plane"
@@ -48,6 +52,16 @@ VM_BRIDGE_IFACE="privos-agent0"
 run_iptables() { iptables "$@"; }
 run_ip() { ip "$@"; }
 
+# Trims leading/trailing whitespace from a comma-list entry. Shared by
+# validate_egress_allowlist and apply_vm_egress_rules so both agree on what
+# counts as "the same entry".
+_trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
 # Deletes every DOCKER-USER rule carrying $1 as its --comment value.
 #
 # `iptables -S` never quotes a comment value that has no spaces — it prints
@@ -67,6 +81,55 @@ clear_tagged_rules() {
   done < <(run_iptables -S DOCKER-USER 2>/dev/null | grep -- "--comment $tag")
 }
 
+# Rejects any PRIVOS_EGRESS_ALLOWLIST entry that LOOKS like an IPv4
+# address/CIDR (the same "does it contain 3 dots" shape check
+# apply_vm_egress_rules uses below) but is not a well-formed one — checked
+# FIRST in main(), before either apply_* function ever runs a single `-I` or
+# `-D`, so a typo can never leave the chain half up (one tag cleared and
+# reinserted, the other left stale) and iptables never sees an entry it
+# would either reject outright (10.0.0.0/33) or resolve via a live DNS
+# lookup at insertion time (1.2.3.4.nip.io). Hostname and IPv6 entries (which
+# do not match the shape check) are left alone here — this firewall cannot
+# act on either kind, but neither is a typo'd IPv4 entry, so neither should
+# abort the install; apply_vm_egress_rules warns about them per-entry
+# instead.
+validate_egress_allowlist() {
+  local egress_allowlist="$1" entry ip prefix octet
+  local -a entries octets
+  IFS=',' read -ra entries <<< "$egress_allowlist"
+  for entry in "${entries[@]}"; do
+    entry="$(_trim "$entry")"
+    [[ -z "$entry" ]] && continue
+    [[ "$entry" == *.*.*.* ]] || continue
+
+    ip="$entry"
+    if [[ "$entry" == */* ]]; then
+      ip="${entry%%/*}"
+      prefix="${entry#*/}"
+      if [[ ! "$prefix" =~ ^[0-9]+$ ]] || (( 10#$prefix > 32 )); then
+        echo "ERROR: PRIVOS_EGRESS_ALLOWLIST entry '${entry}' has an invalid IPv4 prefix (must be 0-32)" >&2
+        exit 1
+      fi
+    fi
+
+    IFS='.' read -ra octets <<< "$ip"
+    if [[ "${#octets[@]}" -ne 4 ]]; then
+      echo "ERROR: PRIVOS_EGRESS_ALLOWLIST entry '${entry}' is not a valid IPv4 address/CIDR" >&2
+      exit 1
+    fi
+    for octet in "${octets[@]}"; do
+      if [[ ! "$octet" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: PRIVOS_EGRESS_ALLOWLIST entry '${entry}' contains a non-numeric IPv4 octet '${octet}'" >&2
+        exit 1
+      fi
+      if (( 10#$octet > 255 )); then
+        echo "ERROR: PRIVOS_EGRESS_ALLOWLIST entry '${entry}' has an out-of-range IPv4 octet '${octet}' (must be 0-255)" >&2
+        exit 1
+      fi
+    done
+  done
+}
+
 apply_sandbox_plane_rules() {
   local protected_ports="$1"
   clear_tagged_rules "$SANDBOX_PLANE_TAG"
@@ -78,21 +141,29 @@ apply_sandbox_plane_rules() {
     # to anything". Normalize either form to the colon iptables wants.
     port_range="${p/-/:}"
     # Docker inserts exactly one unconditional `-A DOCKER-USER -j RETURN` the
-    # first time it ever touches this chain, so that an operator with no
-    # custom rules is unaffected. `-A` (append) ALWAYS lands after that rule,
-    # which makes an appended DROP unreachable — every packet hits Docker's
-    # catch-all RETURN and leaves the chain first. `-I DOCKER-USER 1` (insert
-    # at the top) is the only placement that actually executes. Insert the
-    # DROP first, then the RETURN: the RETURN's later `-I 1` pushes the DROP
-    # down by exactly one slot, so for THIS port the RETURN is checked before
-    # the DROP, and both sit above Docker's own rule. (This one-line ordering
-    # bug meant the DROP rules below had never actually executed — confirmed
-    # live: a non-loopback probe against a bare DOCKER-USER chain with only
-    # the old `-A`'d DROP present was not, in fact, dropped.)
-    run_iptables -I DOCKER-USER 1 -p tcp -m conntrack --ctstate NEW --ctorigdstport "$port_range" \
-      -m comment --comment "$SANDBOX_PLANE_TAG" -j DROP
-    run_iptables -I DOCKER-USER 1 -p tcp -s 127.0.0.1/8 -m conntrack --ctorigdstport "$port_range" \
-      -m comment --comment "$SANDBOX_PLANE_TAG" -j RETURN
+    # first time it ever touches this chain on Engine < 28 (28+ no longer
+    # adds it — see the moby changes cited in the module this ships from).
+    # `-A` (append) ALWAYS lands after that rule on the older engines, which
+    # makes an appended DROP unreachable there. `-I DOCKER-USER 1` (insert at
+    # the top) is the only placement that runs on every supported engine.
+    #
+    # `--ctstate DNAT`, as its OWN `-m conntrack` (ANDed with the `NEW`
+    # check, not OR'd into one `--ctstate` list — a comma list is an OR),
+    # restricts the match to traffic Docker itself redirected in from a
+    # published port. Without it, DOCKER-USER sees every forwarded packet on
+    # the host, so `--ctorigdstport` alone also matches an unrelated
+    # container's own OUTBOUND connection to a remote host whose port
+    # happens to be 9000/8556/8557/30000-30999, and — on hosts where
+    # br_netfilter is loaded — same-bridge container-to-container traffic
+    # between two PrivOS services that never went through DNAT at all.
+    #
+    # No source-IP RETURN is needed above this DROP: these ports are
+    # compose-bound to 127.0.0.1 only, and a loopback-originated connection
+    # to a loopback-published port is served by docker-proxy in userspace, or
+    # DNAT'd in OUTPUT when userland-proxy is off — neither path traverses
+    # FORWARD/DOCKER-USER, so it never reaches this DROP in the first place.
+    run_iptables -I DOCKER-USER 1 -p tcp -m conntrack --ctstate NEW -m conntrack --ctstate DNAT \
+      --ctorigdstport "$port_range" -m comment --comment "$SANDBOX_PLANE_TAG" -j DROP
   done
 }
 
@@ -102,24 +173,14 @@ apply_sandbox_plane_rules() {
 # separate bridge from the named `privos` network the rest of the stack
 # (hub, mongo, redis, rustfs, board, proxy) runs on, so agent VM containers
 # can never reach Mongo/Redis/RustFS directly (Docker's inter-bridge
-# isolation). compose.yml pins that network's host-side interface name to
-# $VM_BRIDGE_IFACE via `driver_opts.com.docker.network.bridge.name`
-# specifically so this script can match it by a fixed name instead of
-# resolving it at runtime (a plain compose-managed bridge otherwise gets an
-# opaque `br-<network-id>` name assigned at creation time).
-#
-# This used to be Docker's DEFAULT bridge (docker0, VM_NETWORK unset) with
-# the same reasoning — nothing else attached to it because every compose
-# service was pinned to the named network instead. Moving agent VMs to their
-# own named bridge (rather than leaving them on the default bridge) also
-# fixed a separate, pre-existing bug: sandbox-proxy is a member of BOTH
-# networks, so agent VM containers can now actually resolve and reach it by
-# its Docker-DNS name (`http://sandbox-proxy:8557`, as compose.yml's
-# SANDBOX_PROXY_URL already set it) — under the old default-bridge placement
-# that name was unresolvable from a VM container and the connection refused,
-# so no agent could ever relay an LLM call or hub-egress request at all.
+# isolation, independent of anything in this file). compose.yml pins that
+# network's host-side interface name to $VM_BRIDGE_IFACE via
+# `driver_opts.com.docker.network.bridge.name` specifically so this script
+# can match it by a fixed name instead of resolving it at runtime (a plain
+# compose-managed bridge otherwise gets an opaque `br-<network-id>` name
+# assigned at creation time).
 apply_vm_egress_rules() {
-  local egress_allowlist="$1" host_callback_ports="$2"
+  local egress_allowlist="$1"
   clear_tagged_rules "$VM_EGRESS_TAG"
 
   if ! run_ip link show "$VM_BRIDGE_IFACE" >/dev/null 2>&1; then
@@ -129,57 +190,67 @@ apply_vm_egress_rules() {
 
   # RFC1918 + carrier-grade NAT (100.64.0.0/10) + link-local (169.254.0.0/16,
   # which covers the 169.254.169.254 cloud-metadata address on every major
-  # cloud) + loopback. Anything NOT in one of these ranges — the public
-  # internet, including the LLM gateway agents call — is left untouched:
-  # Docker's own catch-all RETURN (see the comment in apply_sandbox_plane_rules
-  # above) lets it through once these DROPs don't match.
+  # cloud). Anything NOT in one of these ranges — the public internet,
+  # including the LLM gateway agents call — is left untouched: Docker's own
+  # catch-all RETURN (see the comment in apply_sandbox_plane_rules above)
+  # lets it through once these DROPs don't match.
+  #
+  # 127.0.0.0/8 is deliberately NOT in this list: a container can only send a
+  # packet addressed to 127/8 to its OWN loopback (its own network
+  # namespace) — it can never put such a packet onto the bridge, so a DROP
+  # for it here could never match anything. A VM reaching the HOST itself
+  # over the bridge's gateway address goes through INPUT, which this script
+  # does not touch.
   #
   # Same top-first insertion reasoning as apply_sandbox_plane_rules: every
   # rule below is added via `-I DOCKER-USER 1`, never `-A`, or it would land
-  # after — and be shadowed by — Docker's own unconditional RETURN.
-  for dest in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 127.0.0.0/8; do
+  # after — and be shadowed by — Docker's own RETURN on Engine < 28.
+  for dest in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16; do
     run_iptables -I DOCKER-USER 1 -i "$VM_BRIDGE_IFACE" -d "$dest" -p tcp -m conntrack --ctstate NEW \
       -m comment --comment "$VM_EGRESS_TAG" -j DROP
   done
 
-  # The one destination agent VM containers are known to need directly
-  # outside the ranges just blocked: the hub, published on all interfaces,
-  # reached via the privos-agent-net bridge's own (host-side) address. Every
-  # OTHER sandbox-plane service — board, proxy, RustFS, Mongo, Redis — is
-  # either loopback-only (refused at the socket already; not a firewall
-  # concern) or lives on the separate `privos` network (Docker's inter-bridge
-  # isolation already keeps that path closed, independent of anything in
-  # this file — confirmed empirically, network-and-egress-verification,
-  # 2026-09-27). sandbox-proxy is the one exception: it is a member of BOTH
-  # `privos` and `privos-agent-net`, so agent VM containers reach it directly
-  # by its Docker-DNS name over privos-agent-net — no DOCKER-USER rule is
-  # involved in that path at all (inter-container traffic on the SAME bridge
-  # network never traverses DOCKER-USER), so nothing below needs to allow it.
-  local bridge_addr
-  bridge_addr="$(run_ip -4 -o addr show "$VM_BRIDGE_IFACE" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
-  if [[ -n "$bridge_addr" ]]; then
-    IFS=',' read -ra callback_ports <<< "$host_callback_ports"
-    for cb_port in "${callback_ports[@]}"; do
-      [[ -z "$cb_port" ]] && continue
-      run_iptables -I DOCKER-USER 1 -i "$VM_BRIDGE_IFACE" -d "$bridge_addr" -p tcp --dport "$cb_port" \
-        -m comment --comment "$VM_EGRESS_TAG" -j RETURN
-    done
-  else
-    echo "WARNING: could not determine ${VM_BRIDGE_IFACE}'s address — the hub host-callback allowance was not added; agent VM containers may lose hub connectivity until this script is re-run" >&2
-  fi
+  # Exempt same-bridge traffic. sandbox-proxy is a member of BOTH `privos`
+  # and `privos-agent-net`, so agent VM containers reach it directly by its
+  # Docker-DNS name over privos-agent-net (VM -> sandbox-proxy:8557 for the
+  # LLM relay and hub/skill egress; sandbox-proxy -> VM:8556 to dispatch
+  # attempts). On a host with br_netfilter loaded, bridged frames between two
+  # containers on the SAME bridge still traverse FORWARD — and therefore
+  # DOCKER-USER — before Docker's own inter-container ACCEPT rule ever runs;
+  # DOCKER-USER is consulted first. Without this RETURN, the DROPs above
+  # would also catch that path, because privos-agent-net's subnet (Docker's
+  # default pool range) falls inside 172.16.0.0/12 or 192.168.0.0/16, and the
+  # built-in agent would never work on such a host. Inserted (via `-I 1`)
+  # AFTER the DROPs above, so it ends up above them in the chain and is
+  # evaluated first.
+  run_iptables -I DOCKER-USER 1 -i "$VM_BRIDGE_IFACE" -o "$VM_BRIDGE_IFACE" \
+    -m comment --comment "$VM_EGRESS_TAG" -j RETURN
 
   # Operator allowlist last, so these RETURNs end up checked FIRST (every
   # insertion here uses -I 1; whatever is inserted last ends up on top).
+  #
+  # The SAME env var (PRIVOS_EGRESS_ALLOWLIST) is also read inside
+  # privos-sandbox by the in-process WebFetch guard
+  # (packages/agentic-sdk/src/lib/outbound-host-guard.ts), which additionally
+  # accepts hostname entries this firewall cannot match on its own. As of
+  # this script, the Community Edition compose stack does not forward this
+  # variable into sandbox-proxy/sandbox-board, so a hostname entry has NO
+  # effect anywhere yet, and an IPv4 entry here only opens THIS firewall, not
+  # the WebFetch guard's own default-deny. Even once that wiring lands, the
+  # two layers still won't fully agree: the WebFetch guard never admits
+  # loopback or link-local regardless of this setting, while this firewall
+  # opens whatever CIDR is listed, including 127.0.0.0/8 or 169.254.0.0/16 if
+  # an operator lists one.
   IFS=',' read -ra allow_entries <<< "$egress_allowlist"
   for entry in "${allow_entries[@]}"; do
-    entry="${entry#"${entry%%[![:space:]]*}"}" # ltrim
-    entry="${entry%"${entry##*[![:space:]]}"}" # rtrim
+    entry="$(_trim "$entry")"
     [[ -z "$entry" ]] && continue
     if [[ "$entry" != *.*.*.* ]]; then
       # Not IPv4-CIDR/IP-shaped (this firewall layer is IPv4-only, matching
       # the rest of this script) — a hostname or IPv6 entry, meaningful only
-      # to the in-process guard, not to iptables.
-      echo "WARNING: PRIVOS_EGRESS_ALLOWLIST entry '$entry' is not an IPv4 address/CIDR — the host firewall cannot match it and will ignore it here (the in-process WebFetch guard still honors it)" >&2
+      # to the in-process WebFetch guard once it receives this variable, not
+      # to iptables.
+      echo "WARNING: PRIVOS_EGRESS_ALLOWLIST entry '$entry' is not an IPv4 address/CIDR — the host firewall cannot match it and will ignore it here" >&2
       continue
     fi
     run_iptables -I DOCKER-USER 1 -i "$VM_BRIDGE_IFACE" -d "$entry" \
@@ -193,7 +264,7 @@ apply_vm_egress_rules() {
 # arguments; a no-op (with a loud warning) on a host with no systemd, or when
 # this script was piped over stdin rather than run from a real file.
 persist_rules() {
-  local protected_ports="$1" egress_allowlist="$2" host_callback_ports="$3"
+  local protected_ports="$1" egress_allowlist="$2"
 
   # Piping this script over stdin leaves $0 as "bash", so the rules apply but
   # the unit cannot be installed. Say so loudly instead of failing with an
@@ -211,6 +282,18 @@ persist_rules() {
     run_iptables -L DOCKER-USER -n --line-numbers | tail -n +3
     return 0
   fi
+  if [[ "$(readlink -f "$0")" == /usr/local/sbin/privos-restrict-sandbox-plane.sh ]]; then
+    # Invoked by the boot unit itself: the rules above are already
+    # (re)applied for this boot, and the unit is already installed.
+    # Re-running `install` here would copy this file onto itself — GNU
+    # install refuses with "are the same file" under `set -e`, which would
+    # mark the unit failed on every single boot despite the rules having
+    # been applied correctly, and a `systemctl daemon-reload` from inside a
+    # starting unit is also unnecessary work. Same guard as
+    # infra/node-onboarding/restrict-published-tenant-ports.sh, which has the
+    # identical self-copy structure and hit the identical bug.
+    return 0
+  fi
   install -m 0755 "$0" /usr/local/sbin/privos-restrict-sandbox-plane.sh
   cat > /etc/systemd/system/privos-restrict-sandbox-plane.service <<UNIT
 [Unit]
@@ -221,7 +304,7 @@ Requires=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/sbin/privos-restrict-sandbox-plane.sh "${protected_ports}" "${egress_allowlist}" "${host_callback_ports}"
+ExecStart=/usr/local/sbin/privos-restrict-sandbox-plane.sh "${protected_ports}" "${egress_allowlist}"
 
 [Install]
 WantedBy=multi-user.target
@@ -233,25 +316,28 @@ UNIT
 }
 
 main() {
+  # `--clear`: remove every rule this script ever adds (both tags) and stop
+  # — used by install.sh's `--uninstall --purge` so the (now-live, see
+  # apply_sandbox_plane_rules) DROPs never outlive the install they came
+  # from. Deliberately does not touch the persisted unit/script files;
+  # install.sh's do_uninstall removes those itself after this returns.
+  if [[ "${1:-}" == "--clear" ]]; then
+    clear_tagged_rules "$SANDBOX_PLANE_TAG"
+    clear_tagged_rules "$VM_EGRESS_TAG"
+    return 0
+  fi
+
   local protected_ports="${1:?comma-separated protected ports/ranges required, e.g. 8556,8557,9000,30000:30999}"
-  # Comma-separated CIDRs an operator wants agent VM containers to reach
-  # despite the private-range egress block below (e.g. an internal LAN
-  # service the agent is meant to call). A bare IP is treated as a host
-  # route. Hostname entries are silently ignored HERE — iptables matches
-  # addresses, not names. The in-process WebFetch guard in privos-sandbox
-  # (PRIVOS_EGRESS_ALLOWLIST, packages/agentic-sdk/src/lib/outbound-host-guard.ts)
-  # reads the SAME env var and DOES accept hostnames; one operator setting
-  # covers both layers as far as each layer is able to act on it.
   local egress_allowlist="${2:-}"
-  # Host-side port(s) agent VM containers are known to need to reach
-  # directly today: the hub, published on all interfaces (see the "host
-  # callback" comment in apply_vm_egress_rules for why nothing else needs a
-  # slot here). Comma-separated if ever more than one is needed.
-  local host_callback_ports="${3:-3000}"
+
+  # Validate BEFORE touching a single rule — see validate_egress_allowlist's
+  # own comment for why a bad entry must abort here and not partway through
+  # either apply_* function.
+  validate_egress_allowlist "$egress_allowlist"
 
   apply_sandbox_plane_rules "$protected_ports"
-  apply_vm_egress_rules "$egress_allowlist" "$host_callback_ports"
-  persist_rules "$protected_ports" "$egress_allowlist" "$host_callback_ports"
+  apply_vm_egress_rules "$egress_allowlist"
+  persist_rules "$protected_ports" "$egress_allowlist"
 }
 
 # Run main unless the file is being *sourced* (tests/ source it to exercise

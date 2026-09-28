@@ -208,11 +208,13 @@ Flags:
   --url <root-url>          Public URL the hub is reachable at (rewrites ROOT_URL on re-run)
   --hub-port <port>         Host port for the hub (default: 3000)
   --vm-port-range <lo-hi>   Loopback host-port range for the sandbox VM pool (default: 30000-30999)
-  --egress-allowlist <list> Comma-separated IPv4 CIDRs/hosts agent VM containers may
+  --egress-allowlist <list> Comma-separated IPv4 CIDRs agent VM containers may
                             reach despite the default-deny on private/link-local/
-                            carrier-grade-NAT destinations (see docker-user-rules.sh).
-                            Hostname entries only take effect in the in-process
-                            WebFetch guard, not the host firewall. Empty by default.
+                            carrier-grade-NAT destinations (see docker-user-rules.sh,
+                            TCP only). Hostname entries are accepted but currently
+                            have no effect in this Community Edition stack (the
+                            in-process WebFetch guard that would honor them is not
+                            wired to this variable yet). Empty by default.
   --yes                     Non-interactive: assume "no" for optional-sidecar prompts AND
                             accept the PrivOS Community License 1.0 (see LICENSE)
   --accept-license          Accept the PrivOS Community License 1.0 without --yes's other effects
@@ -1269,11 +1271,11 @@ install_docker_user_rules() {
   install -m 0755 "$PRIVOS_DIR/docker-user-rules.sh" /usr/local/sbin/privos-docker-user-rules.sh
   local ports="${PRIVOS_BOARD_PORT},${PRIVOS_PROXY_PORT},${PRIVOS_RUSTFS_PORT},${PRIVOS_VM_PORT_RANGE/-/:}"
   # Agent VM egress: private/link-local/CGNAT destinations are dropped by
-  # default; PRIVOS_EGRESS_ALLOWLIST opts specific CIDRs back in; the hub
-  # port is always left reachable via the agent-VM bridge (see
-  # docker-user-rules.sh — it is the one host-callback destination agent VM
-  # containers are known to need).
-  /usr/local/sbin/privos-docker-user-rules.sh "$ports" "${PRIVOS_EGRESS_ALLOWLIST:-}" "$PRIVOS_HUB_PORT" >/dev/null
+  # default; PRIVOS_EGRESS_ALLOWLIST opts specific CIDRs back in (see
+  # docker-user-rules.sh). A malformed allowlist entry makes this exit
+  # non-zero, which aborts install.sh under `set -e` before any firewall
+  # rule was touched.
+  /usr/local/sbin/privos-docker-user-rules.sh "$ports" "${PRIVOS_EGRESS_ALLOWLIST:-}" >/dev/null
 }
 
 wait_for_compose_healthy() {
@@ -1556,6 +1558,17 @@ do_uninstall() {
   if [[ "$PURGE" == "true" ]]; then
     docker network rm "$PRIVOS_NETWORK" >/dev/null 2>&1 || true
     docker volume rm "${PRIVOS_PROJECT}-hub-lib" >/dev/null 2>&1 || true
+    # Remove the tagged DOCKER-USER rules docker-user-rules.sh added — on
+    # Docker 28+ (no default trailing RETURN in DOCKER-USER) these are live
+    # rules, and on older Docker they persist across the daemon restart
+    # `compose down` triggers, so leaving them would keep dropping the ports/
+    # ranges they cover for every workload on the host after "uninstalling".
+    local rules_script
+    for rules_script in /usr/local/sbin/privos-docker-user-rules.sh /usr/local/sbin/privos-restrict-sandbox-plane.sh; do
+      [[ -x "$rules_script" ]] || continue
+      "$rules_script" --clear || true
+      break
+    done
     systemctl disable --now privos-restrict-sandbox-plane.service >/dev/null 2>&1 || true
     rm -f /etc/systemd/system/privos-restrict-sandbox-plane.service /usr/local/sbin/privos-restrict-sandbox-plane.sh /usr/local/sbin/privos-docker-user-rules.sh
     systemctl daemon-reload >/dev/null 2>&1 || true
