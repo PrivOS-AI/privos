@@ -86,11 +86,10 @@ validation, or no longer matches this host's identity re-arms the gate. Re-regis
 **the same request code** is refused: the portal already has that exact code bound to this
 install (`CODE_ALREADY_CLAIMED`). What actually works:
 
-1. At `https://client.privos.io`, delete the existing activation for this install (workspace
-   settings → self-hosted). This is also required after `--purge` or moving to a new host,
-   where the fresh identity's own free Community activation is refused
-   (`community_activation_exists`) until the old one is gone — one free Community activation
-   per cloud account.
+1. After `--purge` or a move to a new host, the fresh identity prints its own new code:
+   activate it like any new install. There is no limit on how many free Community installs
+   one cloud account activates. Delete the old install's activation at
+   `https://client.privos.io` (workspace settings → self-hosted) only to tidy up.
 2. Same identity only (grace/validation failure, not `--purge`): as an admin, regenerate the
    request code (Admin → License page's "Regenerate", or `POST /api/v1/cloud.selfHosted.regenerate`
    — reachable even while the gate is armed) so the hub mints and re-registers a fresh code.
