@@ -229,18 +229,16 @@ apply_vm_egress_rules() {
   # Operator allowlist last, so these RETURNs end up checked FIRST (every
   # insertion here uses -I 1; whatever is inserted last ends up on top).
   #
-  # The SAME env var (PRIVOS_EGRESS_ALLOWLIST) is also read inside
-  # privos-sandbox by the in-process WebFetch guard
+  # The SAME env var (PRIVOS_EGRESS_ALLOWLIST), read from the same .env file,
+  # is also forwarded by compose.yml into sandbox-proxy/sandbox-board for the
+  # in-process WebFetch guard inside privos-sandbox
   # (packages/agentic-sdk/src/lib/outbound-host-guard.ts), which additionally
-  # accepts hostname entries this firewall cannot match on its own. As of
-  # this script, the Community Edition compose stack does not forward this
-  # variable into sandbox-proxy/sandbox-board, so a hostname entry has NO
-  # effect anywhere yet, and an IPv4 entry here only opens THIS firewall, not
-  # the WebFetch guard's own default-deny. Even once that wiring lands, the
-  # two layers still won't fully agree: the WebFetch guard never admits
-  # loopback or link-local regardless of this setting, while this firewall
-  # opens whatever CIDR is listed, including 127.0.0.0/8 or 169.254.0.0/16 if
-  # an operator lists one.
+  # accepts hostname entries this firewall cannot match on its own — but only
+  # on a sandbox image built from a commit that includes that guard; an older
+  # image ignores the variable entirely. The two layers still don't fully
+  # agree even then: the WebFetch guard never admits loopback or link-local
+  # regardless of this setting, while this firewall opens whatever CIDR is
+  # listed, including 127.0.0.0/8 or 169.254.0.0/16 if an operator lists one.
   IFS=',' read -ra allow_entries <<< "$egress_allowlist"
   for entry in "${allow_entries[@]}"; do
     entry="$(_trim "$entry")"

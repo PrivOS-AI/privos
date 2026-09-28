@@ -111,6 +111,7 @@ DANGEROUS_DIRS=(/ /root /home /usr /usr/local /etc /bin /sbin /lib /lib64 /var /
 # .env keys, in the order they are written — must match env.template.
 ENV_KEYS=(
   PRIVOS_DIR PRIVOS_PROJECT PRIVOS_NETWORK PRIVOS_AGENT_NETWORK PRIVOS_STACK_VERSION PRIVOS_ROOT_URL PRIVOS_DEPLOYMENT_ID
+  PRIVOS_HUB_TRUSTED_PROXIES
   PRIVOS_HUB_PORT PRIVOS_BOARD_PORT PRIVOS_PROXY_PORT PRIVOS_RUSTFS_PORT PRIVOS_VM_PORT_RANGE
   PRIVOS_EGRESS_ALLOWLIST
   MONGO_ROOT_USER MONGO_ROOT_PASSWORD MONGO_URL MONGO_OPLOG_URL MONGODB_URL
@@ -134,6 +135,18 @@ ENV_KEYS=(
 log()  { printf '[privos-install] %s\n' "$*" >&2; }
 die()  { printf '[privos-install] ERROR: %s\n' "$*" >&2; exit 1; }
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
+
+# Refuses to continue if $1 exists and is a symlink. hub-marketplace/apps and
+# hub-lib/self-hosted both live inside a directory the hub (uid 1001) can
+# write to at runtime — on --upgrade a compromised hub could replace either
+# with a symlink to any host path before this re-run reaches them here. The
+# mkdir -p / chown / chmod calls around both paths run as root and follow a
+# symlink by default, so refuse outright rather than silently create files
+# at, or chown/chmod, whatever host path it resolves to.
+refuse_symlink() {
+  [[ -L "$1" ]] && die "$1 is a symlink; refusing"
+  return 0
+}
 
 # Hostname (no scheme, no userinfo, no port, no path) from an absolute http(s) URL;
 # empty on anything without a scheme:// . Used to keep the publisher off the hub host.
@@ -1158,6 +1171,10 @@ resolve_config() {
   # Empty by default — no private-range destination is reachable from an
   # agent VM container until an operator opts one in.
   : "${PRIVOS_EGRESS_ALLOWLIST:=}"
+  # Written into .env as a real default (not left blank for compose's own
+  # fallback to fill in) so the active trust config is visible and directly
+  # editable there — see env.template for the trade-off.
+  : "${PRIVOS_HUB_TRUSTED_PROXIES:=127.0.0.0/8,::1,172.16.0.0/12}"
   : "${PRIVOS_STACK_VERSION:=${VERSION_FLAG:-latest}}"
   : "${PRIVOS_MONGO_CACHE_GB:=1}" "${PRIVOS_MONGO_MEM:=1g}" "${PRIVOS_MONGO_CPUS:=2}"
   : "${PRIVOS_RUSTFS_MEM:=512m}" "${PRIVOS_RUSTFS_CPUS:=1}"
@@ -1705,7 +1722,9 @@ main() {
   chown -R 1001:1001 "$PRIVOS_DIR/data/sandbox-board" "$PRIVOS_DIR/data/sandbox-proxy" "$PRIVOS_DIR/data/sandbox-pool"
   # Hub (uid 1001) writes uploads and marketplace artifacts; the driver reads
   # apps/ as uid 1001 too and requires 0750 on it (compose-ssh-driver parity).
-  chown 1001:1001 "$PRIVOS_DIR/data/hub-uploads" "$PRIVOS_DIR/data/hub-marketplace" "$PRIVOS_DIR/data/hub-marketplace/apps"
+  chown 1001:1001 "$PRIVOS_DIR/data/hub-uploads" "$PRIVOS_DIR/data/hub-marketplace"
+  refuse_symlink "$PRIVOS_DIR/data/hub-marketplace/apps"
+  chown -h 1001:1001 "$PRIVOS_DIR/data/hub-marketplace/apps"
   chmod 0750 "$PRIVOS_DIR/data/hub-marketplace/apps"
   # hub-lib holds the hub identity keypair + self-hosted license code/status;
   # the hub (uid 1001) must be able to mkdir under it. 0700 — private to the hub.
@@ -1722,8 +1741,9 @@ main() {
   # as uid 1001 (compose.yml `user:`), the SAME owner set here, and
   # sandbox-proxy runs as root (uid 0), which reads any file regardless of
   # its mode — see the compose.yml comments on both volume mounts.
+  refuse_symlink "$PRIVOS_DIR/data/hub-lib/self-hosted"
   mkdir -p "$PRIVOS_DIR/data/hub-lib/self-hosted"
-  chown 1001:1001 "$PRIVOS_DIR/data/hub-lib/self-hosted"
+  chown -h 1001:1001 "$PRIVOS_DIR/data/hub-lib/self-hosted"
   chmod 0700 "$PRIVOS_DIR/data/hub-lib/self-hosted"
   # The official node:20-alpine image's built-in "node" user is uid/gid 1000
   # — app-cluster (Dockerfile: `USER node`) must be able to write its state
