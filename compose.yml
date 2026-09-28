@@ -236,6 +236,10 @@ services:
       # alternative. A reverse proxy on a DIFFERENT host must have its address
       # added explicitly; see env.template.
       HTTP_TRUSTED_PROXIES: ${PRIVOS_HUB_TRUSTED_PROXIES:-127.0.0.0/8,::1,172.16.0.0/12}
+      # Concurrent published-file reads per hub process. The content route
+      # streams, so a single-owner install runs effectively uncapped; the hub
+      # reads 0 as "use its default of 8", hence a large number instead.
+      PRIVOS_PUBLISHED_FILES_MAX_CONCURRENT_READS: ${PRIVOS_PUBLISHED_FILES_MAX_CONCURRENT_READS:-10000}
       # --- Hub -> Sandbox bot-key push wiring ------------------------------
       # OVERWRITE_SETTING_PrivOSSandbox_Use_Env below makes the hub resolve
       # its Sandbox target from THESE two env vars (getEffectivePrivOSSandboxConfig
@@ -515,6 +519,16 @@ services:
       # container-env.ts forwards into every agent VM/collocation core it
       # spawns (and refuses to let a room's customEnv override).
       PRIVOS_EGRESS_ALLOWLIST: ${PRIVOS_EGRESS_ALLOWLIST:-}
+      # Agent container memory/CPU/PIDs caps. 0 = no cap (the field is left off
+      # the container), which is the Community default: the host belongs to one
+      # owner. Capability drop, no-new-privileges and the init process stay on
+      # regardless. Set a positive value in .env to cap (see env.template).
+      POOL_CONTAINER_MEMORY_MB: ${POOL_CONTAINER_MEMORY_MB:-0}
+      POOL_CONTAINER_CPUS: ${POOL_CONTAINER_CPUS:-0}
+      POOL_CONTAINER_PIDS_LIMIT: ${POOL_CONTAINER_PIDS_LIMIT:-0}
+      COLLOC_CONTAINER_MEMORY_MB: ${COLLOC_CONTAINER_MEMORY_MB:-0}
+      COLLOC_CONTAINER_CPUS: ${COLLOC_CONTAINER_CPUS:-0}
+      COLLOC_CONTAINER_PIDS_LIMIT: ${COLLOC_CONTAINER_PIDS_LIMIT:-0}
       PORT: "8557"
       SANDBOX_PROXY_URL: http://sandbox-proxy:8557
       # The board forwards /api/bot-key's catalog-entry provisioning here
