@@ -90,7 +90,7 @@ services:
         hard: 64000
     security_opt: ["no-new-privileges:true"]
     healthcheck:
-      test: ["CMD-SHELL", "mongosh --host $$(hostname -i) --quiet --eval \"db.adminCommand({ping:1})\""]
+      test: ["CMD-SHELL", "mongosh --host $$(hostname -i | cut -d' ' -f1) --quiet --eval \"db.adminCommand({ping:1})\""]
       interval: 10s
       timeout: 5s
       retries: 10
