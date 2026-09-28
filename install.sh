@@ -1457,12 +1457,15 @@ print_summary() {
   print_ready
   echo ""
   if [[ "$status" == *'"status":"issued"'* ]]; then
-    echo "  License:        activated (self-hosted licence already applied — nothing to do)"
+    echo "  Activation:     done (this install is already registered — nothing to do)"
   elif [[ -n "$code" ]]; then
-    echo "  License request code: ${code}"
+    echo "  Activation is REQUIRED before PrivOS is usable — nothing else works until"
+    echo "  you finish it. This is a free registration of this install, not a paid"
+    echo "  licence: no card, no cost, just an email to register the deployment."
+    echo "  Request code:   ${code}"
     echo "  Activate at:    https://client.privos.io/self-hosted/activate#code=${code}"
   else
-    echo "  License request code not yet available — check again shortly with:"
+    echo "  Activation request code not yet available — check again shortly with:"
     echo "    docker compose -f ${COMPOSE_FILE} --env-file ${ENV_FILE} exec hub cat /var/lib/privos/self-hosted/license-request-code"
   fi
 }
@@ -1504,21 +1507,25 @@ interactive_activation() {
   done
   printf '\n' >"$tty"
   if [[ -z "$code" ]]; then
-    echo "  License request code not ready yet — falling back to the non-interactive summary." >"$tty"
+    echo "  Activation request code not ready yet — falling back to the non-interactive summary." >"$tty"
     print_summary
     return 0
   fi
 
   {
     echo ""
-    echo "  ┌─ License request code ────────────────────────────────"
+    echo "  ┌─ Activation request code ─────────────────────────────"
     echo "  │   ${code}"
     echo "  └───────────────────────────────────────────────────────"
     echo ""
+    echo "  Activation is REQUIRED before PrivOS is usable — this is a free"
+    echo "  registration of this install, not a paid licence: no card, no cost."
     echo "  Activate this deployment:"
     echo "    1. Open   https://client.privos.io/self-hosted/activate#code=${code}"
     echo "    2. Sign in (or create a free PrivOS account)."
-    echo "    3. Choose your plan and complete activation."
+    echo "    3. Complete activation. The hub unlocks by itself within a minute."
+    echo "       Its AI models step then shows the Roxane provider (starts with"
+    echo "       \$0 credit, top up at client.privos.io) and lets you add your own."
     echo ""
   } >"$tty"
   offer_clipboard_copy "$code" "$tty"
@@ -1674,6 +1681,20 @@ main() {
   # the hub (uid 1001) must be able to mkdir under it. 0700 — private to the hub.
   chown 1001:1001 "$PRIVOS_DIR/data/hub-lib"
   chmod 0700 "$PRIVOS_DIR/data/hub-lib"
+  # hub-lib/self-hosted is ALSO bind-mounted read-only into sandbox-board and
+  # sandbox-proxy (compose.yml), so they can pick up the gateway credential
+  # the hub writes to llm.env there after activation, without a container
+  # restart. Pre-create it here — with the SAME owner/mode as hub-lib above —
+  # rather than let the hub mkdir it lazily at boot, or let `docker compose up`
+  # auto-create the bind-mount path as root before the hub ever runs (which
+  # would leave the hub unable to write into its own directory). No group or
+  # mode widening is needed to make it readable: sandbox-board already runs
+  # as uid 1001 (compose.yml `user:`), the SAME owner set here, and
+  # sandbox-proxy runs as root (uid 0), which reads any file regardless of
+  # its mode — see the compose.yml comments on both volume mounts.
+  mkdir -p "$PRIVOS_DIR/data/hub-lib/self-hosted"
+  chown 1001:1001 "$PRIVOS_DIR/data/hub-lib/self-hosted"
+  chmod 0700 "$PRIVOS_DIR/data/hub-lib/self-hosted"
   # The official node:20-alpine image's built-in "node" user is uid/gid 1000
   # — app-cluster (Dockerfile: `USER node`) must be able to write its state
   # dir (credential file, temp artifact chunks) there.
