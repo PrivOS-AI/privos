@@ -14,8 +14,9 @@ source-available installer, commercial rights reserved. Not open source — see 
 Single-host Docker Compose install of **privos-hub + privos-sandbox** (mongo, redis,
 rustfs, board, proxy, VM pool) with host port-conflict detection, loopback-only exposure
 of internal services, minisign-verified bundle, and digest-pinned images. After install
-the hub prints a **license request code** to redeem at
-`https://client.privos.io/self-hosted/activate`.
+the hub prints an **activation request code**: activation at
+`https://client.privos.io/self-hosted/activate` is required before the install is usable —
+see [Activation](#activation) below.
 
 ## ⚠️ WARNING: Early access
 
@@ -35,11 +36,66 @@ curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.
 
 Host prerequisites: Linux x86_64/arm64, Docker ≥ 24 with compose v2 (or pass `--install-docker`), and `curl`, `jq`, `minisign`, `openssl` on PATH (Debian/Ubuntu: `apt-get install -y jq minisign`). The installer stops before touching anything if one is missing.
 
+## Activation
+
+Activation is **required** on every Community Edition install: until it completes, nothing
+is usable — the UI shows a gate to every user, and the REST API refuses everything except a
+small allowlist (login, `info`, public settings, and the activation endpoints themselves).
+This is a **free lead-registration gate, not DRM**: the source is public, so an operator
+could patch it out, and we're not pretending otherwise — it exists so we know who is running
+PrivOS, not to enforce payment. There is no card and no cost to activate.
+
+**Flow:**
+
+1. Finish the setup wizard (or `install.sh` non-interactively). The hub writes a
+   `PRVOFF1.…`-prefixed **activation request code** to
+   `/var/lib/privos/self-hosted/license-request-code` inside its container; `install.sh`
+   prints it and the direct link (`--yes` prints it once and moves on; without `--yes` it
+   waits for you, letting you skip with Ctrl-C and finish later).
+2. Open `https://client.privos.io/self-hosted/activate#code=<code>`, sign in (or create a
+   free account), and confirm. The hub polls for the result and unlocks within one cycle —
+   no restart needed. Once activated, the portal lists your install under that account as a
+   Community lead (owner email, activation date, hub version).
+
+**Roxane, the default provider.** Once activated, the built-in **Roxane** provider
+(`privos-agent-sdk`, models `gauga`/`issus`/`granic`, served by the PrivOS gateway) is the
+default — no extra configuration needed to start chatting. It starts with **$0 credit**; the
+agent shows a clear top-up message once that runs out, and you top up any time at
+`https://client.privos.io`. Roxane cannot be edited or deleted, in the UI or through the API
+— the hub enforces that server-side.
+
+**Custom providers.** The onboarding "AI models" step (also reachable later from Admin) lets
+you review providers and add your own: any Anthropic-/OpenAI-compatible endpoint, tested and
+optionally set as the default in place of Roxane. `env.template`'s `ANTHROPIC_API_KEY` /
+`OPENAI_API_KEY` / `PRIVOS_LLM_BASE_URL` pre-seed one automatically on first boot if you'd
+rather set it before ever opening the UI — see the comments there.
+
+**Upgrading an existing unlicensed install.** An install that predates this gate is activated
+exactly once on upgrade — the same request-code flow above, run a single time. Its `.env` BYO
+key (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`), if it had one, reappears afterwards as a regular
+custom provider instead of the (removed) implicit default, so nothing you already configured
+is lost.
+
+**Licence expiry.** A licence that lapses past its grace period, fails validation, or no
+longer matches this host's identity re-arms the gate — you activate again the same way.
+
+**Air-gapped install.** Roxane needs internet, so a fully offline host must set a custom
+provider pointing at a local OpenAI-/Anthropic-compatible endpoint (see `env.template`) —
+activation itself, however, still works with no direct internet access on the PrivOS host:
+
+1. On the gate page, choose **Offline / air-gapped** to get an **offline request token**
+   instead of the normal code (valid 30 days, single use).
+2. On any machine that *does* have internet access, open
+   `https://client.privos.io/self-hosted/activate`, paste the token, sign in, and activate.
+3. Download the licence file from that workspace's page in the portal.
+4. Back on the air-gapped host, paste the downloaded licence into the hub's gate. It applies
+   immediately — no polling and no outbound connection required for this step.
+
 ## Contents
 
 | File | Purpose |
 |---|---|
-| `install.sh` | Preflight, port checks, license acceptance, secret gen, RustFS init, DOCKER-USER rules, **minisign verify**, digest-pinned pull, wait + print request code |
+| `install.sh` | Preflight, port checks, license acceptance, secret gen, RustFS init, DOCKER-USER rules, **minisign verify**, digest-pinned pull, wait + print activation request code |
 | `compose.yml` | Fleet-renderer-matched stack; only the hub port public, sandbox plane on loopback; `knowledge-vector` / `local-runtime` opt-in profiles |
 | `env.template` | Documented knobs; secrets generated locally by the installer |
 | `rustfs-init.sh` | Bucket + scoped service account (mirrors the fleet provisioner) |
@@ -48,7 +104,7 @@ Host prerequisites: Linux x86_64/arm64, Docker ≥ 24 with compose v2 (or pass `
 | `publish-self-hosted-bundle.sh` | Resolve digests, sign with minisign, publish a GitHub Release |
 | `SIGNING.md` | How the bundle is signed; the embedded public key |
 | `LICENSE` | PrivOS Community License 1.0 |
-| `tests/` | Bash unit tests (port-check, env render, signature/hash verify, license gate) + CI |
+| `tests/` | Bash unit tests (port-check, env render, signature/hash verify, license acceptance, activation gate) + CI |
 
 ## Security
 
