@@ -17,11 +17,30 @@
 # paths that are valid on the real host filesystem, not merely inside its own
 # container namespace.
 
-name: privos-self-hosted
+
+# Must match install.sh's default PRIVOS_PROJECT/--project-name ("privos").
+# `docker compose up -d` in ${PRIVOS_DIR} without an explicit `-p`/env override
+# resolves the project name from this field, and every service's
+# `container_name:` below is independently pinned to `${PRIVOS_PROJECT:-privos}-<svc>`
+# — a mismatch here meant that "manually run docker compose up -d" (as this
+# repo's own docs tell operators to do) tried to create containers under a
+# different compose *project* while still colliding on those hardcoded
+# container names, so Docker refused with "container name already in use".
+name: ${PRIVOS_PROJECT:-privos}
 
 networks:
   privos:
     name: ${PRIVOS_NETWORK:-privos-sandbox-net}
+    external: true
+  # Dedicated bridge for agent VM containers (sandbox-proxy's VM_NETWORK,
+  # below). Pre-created by install.sh (`ensure_agent_network`), like `privos`
+  # above — kept off the `privos` network so agent VMs can never reach
+  # Mongo/Redis/RustFS directly (Docker's inter-bridge isolation already
+  # closes that path; nothing here needs to enforce it further). sandbox-proxy
+  # is a member of BOTH networks, so agent VMs can still resolve and reach it
+  # by its Docker-DNS name for the LLM relay and skill/hub egress.
+  privos-agent:
+    name: ${PRIVOS_AGENT_NETWORK:-privos-agent-net}
     external: true
 
 # Hub instance identity (P-256 keypair) + the self-hosted license-request code
@@ -197,6 +216,22 @@ services:
       SANDBOX_PROXY_URL: http://sandbox-proxy:8557
       SANDBOX_APP_ORIGIN: http://sandbox-board:8556
       AGENT_PROVIDER: privos-agent-sdk
+      # --- Hub -> Sandbox bot-key push wiring ------------------------------
+      # OVERWRITE_SETTING_PrivOSSandbox_Use_Env below makes the hub resolve
+      # its Sandbox target from THESE two env vars (getEffectivePrivOSSandboxConfig
+      # / getSettings in privos-sandbox-agent-service.ts) — NOT from
+      # SANDBOX_PROXY_URL above (that one is unread on the hub; kept for the
+      # BYO-LLM-routing/license-polling uses called out above). Without them
+      # every bot-key push failed with reason=config-missing/sandbox-unreachable
+      # and the admin panel showed "no global sandbox configured" while the
+      # proxy sat there running healthy.
+      # MUST be sandbox-board, not sandbox-proxy: /api/bot-key is served by the
+      # board's Next app (src/app/api/bot-key/route.ts); the proxy exposes no
+      # such route. The hub's bot-key push socket handshake also sends only an
+      # apiKey (no projectId) — sandbox-proxy's own socket auth requires a
+      # projectId and would reject it with "Socket authentication failed".
+      PRIVOS_SANDBOX_URL: http://sandbox-board:8556
+      PRIVOS_SANDBOX_API_KEY: ${SANDBOX_API_KEY:?SANDBOX_API_KEY is required}
       # BYO LLM key (Community self-hosted, no license). A paid+licensed hub
       # receives a LiteLLM key over its poll response instead — the installer
       # never touches that path.
@@ -239,17 +274,26 @@ services:
       # compose-network name, reachable by every service on this network (hub,
       # app-cluster, board, proxy). RustFS itself stays published on
       # 127.0.0.1 only — an object store on a single-host install has no
-      # business being internet-facing. NOTE: sandbox VMs are spawned with
-      # host-port publishing and are NOT on this network (see VM_NETWORK below),
-      # so presigned URLs still do not reach them; that needs either VM_NETWORK
-      # attachment or a host-reachable RustFS bind, and is deliberately left as a
-      # separate decision rather than guessed at here.
+      # business being internet-facing. NOTE: sandbox VMs are on the separate
+      # `privos-agent` network (VM_NETWORK below), deliberately NOT this one
+      # (agent VMs must never reach Mongo/Redis/RustFS directly), so presigned
+      # URLs still do not reach them from inside a VM; that needs either a
+      # host-reachable RustFS bind or routing VM->RustFS traffic through the
+      # proxy, and is deliberately left as a separate decision rather than
+      # guessed at here.
       OVERWRITE_SETTING_FileUpload_S3_BucketURL: ${RUSTFS_PUBLIC_URL:-http://rustfs:9000}
       # --- Hub -> sandbox wiring -----------------------------------------
-      # SANDBOX_PROXY_URL above is already correct, but the hub only consults it
-      # when this is true; it defaults to false, so admin showed "no global
+      # Makes the hub read PRIVOS_SANDBOX_URL/PRIVOS_SANDBOX_API_KEY above
+      # instead of the (empty, on a fresh install) admin-panel setting; it
+      # defaults to false, so without this the admin panel showed "no global
       # sandbox configured" while the proxy sat there running.
       OVERWRITE_SETTING_PrivOSSandbox_Use_Env: "true"
+      # The hub's Site_Url setting (used ahead of ROOT_URL by the bot-key
+      # push's own hub-origin resolution) is frozen at first boot and would
+      # otherwise stay whatever it was seeded from originally — pin it to the
+      # same PRIVOS_ROOT_URL every start so a later --url change actually
+      # takes effect instead of silently drifting from ROOT_URL.
+      OVERWRITE_SETTING_Site_Url: ${PRIVOS_ROOT_URL:?PRIVOS_ROOT_URL is required}
       # File publisher (published-files renderer). Empty (default) hides the
       # public publish link in the hub UI. Set it to the publisher's OWN
       # hostname — never the hub host: the publisher renders arbitrary uploaded
@@ -331,19 +375,50 @@ services:
       PRIVOS_SANDBOX_MODE: "true"
       AGENT_PROVIDER: privos-agent-sdk
       ROXANE_PROXIED_BASE_URL: ${PRIVOS_LLM_BASE_URL:-}
-      ROXANE_MODEL: gauga
-      ROXANE_DEFAULT_GAUGA_MODEL: gauga
-      ROXANE_DEFAULT_ISSUS_MODEL: issus
-      ROXANE_DEFAULT_GRANIC_MODEL: granic
+      # BYO key: llm-relay reads it from this process's own env, never the
+      # hub's. Real model names (PRIVOS_LLM_MODEL/PRIVOS_LLM_SMALL_MODEL) are
+      # required for any non-default-gateway provider — the gauga/issus/
+      # granic aliases only resolve against llm.privos.io.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ROXANE_MODEL: ${PRIVOS_LLM_MODEL:-gauga}
+      ROXANE_DEFAULT_GAUGA_MODEL: ${PRIVOS_LLM_MODEL:-gauga}
+      ROXANE_DEFAULT_ISSUS_MODEL: ${PRIVOS_LLM_MODEL:-issus}
+      ROXANE_DEFAULT_GRANIC_MODEL: ${PRIVOS_LLM_SMALL_MODEL:-granic}
+      # The hub writes the Roxane gateway credential (ROXANE_PROXIED_BASE_URL/
+      # ROXANE_AUTH_TOKEN/AGENT_PROVIDER) to this file after activation — see
+      # the volume mount below. The sandbox re-reads it by mtime at request
+      # time, so a completed activation takes effect without recreating this
+      # container. Unset (default llm-relay behaviour) until the file exists.
+      PRIVOS_SELF_HOSTED_LLM_ENV_PATH: /var/lib/privos/self-hosted/llm.env
       PORT: "8556"
       SANDBOX_APP_ORIGIN: http://sandbox-board:8556
       SANDBOX_PROXY_URL: http://sandbox-proxy:8557
       BOT_INTERNAL_API_BASE_URL: http://sandbox-board:8556
       API_ACCESS_KEY: ${SANDBOX_API_KEY:?SANDBOX_API_KEY is required}
+      CATALOG_SECRET_KEY: ${CATALOG_SECRET_KEY:?CATALOG_SECRET_KEY is required}
+      # Docker-compose-internal hub address, fixed by this file (PORT: "3000"
+      # above on the hub service) — NEVER the operator's public PRIVOS_ROOT_URL
+      # (which stock installs default to http://localhost:<port>, unreachable
+      # from this container and rejected by the sandbox-proxy's SSRF guard/
+      # catalog validator as a loopback/single-label host). The bot-key push
+      # (src/lib/bot-key-egress-catalog.ts) uses this for both the egress
+      # catalog pattern and the actual hub request host whenever it is set;
+      # sandbox-proxy is given the identical value below so its matching
+      # exemption (ssrf-guard.ts/catalog-matcher.ts) agrees on the one hostname
+      # that may bypass the single-label/private-address checks.
+      PRIVOS_HUB_INTERNAL_ORIGIN: http://hub:3000
       POOL_DATA_BASE: ${PRIVOS_DIR}/data/sandbox-pool
     volumes:
       - ${PRIVOS_DIR}/data/sandbox-board:/app/data
       - ${PRIVOS_DIR}/data/sandbox-pool:${PRIVOS_DIR}/data/sandbox-pool
+      # Read-only: mounts ONLY the self-hosted/ subdir of hub-lib (never the
+      # hub's identity keypair that lives alongside it at /var/lib/privos on
+      # the hub service). No gid widening is needed to read llm.env from here:
+      # this container already runs as uid 1001 (the `user:` line above), the
+      # SAME owner install.sh sets on hub-lib/self-hosted (chmod 0700) — an
+      # owner-uid match, not a new grant to a different user.
+      - ${PRIVOS_DIR}/data/hub-lib/self-hosted:/var/lib/privos/self-hosted:ro
     # Loopback only — reachable from the host (installer health check,
     # operator debugging), never from the network.
     ports:
@@ -362,7 +437,13 @@ services:
     image: ghcr.io/privos-ai/privos-sandbox-proxy:${PRIVOS_STACK_VERSION:?PRIVOS_STACK_VERSION is required}@sha256:__SANDBOX_PROXY_DIGEST__
     container_name: ${PRIVOS_PROJECT:-privos}-sandbox-proxy
     restart: unless-stopped
-    networks: [privos]
+    # Member of BOTH networks: `privos` to reach Mongo/RustFS/board like every
+    # other sandbox-plane service, and `privos-agent` because it is also the
+    # one bridge agent VM containers themselves land on (VM_NETWORK below) —
+    # this is what lets a VM resolve and reach `sandbox-proxy` by Docker-DNS
+    # name at all. VM containers are NOT given `privos` membership, so they
+    # still cannot reach Mongo/Redis/RustFS directly.
+    networks: [privos, privos-agent]
     # Root, like the fleet: the proxy spawns per-bot agent VM containers via
     # the Docker API (docker.sock bind below) — root-equivalent on this host.
     # ACCEPTED RISK, same as the fleet's compose-ssh-driver comment; contained
@@ -384,19 +465,48 @@ services:
       PRIVOS_SANDBOX_MODE: "true"
       AGENT_PROVIDER: privos-agent-sdk
       ROXANE_PROXIED_BASE_URL: ${PRIVOS_LLM_BASE_URL:-}
-      ROXANE_MODEL: gauga
-      ROXANE_DEFAULT_GAUGA_MODEL: gauga
-      ROXANE_DEFAULT_ISSUS_MODEL: issus
-      ROXANE_DEFAULT_GRANIC_MODEL: granic
+      # BYO key: llm-relay reads it from this process's own env, never the
+      # hub's. Real model names (PRIVOS_LLM_MODEL/PRIVOS_LLM_SMALL_MODEL) are
+      # required for any non-default-gateway provider — the gauga/issus/
+      # granic aliases only resolve against llm.privos.io.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ROXANE_MODEL: ${PRIVOS_LLM_MODEL:-gauga}
+      ROXANE_DEFAULT_GAUGA_MODEL: ${PRIVOS_LLM_MODEL:-gauga}
+      ROXANE_DEFAULT_ISSUS_MODEL: ${PRIVOS_LLM_MODEL:-issus}
+      ROXANE_DEFAULT_GRANIC_MODEL: ${PRIVOS_LLM_SMALL_MODEL:-granic}
+      # See the identical setting on sandbox-board above — same file, same
+      # mtime-cached read-at-request-time contract.
+      PRIVOS_SELF_HOSTED_LLM_ENV_PATH: /var/lib/privos/self-hosted/llm.env
       PORT: "8557"
       SANDBOX_PROXY_URL: http://sandbox-proxy:8557
+      # The board forwards /api/bot-key's catalog-entry provisioning here
+      # (routes/forward.ts forwardToBoard); without it every push 503'd
+      # "BOARD_URL is not configured" before ever reaching the catalog write.
+      BOARD_URL: http://sandbox-board:8556
       API_ACCESS_KEY: ${SANDBOX_API_KEY:?SANDBOX_API_KEY is required}
+      CATALOG_SECRET_KEY: ${CATALOG_SECRET_KEY:?CATALOG_SECRET_KEY is required}
+      # Same fixed Docker-compose-internal hub address as sandbox-board (see
+      # comment there) — this is the ONE hostname this proxy's SSRF guard and
+      # catalog-pattern validator are allowed to exempt from the single-label/
+      # private-address rules (ssrf-guard.ts configuredHubInternalHost /
+      # catalog-matcher.ts validatePatternHost's allowExactHost). Never set
+      # from operator input; a stock CE install with no --url still gets a
+      # working built-in agent because bot-key sync targets this origin
+      # instead of the (localhost, unreachable-from-container) public URL.
+      PRIVOS_HUB_INTERNAL_ORIGIN: http://hub:3000
       POOL_DATA_BASE: ${PRIVOS_DIR}/data/sandbox-pool
       COLLOC_HUB_ID: ${PRIVOS_DEPLOYMENT_ID:?PRIVOS_DEPLOYMENT_ID is required}
       PRIVOS_COLLOCATION_ENABLED: "true"
-      # Legacy host-port pool (VM_NETWORK left unset — see RENDERER-DIFF.md):
-      # each spawned agent VM publishes its own host port from this range,
-      # bound to POOL_BIND_HOST so the whole range stays loopback-only.
+      # Agent VM containers are attached to the dedicated `privos-agent`
+      # bridge (network: block above) instead of the legacy host-port pool
+      # (container-pool.ts allocatePort() is dead code — "pool no longer
+      # exists" — so every VM create failed with "No available ports in
+      # pool" until this was set). POOL_PORT_RANGE/POOL_BIND_HOST below are
+      # then unused (container-pool.ts skips port allocation entirely once
+      # VM_NETWORK is set) but kept so a downgrade to an older sandbox-proxy
+      # build that predates VM_NETWORK still has a sane pool range.
+      VM_NETWORK: ${PRIVOS_AGENT_NETWORK:-privos-agent-net}
       POOL_PORT_RANGE: ${PRIVOS_VM_PORT_RANGE:-30000-30999}
       POOL_BIND_HOST: 127.0.0.1
       POOL_IMAGE: ghcr.io/privos-ai/privos-sandbox-vm:${PRIVOS_STACK_VERSION:?PRIVOS_STACK_VERSION is required}@sha256:__SANDBOX_VM_DIGEST__
@@ -408,6 +518,11 @@ services:
       - ${PRIVOS_DIR}/data/sandbox-proxy:/app/data
       - ${PRIVOS_DIR}/data/sandbox-pool:${PRIVOS_DIR}/data/sandbox-pool
       - /var/run/docker.sock:/var/run/docker.sock
+      # Read-only: same self-hosted/ subdir of hub-lib as sandbox-board above,
+      # for the same reason (llm.env after activation). No gid widening
+      # needed here either — this container runs as root (`user: "0:0"`
+      # above), which reads any file regardless of its mode.
+      - ${PRIVOS_DIR}/data/hub-lib/self-hosted:/var/lib/privos/self-hosted:ro
     ports:
       - "127.0.0.1:${PRIVOS_PROXY_PORT:-8557}:8557"
     mem_limit: ${PRIVOS_PROXY_MEM:-512m}

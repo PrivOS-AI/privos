@@ -41,6 +41,35 @@ assert_eq "node" "${LISTEN_CMD[3000]:-}" "lsof parser: port 3000 command"
 assert_eq "6789" "${LISTEN_PID[8556]:-}" "lsof parser: port 8556 pid"
 assert_eq "docker-pr" "${LISTEN_CMD[8556]:-}" "lsof parser: port 8556 command"
 
+# --- port_already_ours: recognizes every container it can move a port for ---
+# Regression: port_already_ours previously omitted "publisher" from its
+# container list, so re-running install.sh (plain or --upgrade) on an already
+# running stack always reported the publisher's own bound port (8558 by
+# default) as a foreign conflict and aborted, even though nothing but our own
+# prior install owned it. Runs before any test below overrides
+# port_already_ours() itself, so this exercises the REAL function sourced
+# from install.sh. PROJECT_NAME is already "privos" (install.sh's own
+# default, unchanged by sourcing) so container_name lookups below resolve to
+# "privos-<service>" without needing to set it here.
+
+# shellcheck disable=SC2329 # invoked indirectly by port_already_ours()
+docker_port_lookup() {
+	case "$1" in
+	privos-publisher) echo '{"8558/tcp":[{"HostIp":"127.0.0.1","HostPort":"8558"}]}' ;;
+	privos-hub) echo '{"3000/tcp":[{"HostIp":"0.0.0.0","HostPort":"3000"}]}' ;;
+	*) echo "" ;;
+	esac
+}
+# shellcheck disable=SC2218 # sourced from install.sh; this file redefines it locally further below for other cases
+port_already_ours "8558"
+assert_status 0 "$?" "port_already_ours: recognizes the publisher's own bound port"
+# shellcheck disable=SC2218 # sourced from install.sh; this file redefines it locally further below for other cases
+port_already_ours "3000"
+assert_status 0 "$?" "port_already_ours: recognizes the hub's own bound port (unchanged)"
+# shellcheck disable=SC2218 # sourced from install.sh; this file redefines it locally further below for other cases
+port_already_ours "9999"
+assert_status 1 "$?" "port_already_ours: a port none of our containers hold is not ours"
+
 # --- check_ports: conflict detected, aborts before writing anything --------
 
 # shellcheck disable=SC2329 # invoked indirectly by check_ports()/collect_listeners() in install.sh

@@ -81,6 +81,13 @@ MIN_DISK_KB=$(( 20 * 1024 * 1024 ))
 MIN_DOCKER_MAJOR=24
 PROJECT_NAME="privos"
 NETWORK_NAME="privos-sandbox-net"
+# Dedicated bridge network for agent VM containers (sandbox-proxy's
+# VM_NETWORK) — kept separate from NETWORK_NAME so agent VMs can never reach
+# Mongo/Redis/RustFS directly (Docker's inter-bridge isolation). Its
+# host-side bridge interface is pinned via --opt so docker-user-rules.sh can
+# match it by a fixed name; must match that script's VM_BRIDGE_IFACE.
+AGENT_NETWORK_NAME="privos-agent-net"
+AGENT_NETWORK_BRIDGE_IFACE="privos-agent0"
 STACK_READY_TIMEOUT_SEC=600
 
 BUNDLE_FILES=(compose.yml versions.json rustfs-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md)
@@ -103,16 +110,16 @@ DANGEROUS_DIRS=(/ /root /home /usr /usr/local /etc /bin /sbin /lib /lib64 /var /
 
 # .env keys, in the order they are written — must match env.template.
 ENV_KEYS=(
-  PRIVOS_DIR PRIVOS_PROJECT PRIVOS_NETWORK PRIVOS_STACK_VERSION PRIVOS_ROOT_URL PRIVOS_DEPLOYMENT_ID
+  PRIVOS_DIR PRIVOS_PROJECT PRIVOS_NETWORK PRIVOS_AGENT_NETWORK PRIVOS_STACK_VERSION PRIVOS_ROOT_URL PRIVOS_DEPLOYMENT_ID
   PRIVOS_HUB_PORT PRIVOS_BOARD_PORT PRIVOS_PROXY_PORT PRIVOS_RUSTFS_PORT PRIVOS_VM_PORT_RANGE
   MONGO_ROOT_USER MONGO_ROOT_PASSWORD MONGO_URL MONGO_OPLOG_URL MONGODB_URL
   PRIVOS_MONGO_CACHE_GB PRIVOS_MONGO_MEM PRIVOS_MONGO_CPUS
   RUSTFS_ROOT_USER RUSTFS_ROOT_PASSWORD RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY RUSTFS_BUCKET
   PRIVOS_RUSTFS_MEM PRIVOS_RUSTFS_CPUS
-  ADMIN_PASS ADMIN_EMAIL REG_TOKEN VAPID_SUBJECT VAPID_PUBLIC_KEY VAPID_PRIVATE_KEY SANDBOX_API_KEY
+  ADMIN_PASS ADMIN_EMAIL REG_TOKEN VAPID_SUBJECT VAPID_PUBLIC_KEY VAPID_PRIVATE_KEY SANDBOX_API_KEY CATALOG_SECRET_KEY
   SERVICE_USAGE_AUTHORIZATION_FAIL_CLOSED PRIVOS_SECRET_STORE_KEY
   PRIVOS_HUB_MEM PRIVOS_HUB_CPUS PRIVOS_BOARD_MEM PRIVOS_BOARD_CPUS PRIVOS_PROXY_MEM PRIVOS_PROXY_CPUS
-  PRIVOS_LLM_PROVIDER ANTHROPIC_API_KEY OPENAI_API_KEY PRIVOS_LLM_BASE_URL
+  PRIVOS_LLM_PROVIDER ANTHROPIC_API_KEY OPENAI_API_KEY PRIVOS_LLM_BASE_URL PRIVOS_LLM_MODEL PRIVOS_LLM_SMALL_MODEL
   PRIVOS_WITH_KNOWLEDGE_VECTOR PRIVOS_WEAVIATE_URL WEAVIATE_ROOT_KEY PRIVOS_WEAVIATE_MEM PRIVOS_WEAVIATE_CPUS
   PRIVOS_WITH_APP_CLUSTER PRIVOS_DOCKER_SOCKET_GID PRIVOS_APP_CLUSTER_BOOTSTRAP_TOKEN PRIVOS_APP_CLUSTER_MEM PRIVOS_APP_CLUSTER_CPUS
   PRIVOS_PUBLISHER_URL PRIVOS_PUBLISHER_BIND PRIVOS_PUBLISHER_PORT PRIVOS_PUBLISHER_MEM
@@ -826,7 +833,7 @@ collect_listeners() {
 
 port_already_ours() {
   local port="$1" name json
-  for name in hub sandbox-board sandbox-proxy rustfs; do
+  for name in hub sandbox-board sandbox-proxy rustfs publisher; do
     json="$(docker_port_lookup "${PROJECT_NAME}-${name}")"
     [[ -n "$json" ]] || continue
     grep -q "\"HostPort\":\"${port}\"" <<<"$json" && return 0
@@ -988,6 +995,9 @@ generate_secrets() {
   : "${ADMIN_EMAIL:=admin@localhost}"
   : "${REG_TOKEN:=$(rand_hex 32)}"
   : "${SANDBOX_API_KEY:=$(rand_hex 32)}"
+  # Encrypts the sandbox proxy's egress-credential catalog at rest — without
+  # it every bot-key/catalog write fails "CATALOG_SECRET_KEY is not set".
+  : "${CATALOG_SECRET_KEY:=$(rand_hex 32)}"
   : "${RUSTFS_ROOT_USER:=privos-root}"
   : "${RUSTFS_ROOT_PASSWORD:=$(rand_hex 32)}"
   : "${RUSTFS_ACCESS_KEY:=privos-$(rand_hex 6)}"
@@ -1121,6 +1131,7 @@ write_env_file() {
 resolve_config() {
   : "${PRIVOS_PROJECT:=$PROJECT_NAME}"
   : "${PRIVOS_NETWORK:=$NETWORK_NAME}"
+  : "${PRIVOS_AGENT_NETWORK:=$AGENT_NETWORK_NAME}"
   # Record which ports were set explicitly (flag, env, or a prior .env loaded on
   # re-run) BEFORE defaulting — only defaulted ports are eligible for
   # auto-fallback; an explicit port that is busy still hard-fails in check_ports.
@@ -1232,6 +1243,17 @@ ensure_network() {
   docker network inspect "$PRIVOS_NETWORK" >/dev/null 2>&1 && return 0
   docker network create "$PRIVOS_NETWORK" >/dev/null
   log "Created Docker network ${PRIVOS_NETWORK}"
+}
+
+# Agent VM containers' dedicated bridge — see AGENT_NETWORK_NAME above for
+# why it is separate from ensure_network's data-plane network. The bridge
+# interface name is pinned via --opt so docker-user-rules.sh's DOCKER-USER
+# rules can match it by a fixed name instead of resolving an opaque
+# `br-<network-id>` name at runtime.
+ensure_agent_network() {
+  docker network inspect "$PRIVOS_AGENT_NETWORK" >/dev/null 2>&1 && return 0
+  docker network create --opt "com.docker.network.bridge.name=${AGENT_NETWORK_BRIDGE_IFACE}" "$PRIVOS_AGENT_NETWORK" >/dev/null
+  log "Created Docker network ${PRIVOS_AGENT_NETWORK} (bridge ${AGENT_NETWORK_BRIDGE_IFACE})"
 }
 
 # MANAGED-broker root (McpBrokerManager) for the App Cluster's outbound
@@ -1435,12 +1457,15 @@ print_summary() {
   print_ready
   echo ""
   if [[ "$status" == *'"status":"issued"'* ]]; then
-    echo "  License:        activated (self-hosted licence already applied — nothing to do)"
+    echo "  Activation:     done (this install is already registered — nothing to do)"
   elif [[ -n "$code" ]]; then
-    echo "  License request code: ${code}"
+    echo "  Activation is REQUIRED before PrivOS is usable — nothing else works until"
+    echo "  you finish it. This is a free registration of this install, not a paid"
+    echo "  licence: no card, no cost, just an email to register the deployment."
+    echo "  Request code:   ${code}"
     echo "  Activate at:    https://client.privos.io/self-hosted/activate#code=${code}"
   else
-    echo "  License request code not yet available — check again shortly with:"
+    echo "  Activation request code not yet available — check again shortly with:"
     echo "    docker compose -f ${COMPOSE_FILE} --env-file ${ENV_FILE} exec hub cat /var/lib/privos/self-hosted/license-request-code"
   fi
 }
@@ -1482,21 +1507,25 @@ interactive_activation() {
   done
   printf '\n' >"$tty"
   if [[ -z "$code" ]]; then
-    echo "  License request code not ready yet — falling back to the non-interactive summary." >"$tty"
+    echo "  Activation request code not ready yet — falling back to the non-interactive summary." >"$tty"
     print_summary
     return 0
   fi
 
   {
     echo ""
-    echo "  ┌─ License request code ────────────────────────────────"
+    echo "  ┌─ Activation request code ─────────────────────────────"
     echo "  │   ${code}"
     echo "  └───────────────────────────────────────────────────────"
     echo ""
+    echo "  Activation is REQUIRED before PrivOS is usable — this is a free"
+    echo "  registration of this install, not a paid licence: no card, no cost."
     echo "  Activate this deployment:"
     echo "    1. Open   https://client.privos.io/self-hosted/activate#code=${code}"
     echo "    2. Sign in (or create a free PrivOS account)."
-    echo "    3. Choose your plan and complete activation."
+    echo "    3. Complete activation. The hub unlocks by itself within a minute."
+    echo "       Its AI models step then shows the Roxane provider (starts with"
+    echo "       \$0 credit, top up at client.privos.io) and lets you add your own."
     echo ""
   } >"$tty"
   offer_clipboard_copy "$code" "$tty"
@@ -1538,6 +1567,7 @@ do_uninstall() {
   compose down --remove-orphans || true
   if [[ "$PURGE" == "true" ]]; then
     docker network rm "$PRIVOS_NETWORK" >/dev/null 2>&1 || true
+    docker network rm "$PRIVOS_AGENT_NETWORK" >/dev/null 2>&1 || true
     docker volume rm "${PRIVOS_PROJECT}-hub-lib" >/dev/null 2>&1 || true
     systemctl disable --now privos-restrict-sandbox-plane.service >/dev/null 2>&1 || true
     rm -f /etc/systemd/system/privos-restrict-sandbox-plane.service /usr/local/sbin/privos-restrict-sandbox-plane.sh /usr/local/sbin/privos-docker-user-rules.sh
@@ -1566,6 +1596,7 @@ main() {
     require_root
     PRIVOS_PROJECT="${PRIVOS_PROJECT:-$PROJECT_NAME}"
     PRIVOS_NETWORK="${PRIVOS_NETWORK:-$NETWORK_NAME}"
+    PRIVOS_AGENT_NETWORK="${PRIVOS_AGENT_NETWORK:-$AGENT_NETWORK_NAME}"
     do_uninstall
     exit 0
   fi
@@ -1638,6 +1669,7 @@ main() {
 
   set_stage "network + firewall setup"
   ensure_network
+  ensure_agent_network
   # RustFS runs as uid/gid 10001 in its official image (compose.yml `user:`).
   chown 10001:10001 "$PRIVOS_DIR/data/rustfs"
   chown -R 1001:1001 "$PRIVOS_DIR/data/sandbox-board" "$PRIVOS_DIR/data/sandbox-proxy" "$PRIVOS_DIR/data/sandbox-pool"
@@ -1649,6 +1681,20 @@ main() {
   # the hub (uid 1001) must be able to mkdir under it. 0700 — private to the hub.
   chown 1001:1001 "$PRIVOS_DIR/data/hub-lib"
   chmod 0700 "$PRIVOS_DIR/data/hub-lib"
+  # hub-lib/self-hosted is ALSO bind-mounted read-only into sandbox-board and
+  # sandbox-proxy (compose.yml), so they can pick up the gateway credential
+  # the hub writes to llm.env there after activation, without a container
+  # restart. Pre-create it here — with the SAME owner/mode as hub-lib above —
+  # rather than let the hub mkdir it lazily at boot, or let `docker compose up`
+  # auto-create the bind-mount path as root before the hub ever runs (which
+  # would leave the hub unable to write into its own directory). No group or
+  # mode widening is needed to make it readable: sandbox-board already runs
+  # as uid 1001 (compose.yml `user:`), the SAME owner set here, and
+  # sandbox-proxy runs as root (uid 0), which reads any file regardless of
+  # its mode — see the compose.yml comments on both volume mounts.
+  mkdir -p "$PRIVOS_DIR/data/hub-lib/self-hosted"
+  chown 1001:1001 "$PRIVOS_DIR/data/hub-lib/self-hosted"
+  chmod 0700 "$PRIVOS_DIR/data/hub-lib/self-hosted"
   # The official node:20-alpine image's built-in "node" user is uid/gid 1000
   # — app-cluster (Dockerfile: `USER node`) must be able to write its state
   # dir (credential file, temp artifact chunks) there.

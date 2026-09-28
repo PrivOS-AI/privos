@@ -66,6 +66,7 @@ jobs:
             echo "VAPID_PUBLIC_KEY=dummy"
             echo "VAPID_PRIVATE_KEY=dummy"
             echo "SANDBOX_API_KEY=dummy"
+            echo "CATALOG_SECRET_KEY=dummy"
             echo "PRIVOS_DOCKER_SOCKET_GID=999"
             echo "PRIVOS_APP_CLUSTER_BOOTSTRAP_TOKEN=dummy"
             echo "PRIVOS_SECRET_STORE_KEY=dummy"
