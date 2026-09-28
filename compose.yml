@@ -42,6 +42,16 @@ networks:
   privos-agent:
     name: ${PRIVOS_AGENT_NETWORK:-privos-agent-net}
     external: true
+    # NOTE (not applied): a per-network `gw_priority` key can pin which of
+    # sandbox-proxy's two networks (`privos`/`privos-agent`, both listed on
+    # that service below) supplies its default route — today that is
+    # `privos-agent`, so sandbox-proxy's own egress to a private destination
+    # is subject to the same agent-egress DROP rules as an agent VM's (see
+    # PRIVOS_EGRESS_ALLOWLIST in env.template), not somehow exempt from them.
+    # `gw_priority` itself needs Docker Engine 28+; this bundle's installer
+    # accepts Engine 24+, and older engines have not been confirmed to
+    # tolerate the key — not added as an actual compose key here, to avoid
+    # risking an install failing on an older engine over an unverified key.
 
 # Hub instance identity (P-256 keypair) + the self-hosted license-request code
 # and activation status live under /var/lib/privos. A host bind (not a named
