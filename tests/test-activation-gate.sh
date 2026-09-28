@@ -5,6 +5,9 @@
 # both (the sandbox re-reads llm.env by mtime, no restart needed after
 # activation), and install.sh's printed summary states activation is
 # required and is a free registration, not a paid licence.
+# The assertions grep for literal ${VAR} text in compose.yml/install.sh, so
+# single-quoted patterns are intentional.
+# shellcheck disable=SC2016
 set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
