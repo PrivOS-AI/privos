@@ -73,8 +73,9 @@ rather set it before ever opening the UI — see the comments there.
 **Upgrading an existing unlicensed install.** An install that predates this gate is activated
 exactly once on upgrade — the same request-code flow above, run a single time. Its `.env` BYO
 key (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`), if it had one, reappears afterwards as a regular
-custom provider instead of the (removed) implicit default, so nothing you already configured
-is lost.
+custom provider. If no default provider was chosen yet, that provider becomes the default, so
+the agent keeps answering with your own key and nothing you already configured is lost. Roxane
+stays listed and you can switch to it after a top-up.
 
 **Licence expiry.** A licence that lapses past its grace period, fails validation, or no
 longer matches this host's identity re-arms the gate — you activate again the same way.
