@@ -18,6 +18,14 @@ the hub prints an **activation request code**: activation at
 `https://client.privos.io/self-hosted/activate` is required before the install is usable —
 see [Activation](#activation) below.
 
+## Documentation
+
+Operator guides on the docs site:
+[Install](https://docs.privos.ai/guide/self-hosted/install) ·
+[Upgrade](https://docs.privos.ai/guide/self-hosted/upgrade) ·
+[Backup and restore](https://docs.privos.ai/guide/self-hosted/backup-restore) ·
+[Uninstall and FAQ](https://docs.privos.ai/guide/self-hosted/uninstall-faq)
+
 ## ⚠️ WARNING: Early access
 
 PrivOS is in a state of heavy development. The self-hosted path in this repository is
@@ -31,10 +39,10 @@ data unless you pass `--uninstall --purge`).
 ```bash
 curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh | sudo bash
 # overrides: --hub-port N  --vm-port-range A-B  --dir /opt/privos  --yes (implies license acceptance)
-#            --with-knowledge-vector  --with-local-runtime  --upgrade  --uninstall [--purge]
+#            --with-knowledge-vector  --without-app-cluster  --upgrade  --uninstall [--purge]
 ```
 
-Host prerequisites: Linux x86_64/arm64, Docker ≥ 24 with compose v2 (or pass `--install-docker`), and `curl`, `jq`, `minisign`, `openssl` on PATH (Debian/Ubuntu: `apt-get install -y jq minisign`). The installer stops before touching anything if one is missing.
+Host prerequisites: Linux x86_64 (arm64 is not supported yet), Docker ≥ 24 with compose v2 (or pass `--install-docker`), and `curl`, `jq`, `minisign`, `openssl` on PATH (Debian/Ubuntu: `apt-get install -y jq minisign`). The installer stops before touching anything if one is missing.
 
 ## Activation
 
