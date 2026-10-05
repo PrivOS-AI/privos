@@ -150,7 +150,7 @@ allowlisted and configured private endpoint — is promised for an air-gapped in
 | `SIGNING.md` | How the bundle is signed; the embedded public key |
 | `LICENSE` | PrivOS Community License 1.0 |
 | `tests/` | Bash unit tests (port-check, env render, signature/hash verify, license acceptance, activation gate) + CI |
-| `cli/` | `privos` npm CLI (`@privos_ai/privos`). Not part of the signed install bundle |
+| `cli/` | `privos` npm CLI (`@privos_ai/privos`), MIT licensed (`cli/LICENSE`). Not part of the signed install bundle |
 | `docs/cli/`, `docs/api/` | CLI configuration and the REST calls the CLI makes |
 
 ## Security
@@ -205,6 +205,9 @@ is free to use within the Community tier, while commercial, hosted-service, and 
 rights are reserved. Plain-English answers: [`LICENSE-FAQ.md`](./LICENSE-FAQ.md). It is **not an Open Source license** — like
 n8n's Sustainable Use License, it limits *how* the software may be used, which the OSI definition
 does not allow.
+
+**Exception:** the operator CLI in [`cli/`](./cli) (`@privos_ai/privos` on npm) is MIT licensed —
+see [`cli/LICENSE`](./cli/LICENSE).
 
 - **Free Community tier:** production use with up to **10 Active Human Users** — people who
   sign in with an account — counted across all deployments your company runs (bots,

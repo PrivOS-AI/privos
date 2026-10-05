@@ -18,4 +18,4 @@ This package is not part of the signed self-hosted install bundle. Full
 command and endpoint notes live in the repository:
 [docs/cli/README.md](https://github.com/PrivOS-AI/privos/blob/main/docs/cli/README.md).
 
-License: PrivOS Community License 1.0 (`LICENSE` in the repository root).
+License: MIT (`LICENSE`). The rest of the PrivOS repository is under the PrivOS Community License 1.0.
