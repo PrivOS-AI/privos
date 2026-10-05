@@ -8,7 +8,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20"
@@ -23,7 +24,7 @@
     "url": "git+https://github.com/PrivOS-AI/privos.git",
     "directory": "cli"
   },
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "devDependencies": {
     "@types/node": "^22.15.0",
     "typescript": "^5.9.0"
