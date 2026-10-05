@@ -4,39 +4,52 @@
 two APIs:
 
 - **sandbox** — the sandbox board (projects and tasks)
-- **hub** — the PrivOS Hub (Rocket.Chat-derived rooms, messages, and reserved
-  list/item commands)
+- **hub** — the PrivOS Hub (Rocket.Chat-derived rooms and messages, plus
+  lists and items)
 
 It does not install, upgrade, uninstall, or sign a release. `install.sh`,
 `compose.yml`, and `publish-self-hosted-bundle.sh` are unchanged. The CLI is
 not part of the minisign-signed install bundle.
 
-This first slice is **read-only**. Every request is a GET. The HTTP client
-refuses any other method unless a future command explicitly allows it, and it
-does not follow redirects (so a credential header is not replayed onto another
-host).
+## Install
 
-## Why Go
-
-The installer in this repository is shell. The CLI is a small Go 1.22 program
-that uses only the standard library, so it builds to one static binary and
-does not need Node or Python on the host. Build it when you want it; the
-installer does not.
-
-Requires Go 1.22 or newer.
+The CLI is a Node package. The command name is `privos`.
 
 ```bash
-# from the repository root
-go build -C cli -o privos ./cmd/privos
-./privos --help
-./privos version
+npm install -g @privos_ai/privos
+privos --help
+
+# or, without a global install
+npx @privos_ai/privos --help
 ```
 
-Run the tests (they use a local mock server and do not call a live API):
+From a checkout of this repository:
 
 ```bash
-go test -C cli ./...
+cd cli
+npm install
+npm test
+npm run build
+node dist/main.js --help
 ```
+
+`npm pack` (run from `cli/`) produces the tarball. This repository does not
+publish that tarball.
+
+The package name is `@privos_ai/privos`. That is the npm org already used by
+`@privos_ai/app-server`, `@privos_ai/app-cluster`, and
+`@privos_ai/privos-agent-sdk`. The unscoped name `privos` and the scope
+`@privos-ai` are not the published org.
+
+Requires Node.js 20 or newer. There are no runtime dependencies.
+
+### Why this is not the Go binary
+
+The first CLI (0.1.0) was a Go 1.22 program. An npm wrapper around that binary
+would still need a multi-platform build and a place to download it from, and
+this repository's signed release bundle must not grow a download step. The Go
+tree is removed in this version so there is one implementation: the Node
+package users run with `npx` or `npm install`.
 
 ## Configuration
 
@@ -64,70 +77,151 @@ Shared flags:
 
 | Flag | Meaning |
 |---|---|
-| `--format json\|table` | Default `json`. `table` is a plain-text view of the list. |
-| `--raw` | Print the response body unchanged. |
+| `--format json\|table` | Default `json`. `table` is a plain-text view of a list read. Writes always print JSON. |
+| `--raw` | Print a live response body unchanged. |
 | `--timeout SECONDS` | HTTP timeout, 1–300. Default 30. |
+| `--confirm` | Send a write. Required for every mutating command. |
+| `--dry-run` | Print the write and send nothing. This is the default. Cannot be combined with `--confirm`. |
 | `--help`, `-h` | Help for the current command. |
 
-Exit codes: `0` success, `2` usage or missing config, `1` the request failed
-or the response could not be shown.
+Exit codes: `0` success (including a dry run), `2` usage or missing config,
+`1` the request failed or the response could not be shown.
+
+The HTTP client does not follow redirects, so a credential header is not
+replayed onto another host. Errors print the HTTP status and a message from
+the JSON body. They do not print the API key or the hub token.
 
 ## Commands
 
 ```text
 privos sandbox projects list
+privos sandbox projects create --name NAME --path ABS_PATH [--hook-template]
+privos sandbox projects create --sandbox --name NAME [--auto-start] [--hook-template]
+privos sandbox projects update --id ID [--name NAME] [--autopilot off|autonomous]
+privos sandbox projects delete --id ID
+privos sandbox projects start --id ID
+
 privos sandbox tasks list [--project ID] [--status STATUS] [--limit N] [--after CURSOR]
+privos sandbox tasks create --project ID --title TITLE [--description TEXT] [--status STATUS]
+privos sandbox tasks update --id ID [--title T] [--description TEXT] [--status STATUS] [--position N] [--chat-init true|false]
+privos sandbox tasks delete --id ID
+
 privos hub rooms list [--updated-since RFC3339]
+privos hub rooms create --name NAME [--kind channel|group] [--member USER] [--read-only] [--exclude-self]
+privos hub rooms update --room ID [--kind channel|group] [--name NEW] [--topic TEXT]
+privos hub rooms delete --room ID [--kind channel|group]
+
 privos hub messages list --room ROOM_ID [--kind channel|group|direct] [--count N] [--offset N]
-privos hub lists list [--room ROOM_ID]      # reserved, no request
-privos hub lists get --id LIST_ID           # reserved, no request
-privos hub items list --list LIST_ID        # reserved, no request
-privos hub items get --id ITEM_ID           # reserved, no request
+privos hub messages send --room ROOM_ID --text TEXT
+privos hub messages update --room ROOM_ID --id MSG_ID --text TEXT
+privos hub messages delete --room ROOM_ID --id MSG_ID
+
+privos hub lists list [--room ROOM_ID]
+privos hub lists get --id LIST_ID
+privos hub lists create --room ROOM_ID [--name NAME] [--description TEXT] [--field-definitions JSON] [--cross-team true|false] [--isolated true|false]
+privos hub lists update --id LIST_ID [--name NAME] [--description TEXT] [--room ROOM_ID] [--cross-team true|false] [--isolated true|false]
+privos hub lists delete --id LIST_ID
+
+privos hub items list --list LIST_ID [--include-sub-items]
+privos hub items list --list LIST_ID [--stage STAGE_ID] [--parent ITEM_ID] [--count N] [--offset N] [--sort SORT] [--after CURSOR]
+privos hub items list --stage STAGE_ID
+privos hub items list --parent ITEM_ID
+privos hub items get --id ITEM_ID
+privos hub items search --list LIST_ID --term TEXT
+privos hub items find --list LIST_ID --field FIELD_ID --value VALUE
+privos hub items create --list LIST_ID --stage STAGE_ID [--name NAME] [--description TEXT] [--parent ITEM_ID] [--custom-fields JSON]
+privos hub items update --id ITEM_ID [--name NAME] [--description TEXT] [--stage STAGE_ID] [--custom-fields JSON] [--archived true|false] [--order N] [--show-archived-sub-items true|false]
+privos hub items delete --id ITEM_ID
+privos hub items move --id ITEM_ID --stage STAGE_ID
+privos hub items reorder --id ITEM_ID --order N
 ```
 
-`--project` may be repeated. Task status values the board UI uses include
-`todo`, `in_progress`, `in_review`, `done`, and `cancelled`. Other values are
-passed through.
+`--project` may be repeated on `tasks list`. Task create takes exactly one
+`--project`. Task status values the board UI uses include `todo`,
+`in_progress`, `in_review`, `done`, and `cancelled`. Other values are passed
+through.
 
-Room type `t` from `hub rooms list` selects `--kind`:
+Room type `t` from `hub rooms list` selects `--kind` for message reads and
+for room writes that differ by room type:
 
-| `t` | `--kind` | Endpoint |
-|---|---|---|
-| `c` | `channel` (default) | `GET /api/v1/channels.messages` |
-| `p` | `group` | `GET /api/v1/groups.messages` |
-| `d` | `direct` | `GET /api/v1/im.messages` |
+| `t` | `--kind` | Message read | Room create / delete / rename / topic |
+|---|---|---|---|
+| `c` | `channel` (default) | `GET /api/v1/channels.messages` | `channels.create`, `channels.delete`, `channels.rename`, `channels.setTopic` |
+| `p` | `group` | `GET /api/v1/groups.messages` | `groups.create`, `groups.delete`, `groups.rename`, `groups.setTopic` |
+| `d` | `direct` | `GET /api/v1/im.messages` | not a write target |
 
-`hub lists` and `hub items` accept their flags and exit 2 with a not-wired
-message. They do not send HTTP. See [Hub API](../api/hub.md).
+`hub messages send`, `update`, and `delete` use `chat.sendMessage`,
+`chat.update`, and `chat.delete`. Those take a room id, so they do not use
+`--kind`.
+
+List and item reads are `GET /api/v1/lists.*` and `GET /api/v1/items.*`.
+List and item writes are `POST` and stay a dry run until `--confirm`.
+`lists.create` sends `fieldDefinitions: []` unless `--field-definitions` is
+a JSON array, and its response includes `defaultStage` for
+`hub items create --stage`. Field CRUD (`lists.addField`, `lists.fields.*`),
+`items.bulkUpdateOrder`, and `stages.*` are not commands. The CLI does not
+call `/api/v1/bot/lists` or MCP `privos.lists.*`. See [Hub API](../api/hub.md).
+
+## Writes
+
+Every mutating command is a dry run unless `--confirm` is present.
+
+A dry run prints JSON to stdout:
+
+```json
+{
+  "dryRun": true,
+  "requests": [
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:8556/api/projects",
+      "headers": { "content-type": "application/json" },
+      "omittedHeaderNames": ["x-api-key"],
+      "body": { "name": "Alpha", "path": "/work/alpha", "useHookTemplate": false }
+    }
+  ]
+}
+```
+
+Credential header names are listed under `omittedHeaderNames`. Their values
+are not printed. stderr says that no request was sent. Exit code is 0.
+
+`--confirm` sends those requests in order. A task update that changes both
+text fields and status sends `PATCH /api/tasks/{id}` and then
+`PUT /api/tasks/reorder`. A room update that sets both name and topic sends
+rename, then `setTopic`.
+
+Do not point CI at a live board or hub. The tests use a local mock server.
 
 ## Examples
 
 ```bash
 export PRIVOS_SANDBOX_URL=http://127.0.0.1:8556
 export PRIVOS_SANDBOX_API_KEY='your-sandbox-api-key'
-./privos sandbox projects list
-./privos sandbox tasks list --project PROJECT_ID --status todo --format table
+privos sandbox projects list
+privos sandbox tasks list --project PROJECT_ID --status todo --format table
+
+# prints the POST and does not send it
+privos sandbox tasks create --project PROJECT_ID --title 'Write the notes'
+# sends it
+privos sandbox tasks create --project PROJECT_ID --title 'Write the notes' --confirm
+privos sandbox tasks update --id TASK_ID --status in_progress --confirm
 
 export PRIVOS_HUB_URL=http://127.0.0.1:3000
 export PRIVOS_HUB_USER_ID='your-user-id'
 export PRIVOS_HUB_AUTH_TOKEN='your-auth-token'
-./privos hub rooms list
-./privos hub messages list --room ROOM_ID --kind channel
+privos hub rooms list
+privos hub messages list --room ROOM_ID --kind channel
+privos hub messages send --room ROOM_ID --text 'hello' --confirm
+privos hub lists list --room ROOM_ID
+privos hub lists create --room ROOM_ID --name Tasks --confirm
+privos hub items create --list LIST_ID --stage STAGE_ID --name Draft --confirm
+privos hub items move --id ITEM_ID --stage STAGE_ID --confirm
 ```
 
 The hub token is a personal access token, or the `authToken` from
 `POST /api/v1/login`. This CLI does not ask for a password and does not call
 login.
-
-## Writes
-
-No write command is implemented. When one is added it must:
-
-1. Default to a dry run that prints the method and path and sends nothing.
-2. Send the request only when `--confirm` is present.
-3. Stay out of CI. Tests keep using a local mock server.
-
-The client already rejects POST, PUT, PATCH, and DELETE.
 
 ## Further reading
 
