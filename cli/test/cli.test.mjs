@@ -1,0 +1,708 @@
+import assert from "node:assert/strict";
+import http from "node:http";
+import { describe, test } from "node:test";
+import { run } from "../dist/run.js";
+
+const CRED_KEYS = [
+  "PRIVOS_SANDBOX_URL",
+  "PRIVOS_SANDBOX_API_KEY",
+  "API_ACCESS_KEY",
+  "SANDBOX_API_KEY",
+  "PRIVOS_HUB_URL",
+  "PRIVOS_ROOT_URL",
+  "PRIVOS_HUB_USER_ID",
+  "PRIVOS_HUB_AUTH_TOKEN",
+];
+
+function clearCreds() {
+  for (const key of CRED_KEYS) delete process.env[key];
+}
+
+async function runCLI(args) {
+  let stdout = "";
+  let stderr = "";
+  const code = await run(
+    args,
+    { write: (chunk) => { stdout += chunk; } },
+    { write: (chunk) => { stderr += chunk; } },
+  );
+  return { code, stdout, stderr };
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}
+
+function serve(handler) {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer(handler);
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      if (addr === null || typeof addr === "string") {
+        reject(new Error("no port"));
+        return;
+      }
+      resolve({
+        server,
+        url: `http://127.0.0.1:${addr.port}`,
+        close: () => new Promise((done) => server.close(() => done())),
+      });
+    });
+  });
+}
+
+describe("privos", { concurrency: false }, () => {
+  test("root help lists write commands and --confirm", async () => {
+    clearCreds();
+    const { code, stdout, stderr } = await runCLI(["--help"]);
+    assert.equal(code, 0);
+    assert.equal(stderr, "");
+    for (const want of [
+      "projects create",
+      "tasks update",
+      "rooms create",
+      "messages send",
+      "--confirm",
+      "dry run",
+      "docs/cli/README.md",
+    ]) {
+      assert.ok(stdout.includes(want), `help missing ${want}\n${stdout}`);
+    }
+  });
+
+  test("missing command", async () => {
+    clearCreds();
+    const { code, stderr } = await runCLI([]);
+    assert.equal(code, 2);
+    assert.match(stderr, /missing command/);
+  });
+
+  test("version", async () => {
+    clearCreds();
+    const { code, stdout, stderr } = await runCLI(["version"]);
+    assert.equal(code, 0);
+    assert.equal(stderr, "");
+    assert.match(stdout, /^privos /);
+  });
+
+  test("negative limit and unknown command", async () => {
+    clearCreds();
+    let result = await runCLI([
+      "sandbox", "tasks", "list",
+      "--url", "http://127.0.0.1:9",
+      "--api-key", "k",
+      "--limit", "-1",
+    ]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--limit/);
+
+    result = await runCLI(["sandbox", "projects", "list", "--nope"]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /unknown flag/);
+
+    result = await runCLI(["sandbox", "nope"]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /unknown command/);
+  });
+
+  test("sandbox projects list requires config", async () => {
+    clearCreds();
+    const { code, stdout, stderr } = await runCLI(["sandbox", "projects", "list"]);
+    assert.equal(code, 2);
+    assert.equal(stdout, "");
+    assert.match(stderr, /PRIVOS_SANDBOX_URL/);
+  });
+
+  test("sandbox list reads and key precedence", async () => {
+    clearCreds();
+    let gotKey = "";
+    let taskQuery = "";
+    const methods = [];
+    const srv = await serve(async (req, res) => {
+      methods.push(`${req.method} ${req.url}`);
+      gotKey = req.headers["x-api-key"] ?? "";
+      if (req.method !== "GET") {
+        res.writeHead(405);
+        res.end("method");
+        return;
+      }
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      res.setHeader("content-type", "application/json");
+      if (url.pathname === "/api/projects") {
+        res.end(JSON.stringify([{ id: "p1", name: "Alpha" }]));
+        return;
+      }
+      if (url.pathname === "/api/tasks") {
+        taskQuery = url.search;
+        if (url.searchParams.get("projectIds") !== "p1,p2" || url.searchParams.get("status") !== "todo" || url.searchParams.get("limit") !== "10") {
+          res.writeHead(400);
+          res.end("bad query");
+          return;
+        }
+        res.end(JSON.stringify([{ id: "t1", title: "Write CLI", status: "todo", projectId: "p1" }]));
+        return;
+      }
+      res.writeHead(404);
+      res.end("nope");
+    });
+    try {
+      let result = await runCLI([
+        "--format", "table", "sandbox", "--url", srv.url, "--api-key", "secret-key", "projects", "list",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(gotKey, "secret-key");
+      assert.equal(result.stdout.includes("secret-key") || result.stderr.includes("secret-key"), false);
+      assert.match(result.stdout, /Alpha/);
+      assert.match(result.stdout, /p1/);
+
+      result = await runCLI([
+        "sandbox", "tasks", "list",
+        `--url=${srv.url}`,
+        "--api-key=secret-key",
+        "--project", "p1",
+        "--project", "p2",
+        "--status", "todo",
+        "--limit", "10",
+      ]);
+      assert.equal(result.code, 0, `${result.stderr} query ${taskQuery}`);
+      assert.match(result.stdout, /Write CLI/);
+      assert.ok(methods.every((m) => m.startsWith("GET ")), methods.join(","));
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("sandbox API error does not echo the key", async () => {
+    clearCreds();
+    const srv = await serve((_req, res) => {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "Unauthorized", message: "Valid API key required" }));
+    });
+    try {
+      const { code, stdout, stderr } = await runCLI([
+        "sandbox", "projects", "list", "--url", srv.url, "--api-key", "secret-key",
+      ]);
+      assert.equal(code, 1);
+      assert.equal(stdout, "");
+      assert.match(stderr, /Valid API key required/);
+      assert.match(stderr, /GET \/api\/projects/);
+      assert.equal(stderr.includes("secret-key"), false);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("sandbox env precedence", async () => {
+    clearCreds();
+    let got = "";
+    const srv = await serve((req, res) => {
+      got = req.headers["x-api-key"] ?? "";
+      res.end("[]");
+    });
+    try {
+      process.env.PRIVOS_SANDBOX_URL = srv.url;
+      process.env.SANDBOX_API_KEY = "from-installer";
+      process.env.API_ACCESS_KEY = "from-board";
+      process.env.PRIVOS_SANDBOX_API_KEY = "from-privos";
+      const { code, stderr } = await runCLI(["sandbox", "projects", "list"]);
+      assert.equal(code, 0, stderr);
+      assert.equal(got, "from-privos");
+    } finally {
+      clearCreds();
+      await srv.close();
+    }
+  });
+
+  test("rejects userinfo in the base URL", async () => {
+    clearCreds();
+    const { code, stderr } = await runCLI([
+      "sandbox", "projects", "list",
+      "--url", "http://user:pass@127.0.0.1:8556",
+      "--api-key", "k",
+    ]);
+    assert.equal(code, 2);
+    assert.match(stderr, /userinfo/);
+  });
+
+  test("does not follow redirects", async () => {
+    clearCreds();
+    const hits = [];
+    const srv = await serve((req, res) => {
+      hits.push(req.url);
+      if (req.url === "/api/projects") {
+        res.writeHead(302, { location: "/elsewhere" });
+        res.end();
+        return;
+      }
+      res.writeHead(200);
+      res.end("[]");
+    });
+    try {
+      const { code, stderr } = await runCLI([
+        "sandbox", "projects", "list", "--url", srv.url, "--api-key", "secret-key",
+      ]);
+      assert.equal(code, 1, stderr);
+      assert.match(stderr, /HTTP 302/);
+      assert.equal(stderr.includes("secret-key"), false);
+      assert.deepEqual(hits, ["/api/projects"]);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("write dry-run sends nothing and hides the key", async () => {
+    clearCreds();
+    let called = false;
+    const srv = await serve((_req, res) => {
+      called = true;
+      res.writeHead(500);
+      res.end("should not be called");
+    });
+    try {
+      const { code, stdout, stderr } = await runCLI([
+        "sandbox", "projects", "create",
+        "--url", srv.url,
+        "--api-key", "secret-key",
+        "--name", "Alpha",
+        "--path", "/work/alpha",
+      ]);
+      assert.equal(code, 0, stderr);
+      assert.equal(called, false);
+      assert.match(stderr, /No request was sent/);
+      assert.match(stderr, /--confirm/);
+      const plan = JSON.parse(stdout);
+      assert.equal(plan.dryRun, true);
+      assert.equal(plan.requests[0].method, "POST");
+      assert.equal(plan.requests[0].url, `${srv.url}/api/projects`);
+      assert.deepEqual(plan.requests[0].body, {
+        name: "Alpha",
+        path: "/work/alpha",
+        useHookTemplate: false,
+      });
+      assert.deepEqual(plan.requests[0].omittedHeaderNames, ["x-api-key"]);
+      assert.equal(stdout.includes("secret-key"), false);
+      assert.equal(stderr.includes("secret-key"), false);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("confirmed project create, sandbox create, update, delete, and start", async () => {
+    clearCreds();
+    const seen = [];
+    const srv = await serve(async (req, res) => {
+      const body = await readBody(req);
+      seen.push({
+        method: req.method,
+        url: req.url,
+        key: req.headers["x-api-key"],
+        type: req.headers["content-type"] ?? "",
+        body,
+      });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ id: "p1", name: "Alpha", ok: true }));
+    });
+    try {
+      let result = await runCLI([
+        "sandbox", "projects", "create", "--confirm",
+        "--url", srv.url, "--api-key", "secret-key",
+        "--name", "Alpha", "--path", "/work/alpha",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(result.stdout.includes("secret-key"), false);
+      assert.equal(seen[0].method, "POST");
+      assert.equal(seen[0].url, "/api/projects");
+      assert.equal(seen[0].key, "secret-key");
+      assert.match(seen[0].type, /application\/json/);
+      assert.deepEqual(JSON.parse(seen[0].body), {
+        name: "Alpha",
+        path: "/work/alpha",
+        useHookTemplate: false,
+      });
+
+      result = await runCLI([
+        "sandbox", "projects", "create", "--confirm", "--sandbox", "--auto-start", "--hook-template",
+        "--url", srv.url, "--api-key", "secret-key", "--name", "Beta",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[1].url, "/api/sandbox/projects");
+      assert.deepEqual(JSON.parse(seen[1].body), {
+        projectName: "Beta",
+        autoStart: true,
+        useHookTemplate: true,
+      });
+
+      result = await runCLI([
+        "sandbox", "projects", "create", "--sandbox", "--path", "/tmp/x",
+        "--url", srv.url, "--api-key", "secret-key", "--name", "Nope",
+      ]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /--path/);
+
+      result = await runCLI([
+        "sandbox", "projects", "update", "--confirm",
+        "--url", srv.url, "--api-key", "secret-key",
+        "--id", "p1", "--name", "Renamed", "--autopilot", "autonomous",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[2].method, "PATCH");
+      assert.equal(seen[2].url, "/api/projects/p1");
+      assert.deepEqual(JSON.parse(seen[2].body), { name: "Renamed", autopilotMode: "autonomous" });
+
+      result = await runCLI([
+        "sandbox", "projects", "delete", "--confirm",
+        "--url", srv.url, "--api-key", "secret-key", "--id", "p1",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[3].method, "DELETE");
+      assert.equal(seen[3].url, "/api/projects/p1");
+      assert.equal(seen[3].body, "");
+
+      result = await runCLI([
+        "sandbox", "projects", "start", "--confirm",
+        "--url", srv.url, "--api-key", "secret-key", "--id", "p1",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[4].method, "POST");
+      assert.equal(seen[4].url, "/api/sandbox/projects/p1/start");
+      assert.equal(seen[4].body, "");
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("task create and update send PATCH and PUT reorder only with --confirm", async () => {
+    clearCreds();
+    const seen = [];
+    let called = 0;
+    const srv = await serve(async (req, res) => {
+      called += 1;
+      const body = await readBody(req);
+      seen.push({
+        method: req.method,
+        url: req.url,
+        project: req.headers["x-project-id"] ?? "",
+        body,
+      });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ id: "t1", title: "Write", status: "todo" }));
+    });
+    try {
+      let result = await runCLI([
+        "sandbox", "tasks", "create",
+        "--url", srv.url, "--api-key", "secret-key",
+        "--project", "p1", "--title", "Write", "--description", "Notes", "--status", "todo",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(called, 0);
+      const plan = JSON.parse(result.stdout);
+      assert.equal(plan.requests[0].headers["x-project-id"], "p1");
+      assert.deepEqual(plan.requests[0].body, {
+        projectId: "p1",
+        title: "Write",
+        description: "Notes",
+        status: "todo",
+      });
+
+      result = await runCLI([
+        "sandbox", "tasks", "create", "--confirm",
+        "--url", srv.url, "--api-key", "secret-key",
+        "--project", "p1", "--title", "Write",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[0].method, "POST");
+      assert.equal(seen[0].url, "/api/tasks");
+      assert.equal(seen[0].project, "p1");
+      assert.deepEqual(JSON.parse(seen[0].body), { projectId: "p1", title: "Write" });
+
+      const before = Date.now();
+      result = await runCLI([
+        "sandbox", "tasks", "update", "--confirm",
+        "--url", srv.url, "--api-key", "secret-key",
+        "--id", "t1", "--title", "Renamed", "--description", "More",
+        "--chat-init", "true", "--status", "in_progress",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[1].method, "PATCH");
+      assert.equal(seen[1].url, "/api/tasks/t1");
+      assert.deepEqual(JSON.parse(seen[1].body), {
+        title: "Renamed",
+        description: "More",
+        chatInit: true,
+      });
+      assert.equal(seen[2].method, "PUT");
+      assert.equal(seen[2].url, "/api/tasks/reorder");
+      const reorder = JSON.parse(seen[2].body);
+      assert.equal(reorder.taskId, "t1");
+      assert.equal(reorder.status, "in_progress");
+      assert.ok(reorder.position < 0);
+      assert.ok(Math.abs(reorder.position) >= before - 1000);
+
+      result = await runCLI([
+        "sandbox", "tasks", "update", "--confirm", "--dry-run",
+        "--url", srv.url, "--api-key", "secret-key",
+        "--id", "t1", "--status", "done",
+      ]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /--confirm/);
+      assert.equal(seen.length, 3);
+
+      result = await runCLI([
+        "sandbox", "tasks", "delete", "--confirm",
+        "--url", srv.url, "--api-key", "secret-key", "--id", "t1",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[3].method, "DELETE");
+      assert.equal(seen[3].url, "/api/tasks/t1");
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("hub rooms and messages reads", async () => {
+    clearCreds();
+    let user = "";
+    let token = "";
+    let msgPath = "";
+    let room = "";
+    const srv = await serve((req, res) => {
+      user = req.headers["x-user-id"] ?? "";
+      token = req.headers["x-auth-token"] ?? "";
+      assert.equal(req.headers["x-api-key"], undefined);
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      res.setHeader("content-type", "application/json");
+      if (url.pathname === "/api/v1/rooms.get") {
+        if (url.searchParams.get("updatedSince") !== "2026-01-01T00:00:00Z") {
+          res.writeHead(400);
+          res.end("since");
+          return;
+        }
+        res.end(JSON.stringify({
+          update: [{ _id: "room1", t: "c", name: "general", fname: "General" }],
+          remove: [],
+          success: true,
+        }));
+        return;
+      }
+      if (url.pathname === "/api/v1/groups.messages") {
+        msgPath = url.pathname;
+        room = url.searchParams.get("roomId") ?? "";
+        res.end(JSON.stringify({
+          messages: [{ _id: "m1", ts: "2026-01-02T00:00:00.000Z", msg: "hello", u: { username: "ada" } }],
+          success: true,
+        }));
+        return;
+      }
+      res.writeHead(404);
+      res.end("nope");
+    });
+    try {
+      let result = await runCLI([
+        "hub", "rooms", "list",
+        "--url", srv.url, "--user-id", "user-1", "--auth-token", "token-1",
+        "--updated-since", "2026-01-01T00:00:00Z", "--format", "table",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(user, "user-1");
+      assert.equal(token, "token-1");
+      assert.equal(result.stdout.includes("token-1") || result.stderr.includes("token-1"), false);
+      assert.match(result.stdout, /general/);
+      assert.match(result.stdout, /room1/);
+
+      result = await runCLI([
+        "hub", "messages", "list",
+        "--url", srv.url, "--user-id", "user-1", "--auth-token", "token-1",
+        "--room", "room1", "--kind", "p",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(msgPath, "/api/v1/groups.messages");
+      assert.equal(room, "room1");
+      assert.match(result.stdout, /hello/);
+      assert.match(result.stdout, /ada/);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("hub messages require a room and root URL fallback", async () => {
+    clearCreds();
+    const { code, stderr } = await runCLI([
+      "hub", "messages", "list", "--url", "http://127.0.0.1:9", "--user-id", "u", "--auth-token", "t",
+    ]);
+    assert.equal(code, 2);
+    assert.match(stderr, /--room/);
+
+    const srv = await serve((_req, res) => {
+      res.end(JSON.stringify({ update: [], remove: [], success: true }));
+    });
+    try {
+      process.env.PRIVOS_ROOT_URL = srv.url;
+      process.env.PRIVOS_HUB_USER_ID = "user-1";
+      process.env.PRIVOS_HUB_AUTH_TOKEN = "token-1";
+      const result = await runCLI(["hub", "rooms", "list"]);
+      assert.equal(result.code, 0, result.stderr);
+    } finally {
+      clearCreds();
+      await srv.close();
+    }
+  });
+
+  test("hub list and item commands do not call the network", async () => {
+    clearCreds();
+    let called = false;
+    const srv = await serve((_req, res) => {
+      called = true;
+      res.writeHead(500);
+      res.end("should not be called");
+    });
+    try {
+      let result = await runCLI(["hub", "lists", "--help"]);
+      assert.equal(result.code, 0);
+      assert.match(result.stdout, /lists/);
+      assert.match(result.stdout, /Not wired/);
+
+      result = await runCLI([
+        "hub", "lists", "list", "--room", "room1",
+        "--url", srv.url, "--user-id", "u", "--auth-token", "t",
+      ]);
+      assert.equal(result.code, 2);
+      assert.equal(result.stdout, "");
+      assert.equal(called, false);
+      assert.match(result.stderr, /not wired/);
+      assert.match(result.stderr, /No HTTP request was sent/);
+      assert.match(result.stderr, /room=room1/);
+
+      result = await runCLI(["hub", "items", "list"]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /--list/);
+      assert.equal(result.stderr.includes("not wired"), false);
+
+      result = await runCLI([
+        "hub", "items", "list", "--list", "list1", "--url", srv.url,
+      ]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /not wired/);
+      assert.match(result.stderr, /list=list1/);
+      assert.equal(called, false);
+
+      result = await runCLI(["hub", "lists", "list", "--project", "p1"]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /unsupported flag/);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("hub room and message writes use Rocket.Chat methods", async () => {
+    clearCreds();
+    const seen = [];
+    const srv = await serve(async (req, res) => {
+      const body = await readBody(req);
+      seen.push({
+        method: req.method,
+        url: req.url,
+        user: req.headers["x-user-id"],
+        token: req.headers["x-auth-token"],
+        body,
+      });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/v1/channels.create") {
+        res.end(JSON.stringify({ channel: { _id: "room1", name: "ops" }, success: true }));
+        return;
+      }
+      res.end(JSON.stringify({ success: true }));
+    });
+    try {
+      let result = await runCLI([
+        "hub", "rooms", "create",
+        "--url", srv.url, "--user-id", "user-1", "--auth-token", "token-1",
+        "--name", "ops", "--member", "ada", "--member", "beau", "--read-only",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen.length, 0);
+      let plan = JSON.parse(result.stdout);
+      assert.equal(plan.requests[0].url, `${srv.url}/api/v1/channels.create`);
+      assert.deepEqual(plan.requests[0].body, {
+        name: "ops",
+        members: ["ada", "beau"],
+        readOnly: true,
+      });
+      assert.equal(result.stdout.includes("token-1"), false);
+
+      result = await runCLI([
+        "hub", "rooms", "create", "--confirm", "--kind", "group",
+        "--url", srv.url, "--user-id", "user-1", "--auth-token", "token-1",
+        "--name", "private-ops",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[0].method, "POST");
+      assert.equal(seen[0].url, "/api/v1/groups.create");
+      assert.equal(seen[0].user, "user-1");
+      assert.equal(seen[0].token, "token-1");
+      assert.deepEqual(JSON.parse(seen[0].body), { name: "private-ops" });
+
+      result = await runCLI([
+        "hub", "rooms", "update", "--confirm", "--kind", "p",
+        "--url", srv.url, "--user-id", "user-1", "--auth-token", "token-1",
+        "--room", "room1", "--name", "renamed", "--topic", "ship it",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[1].url, "/api/v1/groups.rename");
+      assert.deepEqual(JSON.parse(seen[1].body), { roomId: "room1", name: "renamed" });
+      assert.equal(seen[2].url, "/api/v1/groups.setTopic");
+      assert.deepEqual(JSON.parse(seen[2].body), { roomId: "room1", topic: "ship it" });
+
+      result = await runCLI([
+        "hub", "rooms", "delete", "--confirm",
+        "--url", srv.url, "--user-id", "user-1", "--auth-token", "token-1",
+        "--room", "room1",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[3].url, "/api/v1/channels.delete");
+      assert.deepEqual(JSON.parse(seen[3].body), { roomId: "room1" });
+
+      result = await runCLI([
+        "hub", "rooms", "delete", "--kind", "direct",
+        "--url", srv.url, "--user-id", "user-1", "--auth-token", "token-1",
+        "--room", "room1",
+      ]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /direct/);
+
+      result = await runCLI([
+        "hub", "messages", "send", "--confirm",
+        "--url", srv.url, "--user-id", "user-1", "--auth-token", "token-1",
+        "--room", "room1", "--text", "hello",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[4].url, "/api/v1/chat.sendMessage");
+      assert.deepEqual(JSON.parse(seen[4].body), { message: { rid: "room1", msg: "hello" } });
+
+      result = await runCLI([
+        "hub", "messages", "update", "--confirm",
+        "--url", srv.url, "--user-id", "user-1", "--auth-token", "token-1",
+        "--room", "room1", "--id", "m1", "--text", "edited",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[5].url, "/api/v1/chat.update");
+      assert.deepEqual(JSON.parse(seen[5].body), { roomId: "room1", msgId: "m1", text: "edited" });
+
+      result = await runCLI([
+        "hub", "messages", "delete", "--confirm",
+        "--url", srv.url, "--user-id", "user-1", "--auth-token", "token-1",
+        "--room", "room1", "--id", "m1",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[6].url, "/api/v1/chat.delete");
+      assert.deepEqual(JSON.parse(seen[6].body), { roomId: "room1", msgId: "m1" });
+      assert.equal(result.stdout.includes("token-1"), false);
+    } finally {
+      await srv.close();
+    }
+  });
+});

@@ -9,6 +9,9 @@
 # Anything a local drill/test writes under a generated install dir.
 secrets/
 
-# Local `go build -C cli -o privos` output. Source stays in cli/.
+# Local CLI build output. Source stays in cli/. The npm package is not part of
+# the signed install bundle.
 /privos
-/cli/privos
+/cli/node_modules/
+/cli/dist/
+/cli/*.tgz

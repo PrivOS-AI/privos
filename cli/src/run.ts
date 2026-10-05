@@ -1,0 +1,190 @@
+import { VERSION } from "./config.js";
+import { helpFor, rootHelp } from "./help.js";
+import { notWired } from "./hub.js";
+import {
+  hubMessagesDelete,
+  hubMessagesList,
+  hubMessagesSend,
+  hubMessagesUpdate,
+  hubRoomsCreate,
+  hubRoomsDelete,
+  hubRoomsList,
+  hubRoomsUpdate,
+} from "./hub.js";
+import {
+  commandOf,
+  forbidUnknown,
+  parseArgs,
+  requireFlag,
+  timeoutSeconds,
+  type Parsed,
+} from "./parse.js";
+import type { Out } from "./render.js";
+import {
+  sandboxProjectsCreate,
+  sandboxProjectsDelete,
+  sandboxProjectsList,
+  sandboxProjectsStart,
+  sandboxProjectsUpdate,
+  sandboxTasksCreate,
+  sandboxTasksDelete,
+  sandboxTasksList,
+  sandboxTasksUpdate,
+} from "./sandbox.js";
+import { isUsage, usage } from "./usage.js";
+
+export async function run(
+  args: string[],
+  stdout: Out,
+  stderr: Out,
+  deps?: { fetch?: typeof fetch },
+): Promise<number> {
+  try {
+    const parsed = parseArgs(args);
+    await dispatch(parsed, stdout, stderr, deps?.fetch ?? globalThis.fetch);
+    return 0;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    stderr.write(msg.endsWith("\n") ? msg : `${msg}\n`);
+    return isUsage(err) ? 2 : 1;
+  }
+}
+
+async function dispatch(p: Parsed, stdout: Out, stderr: Out, fetchImpl: typeof fetch): Promise<void> {
+  if (p.positionals.length === 0) {
+    if (p.help) {
+      stdout.write(rootHelp);
+      return;
+    }
+    if (p.seen.has("version")) {
+      forbidUnknown(p, "privos version", []);
+      stdout.write(`privos ${VERSION}\n`);
+      return;
+    }
+    throw usage("missing command\n\nRun privos --help");
+  }
+  if (p.positionals[0] === "help") {
+    if (p.positionals.length !== 1) throw usage("privos help: unexpected arguments");
+    stdout.write(rootHelp);
+    return;
+  }
+  const text = helpFor(p.positionals);
+  if (text === "") {
+    throw usage(`unknown command ${JSON.stringify(commandOf(p))}\n\nRun privos --help`);
+  }
+  if (p.help) {
+    stdout.write(text);
+    return;
+  }
+  if (p.seen.has("version")) {
+    throw usage('pass --version or "privos version" on its own');
+  }
+
+  const cmd = commandOf(p);
+  switch (cmd) {
+    case "version":
+      forbidUnknown(p, "privos version", []);
+      stdout.write(`privos ${VERSION}\n`);
+      return;
+    case "sandbox":
+    case "sandbox projects":
+    case "sandbox tasks":
+    case "hub":
+    case "hub rooms":
+    case "hub messages":
+    case "hub lists":
+    case "hub items":
+      throw usage(`${text.trimEnd()}\nRun privos ${cmd} --help`);
+    case "sandbox projects list":
+      await sandboxProjectsList(p, stdout, fetchImpl);
+      return;
+    case "sandbox projects create":
+      await sandboxProjectsCreate(p, stdout, stderr, fetchImpl);
+      return;
+    case "sandbox projects update":
+      await sandboxProjectsUpdate(p, stdout, stderr, fetchImpl);
+      return;
+    case "sandbox projects delete":
+      await sandboxProjectsDelete(p, stdout, stderr, fetchImpl);
+      return;
+    case "sandbox projects start":
+      await sandboxProjectsStart(p, stdout, stderr, fetchImpl);
+      return;
+    case "sandbox tasks list":
+      await sandboxTasksList(p, stdout, fetchImpl);
+      return;
+    case "sandbox tasks create":
+      await sandboxTasksCreate(p, stdout, stderr, fetchImpl);
+      return;
+    case "sandbox tasks update":
+      await sandboxTasksUpdate(p, stdout, stderr, fetchImpl);
+      return;
+    case "sandbox tasks delete":
+      await sandboxTasksDelete(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub rooms list":
+      await hubRoomsList(p, stdout, fetchImpl);
+      return;
+    case "hub rooms create":
+      await hubRoomsCreate(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub rooms update":
+      await hubRoomsUpdate(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub rooms delete":
+      await hubRoomsDelete(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub messages list":
+      await hubMessagesList(p, stdout, fetchImpl);
+      return;
+    case "hub messages send":
+      await hubMessagesSend(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub messages update":
+      await hubMessagesUpdate(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub messages delete":
+      await hubMessagesDelete(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub lists list":
+      await reserved(p, "hub lists list", ["url", "user-id", "auth-token", "room"], roomFilter(p.room));
+      return;
+    case "hub lists get":
+      await reserved(p, "hub lists get", ["url", "user-id", "auth-token", "id"], "", () => {
+        requireFlag(p, "id", p.id, helpFor(["hub", "lists", "get"]));
+        return `id=${p.id}`;
+      });
+      return;
+    case "hub items list":
+      await reserved(p, "hub items list", ["url", "user-id", "auth-token", "list"], "", () => {
+        requireFlag(p, "list", p.list, helpFor(["hub", "items", "list"]));
+        return `list=${p.list}`;
+      });
+      return;
+    case "hub items get":
+      await reserved(p, "hub items get", ["url", "user-id", "auth-token", "id"], "", () => {
+        requireFlag(p, "id", p.id, helpFor(["hub", "items", "get"]));
+        return `id=${p.id}`;
+      });
+      return;
+    default:
+      throw usage(`unknown command ${JSON.stringify(cmd)}\n\nRun privos --help`);
+  }
+}
+
+function roomFilter(room: string): string {
+  return room === "" ? "room=(all)" : `room=${room}`;
+}
+
+async function reserved(
+  p: Parsed,
+  cmd: string,
+  allowed: string[],
+  filter: string,
+  extra?: () => string,
+): Promise<void> {
+  forbidUnknown(p, cmd, allowed);
+  timeoutSeconds(p);
+  const detail = extra ? extra() : filter;
+  notWired(cmd, detail);
+}

@@ -108,13 +108,18 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-node@v4
         with:
-          go-version: "1.22"
-      - name: Test and build privos
+          node-version: "22"
+      - name: Test, pack, and run privos --help
         working-directory: cli
         run: |
-          go test ./...
-          go build -o /tmp/privos ./cmd/privos
-          /tmp/privos --help
-          /tmp/privos version
+          npm ci
+          npm test
+          npm pack
+          tarball=$(ls privos_ai-privos-*.tgz)
+          mkdir -p /tmp/privos-pack
+          tar -xzf "$tarball" -C /tmp/privos-pack
+          node /tmp/privos-pack/package/dist/main.js --help
+          node /tmp/privos-pack/package/dist/main.js version
+          node /tmp/privos-pack/package/dist/main.js sandbox projects create --help
