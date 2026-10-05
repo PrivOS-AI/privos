@@ -102,3 +102,19 @@ jobs:
           # etc. the way install.sh does — left as a follow-up once G3 (ghcr
           # packages public) is green and a real bundle has been published.
           echo "TODO: exercise install.sh end-to-end once G2/G3 (see docs/self-hosted-install.md) are live."
+
+  # Operator CLI. Mock HTTP only — this job must not call a live sandbox or hub.
+  cli:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Test and build privos
+        working-directory: cli
+        run: |
+          go test ./...
+          go build -o /tmp/privos ./cmd/privos
+          /tmp/privos --help
+          /tmp/privos version
