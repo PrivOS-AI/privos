@@ -5,7 +5,7 @@ two APIs:
 
 - **sandbox** — the sandbox board (projects and tasks)
 - **hub** — the PrivOS Hub (Rocket.Chat-derived rooms and messages, plus
-  reserved list/item commands)
+  lists and items)
 
 It does not install, upgrade, uninstall, or sign a release. `install.sh`,
 `compose.yml`, and `publish-self-hosted-bundle.sh` are unchanged. The CLI is
@@ -116,10 +116,24 @@ privos hub messages send --room ROOM_ID --text TEXT
 privos hub messages update --room ROOM_ID --id MSG_ID --text TEXT
 privos hub messages delete --room ROOM_ID --id MSG_ID
 
-privos hub lists list [--room ROOM_ID]      # reserved, no request
-privos hub lists get --id LIST_ID           # reserved, no request
-privos hub items list --list LIST_ID        # reserved, no request
-privos hub items get --id ITEM_ID           # reserved, no request
+privos hub lists list [--room ROOM_ID]
+privos hub lists get --id LIST_ID
+privos hub lists create --room ROOM_ID [--name NAME] [--description TEXT] [--field-definitions JSON] [--cross-team true|false] [--isolated true|false]
+privos hub lists update --id LIST_ID [--name NAME] [--description TEXT] [--room ROOM_ID] [--cross-team true|false] [--isolated true|false]
+privos hub lists delete --id LIST_ID
+
+privos hub items list --list LIST_ID [--include-sub-items]
+privos hub items list --list LIST_ID [--stage STAGE_ID] [--parent ITEM_ID] [--count N] [--offset N] [--sort SORT] [--after CURSOR]
+privos hub items list --stage STAGE_ID
+privos hub items list --parent ITEM_ID
+privos hub items get --id ITEM_ID
+privos hub items search --list LIST_ID --term TEXT
+privos hub items find --list LIST_ID --field FIELD_ID --value VALUE
+privos hub items create --list LIST_ID --stage STAGE_ID [--name NAME] [--description TEXT] [--parent ITEM_ID] [--custom-fields JSON]
+privos hub items update --id ITEM_ID [--name NAME] [--description TEXT] [--stage STAGE_ID] [--custom-fields JSON] [--archived true|false] [--order N] [--show-archived-sub-items true|false]
+privos hub items delete --id ITEM_ID
+privos hub items move --id ITEM_ID --stage STAGE_ID
+privos hub items reorder --id ITEM_ID --order N
 ```
 
 `--project` may be repeated on `tasks list`. Task create takes exactly one
@@ -140,8 +154,13 @@ for room writes that differ by room type:
 `chat.update`, and `chat.delete`. Those take a room id, so they do not use
 `--kind`.
 
-`hub lists` and `hub items` accept their flags and exit 2 with a not-wired
-message. They do not send HTTP. See [Hub API](../api/hub.md).
+List and item reads are `GET /api/v1/lists.*` and `GET /api/v1/items.*`.
+List and item writes are `POST` and stay a dry run until `--confirm`.
+`lists.create` sends `fieldDefinitions: []` unless `--field-definitions` is
+a JSON array, and its response includes `defaultStage` for
+`hub items create --stage`. Field CRUD (`lists.addField`, `lists.fields.*`),
+`items.bulkUpdateOrder`, and `stages.*` are not commands. The CLI does not
+call `/api/v1/bot/lists` or MCP `privos.lists.*`. See [Hub API](../api/hub.md).
 
 ## Writes
 
@@ -194,6 +213,10 @@ export PRIVOS_HUB_AUTH_TOKEN='your-auth-token'
 privos hub rooms list
 privos hub messages list --room ROOM_ID --kind channel
 privos hub messages send --room ROOM_ID --text 'hello' --confirm
+privos hub lists list --room ROOM_ID
+privos hub lists create --room ROOM_ID --name Tasks --confirm
+privos hub items create --list LIST_ID --stage STAGE_ID --name Draft --confirm
+privos hub items move --id ITEM_ID --stage STAGE_ID --confirm
 ```
 
 The hub token is a personal access token, or the `authToken` from

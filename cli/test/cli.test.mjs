@@ -67,6 +67,8 @@ describe("privos", { concurrency: false }, () => {
       "tasks update",
       "rooms create",
       "messages send",
+      "lists create",
+      "items move",
       "--confirm",
       "dry run",
       "docs/cli/README.md",
@@ -552,47 +554,209 @@ describe("privos", { concurrency: false }, () => {
     }
   });
 
-  test("hub list and item commands do not call the network", async () => {
+  test("hub list and item reads use user-token methods", async () => {
     clearCreds();
-    let called = false;
-    const srv = await serve((_req, res) => {
-      called = true;
-      res.writeHead(500);
-      res.end("should not be called");
+    const seen = [];
+    const srv = await serve((req, res) => {
+      seen.push({ method: req.method, url: req.url, user: req.headers["x-user-id"], token: req.headers["x-auth-token"] });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/v1/lists.list" || req.url.startsWith("/api/v1/lists.listByRoomId")) {
+        res.end(JSON.stringify({ lists: [{ _id: "list1", name: "Tasks", roomId: "room1" }], success: true }));
+        return;
+      }
+      if (req.url.startsWith("/api/v1/lists.info")) {
+        res.end(JSON.stringify({ list: { _id: "list1", name: "Tasks" }, success: true }));
+        return;
+      }
+      res.end(JSON.stringify({ items: [{ _id: "item1", name: "Draft", stageId: "stage1" }], success: true }));
     });
+    const auth = ["--url", srv.url, "--user-id", "user-1", "--auth-token", "token-1"];
     try {
       let result = await runCLI(["hub", "lists", "--help"]);
       assert.equal(result.code, 0);
-      assert.match(result.stdout, /lists/);
-      assert.match(result.stdout, /Not wired/);
+      assert.match(result.stdout, /lists.create/);
+      assert.match(result.stdout, /--confirm/);
+      assert.equal(result.stdout.includes("Not wired"), false);
 
-      result = await runCLI([
-        "hub", "lists", "list", "--room", "room1",
-        "--url", srv.url, "--user-id", "u", "--auth-token", "t",
-      ]);
-      assert.equal(result.code, 2);
-      assert.equal(result.stdout, "");
-      assert.equal(called, false);
-      assert.match(result.stderr, /not wired/);
-      assert.match(result.stderr, /No HTTP request was sent/);
-      assert.match(result.stderr, /room=room1/);
+      result = await runCLI(["hub", "lists", "list", ...auth]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[0].method, "GET");
+      assert.equal(seen[0].url, "/api/v1/lists.list");
+      assert.equal(seen[0].user, "user-1");
+      assert.equal(seen[0].token, "token-1");
+      assert.match(result.stdout, /list1/);
+
+      result = await runCLI(["hub", "lists", "list", "--room", "room1", "--format", "table", ...auth]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[1].url, "/api/v1/lists.listByRoomId?roomId=room1");
+      assert.match(result.stdout, /Tasks/);
+
+      result = await runCLI(["hub", "lists", "get", "--id", "list1", ...auth]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[2].url, "/api/v1/lists.info?listId=list1");
 
       result = await runCLI(["hub", "items", "list"]);
       assert.equal(result.code, 2);
       assert.match(result.stderr, /--list/);
-      assert.equal(result.stderr.includes("not wired"), false);
+
+      result = await runCLI(["hub", "items", "list", "--list", "list1", "--include-sub-items", ...auth]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[3].url, "/api/v1/items.listByListId?listId=list1&includeSubItems=true");
 
       result = await runCLI([
-        "hub", "items", "list", "--list", "list1", "--url", srv.url,
+        "hub", "items", "list", "--list", "list1", "--stage", "stage1", "--count", "20", "--sort", "order", ...auth,
       ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[4].url, "/api/v1/items.list?listId=list1&stageId=stage1&count=20&sort=order");
+
+      result = await runCLI(["hub", "items", "list", "--stage", "stage1", ...auth]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[5].url, "/api/v1/items.listByStageId?stageId=stage1");
+
+      result = await runCLI(["hub", "items", "list", "--parent", "item0", ...auth]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[6].url, "/api/v1/items.listByParentId?parentId=item0");
+
+      result = await runCLI(["hub", "items", "get", "--id", "item1", ...auth]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[7].url, "/api/v1/items.info?itemId=item1");
+
+      result = await runCLI(["hub", "items", "search", "--list", "list1", "--term", "draft", ...auth]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[8].url, "/api/v1/items.search?listId=list1&searchTerm=draft");
+
+      result = await runCLI([
+        "hub", "items", "find", "--list", "list1", "--field", "field1", "--value", "done", ...auth,
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[9].url, "/api/v1/items.findByFieldValue?listId=list1&fieldId=field1&value=done");
+
+      result = await runCLI(["hub", "items", "list", "--list", "list1", "--include-sub-items", "--count", "1"]);
       assert.equal(result.code, 2);
-      assert.match(result.stderr, /not wired/);
-      assert.match(result.stderr, /list=list1/);
-      assert.equal(called, false);
+      assert.match(result.stderr, /include-sub-items/);
 
       result = await runCLI(["hub", "lists", "list", "--project", "p1"]);
       assert.equal(result.code, 2);
       assert.match(result.stderr, /unsupported flag/);
+      assert.equal(seen.length, 10);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("hub list and item writes are dry-run until --confirm", async () => {
+    clearCreds();
+    const seen = [];
+    const srv = await serve(async (req, res) => {
+      const body = await readBody(req);
+      seen.push({ method: req.method, url: req.url, user: req.headers["x-user-id"], token: req.headers["x-auth-token"], body });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ success: true, list: { _id: "list1" }, defaultStage: { _id: "stage1" } }));
+    });
+    const auth = ["--url", srv.url, "--user-id", "user-1", "--auth-token", "token-1"];
+    try {
+      let result = await runCLI([
+        "hub", "lists", "create", ...auth, "--room", "room1", "--name", "Tasks",
+        "--field-definitions", '[{"name":"Status"}]', "--isolated", "true",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen.length, 0);
+      let plan = JSON.parse(result.stdout);
+      assert.equal(plan.dryRun, true);
+      assert.equal(plan.requests[0].method, "POST");
+      assert.equal(plan.requests[0].url, `${srv.url}/api/v1/lists.create`);
+      assert.deepEqual(plan.requests[0].body, {
+        roomId: "room1",
+        fieldDefinitions: [{ name: "Status" }],
+        name: "Tasks",
+        isolatedList: true,
+      });
+      assert.equal(result.stdout.includes("token-1"), false);
+      assert.match(result.stderr, /No request was sent/);
+
+      result = await runCLI(["hub", "lists", "create", "--confirm", "--dry-run", ...auth, "--room", "room1"]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /only one of --confirm and --dry-run/);
+      assert.equal(seen.length, 0);
+
+      result = await runCLI(["hub", "lists", "create", "--confirm", ...auth, "--room", "room1"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[0].method, "POST");
+      assert.equal(seen[0].url, "/api/v1/lists.create");
+      assert.equal(seen[0].user, "user-1");
+      assert.equal(seen[0].token, "token-1");
+      assert.deepEqual(JSON.parse(seen[0].body), { roomId: "room1", fieldDefinitions: [] });
+
+      result = await runCLI([
+        "hub", "lists", "update", "--confirm", ...auth,
+        "--id", "list1", "--description", "board", "--cross-team", "false",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[1].url, "/api/v1/lists.update");
+      assert.deepEqual(JSON.parse(seen[1].body), {
+        listId: "list1",
+        description: "board",
+        crossTeamWorkflow: false,
+      });
+
+      result = await runCLI(["hub", "lists", "delete", "--confirm", ...auth, "--id", "list1"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[2].url, "/api/v1/lists.delete");
+      assert.deepEqual(JSON.parse(seen[2].body), { listId: "list1" });
+
+      result = await runCLI(["hub", "lists", "update", ...auth, "--id", "list1"]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /at least one/);
+
+      result = await runCLI([
+        "hub", "items", "create", ...auth,
+        "--list", "list1", "--stage", "stage1", "--name", "Draft", "--parent", "item0",
+        "--custom-fields", '[{"fieldId":"f1","value":"x"}]',
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen.length, 3);
+      plan = JSON.parse(result.stdout);
+      assert.equal(plan.requests[0].url, `${srv.url}/api/v1/items.create`);
+      assert.deepEqual(plan.requests[0].body, {
+        listId: "list1",
+        stageId: "stage1",
+        name: "Draft",
+        parentId: "item0",
+        customFields: [{ fieldId: "f1", value: "x" }],
+      });
+
+      result = await runCLI([
+        "hub", "items", "update", "--confirm", ...auth,
+        "--id", "item1", "--archived", "true", "--order", "3",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[3].url, "/api/v1/items.update");
+      assert.deepEqual(JSON.parse(seen[3].body), { itemId: "item1", archived: true, order: 3 });
+
+      result = await runCLI(["hub", "items", "move", "--confirm", ...auth, "--id", "item1", "--stage", "stage2"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[4].url, "/api/v1/items.moveToStage");
+      assert.deepEqual(JSON.parse(seen[4].body), { itemId: "item1", stageId: "stage2" });
+
+      result = await runCLI(["hub", "items", "reorder", "--confirm", ...auth, "--id", "item1", "--order", "10"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[5].url, "/api/v1/items.updateOrder");
+      assert.deepEqual(JSON.parse(seen[5].body), { itemId: "item1", newOrder: 10 });
+
+      result = await runCLI(["hub", "items", "delete", "--confirm", ...auth, "--id", "item1"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[6].url, "/api/v1/items.delete");
+      assert.deepEqual(JSON.parse(seen[6].body), { itemId: "item1" });
+
+      result = await runCLI(["hub", "items", "create", ...auth, "--list", "list1"]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /--stage/);
+
+      result = await runCLI(["hub", "lists", "create", ...auth, "--field-definitions", '{"name":"Status"}', "--room", "room1"]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /JSON array/);
+      assert.equal(seen.length, 7);
+      assert.equal(result.stdout.includes("token-1"), false);
     } finally {
       await srv.close();
     }

@@ -29,7 +29,7 @@ Operator guides on the docs site:
 ## Operator CLI
 
 `privos` is a separate client for a running sandbox board and hub (projects,
-tasks, rooms, messages). It does not install or upgrade the stack. Install it
+tasks, rooms, messages, lists, and items). It does not install or upgrade the stack. Install it
 with npm (`npm install -g @privos_ai/privos` or `npx @privos_ai/privos`) — the
 command is `privos`. Writes are a dry run unless you pass `--confirm`. See
 [docs/cli/README.md](docs/cli/README.md). API notes are in

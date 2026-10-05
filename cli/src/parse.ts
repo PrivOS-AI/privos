@@ -38,6 +38,20 @@ export interface Parsed {
   chatInit: string;
   autopilot: string;
   position: string;
+  stage: string;
+  parent: string;
+  term: string;
+  field: string;
+  fieldValue: string;
+  fieldDefinitions: string;
+  customFields: string;
+  crossTeam: string;
+  isolated: string;
+  archived: string;
+  order: string;
+  sort: string;
+  showArchivedSubItems: string;
+  includeSubItems: boolean;
   positionals: string[];
   seen: Set<string>;
 }
@@ -53,6 +67,7 @@ const BOOL_FLAGS = new Set([
   "sandbox",
   "auto-start",
   "hook-template",
+  "include-sub-items",
 ]);
 
 const VALUE_FLAGS = new Set([
@@ -83,6 +98,19 @@ const VALUE_FLAGS = new Set([
   "chat-init",
   "autopilot",
   "position",
+  "stage",
+  "parent",
+  "term",
+  "field",
+  "value",
+  "field-definitions",
+  "custom-fields",
+  "cross-team",
+  "isolated",
+  "archived",
+  "order",
+  "sort",
+  "show-archived-sub-items",
 ]);
 
 const REPEATABLE = new Set(["project", "member"]);
@@ -206,6 +234,20 @@ function emptyParsed(): Parsed {
     chatInit: "",
     autopilot: "",
     position: "",
+    stage: "",
+    parent: "",
+    term: "",
+    field: "",
+    fieldValue: "",
+    fieldDefinitions: "",
+    customFields: "",
+    crossTeam: "",
+    isolated: "",
+    archived: "",
+    order: "",
+    sort: "",
+    showArchivedSubItems: "",
+    includeSubItems: false,
     positionals: [],
     seen: new Set(),
   };
@@ -294,6 +336,9 @@ function assignBool(p: Parsed, name: string): void {
       break;
     case "hook-template":
       p.hookTemplate = true;
+      break;
+    case "include-sub-items":
+      p.includeSubItems = true;
       break;
     default:
       throw usage(`unknown flag --${name}`);
@@ -387,6 +432,45 @@ function assignValue(p: Parsed, name: string, value: string): void {
     case "position":
       p.position = trimmed;
       break;
+    case "stage":
+      p.stage = trimmed;
+      break;
+    case "parent":
+      p.parent = trimmed;
+      break;
+    case "term":
+      p.term = trimmed;
+      break;
+    case "field":
+      p.field = trimmed;
+      break;
+    case "value":
+      p.fieldValue = trimmed;
+      break;
+    case "field-definitions":
+      p.fieldDefinitions = trimmed;
+      break;
+    case "custom-fields":
+      p.customFields = trimmed;
+      break;
+    case "cross-team":
+      p.crossTeam = trimmed;
+      break;
+    case "isolated":
+      p.isolated = trimmed;
+      break;
+    case "archived":
+      p.archived = trimmed;
+      break;
+    case "order":
+      p.order = trimmed;
+      break;
+    case "sort":
+      p.sort = trimmed;
+      break;
+    case "show-archived-sub-items":
+      p.showArchivedSubItems = trimmed;
+      break;
     default:
       throw usage(`unknown flag --${name}`);
   }
@@ -427,6 +511,17 @@ export function parseAutopilot(value: string): "off" | "autonomous" {
     default:
       throw usage("--autopilot must be off or autonomous");
   }
+}
+
+export function parseJSONArray(flagName: string, value: string): unknown[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value) as unknown;
+  } catch {
+    throw usage(`--${flagName} must be a JSON array`);
+  }
+  if (!Array.isArray(parsed)) throw usage(`--${flagName} must be a JSON array`);
+  return parsed;
 }
 
 export function parsePosition(value: string): number {

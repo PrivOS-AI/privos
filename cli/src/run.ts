@@ -1,7 +1,20 @@
 import { VERSION } from "./config.js";
 import { helpFor, rootHelp } from "./help.js";
-import { notWired } from "./hub.js";
 import {
+  hubItemsCreate,
+  hubItemsDelete,
+  hubItemsFind,
+  hubItemsGet,
+  hubItemsList,
+  hubItemsMove,
+  hubItemsReorder,
+  hubItemsSearch,
+  hubItemsUpdate,
+  hubListsCreate,
+  hubListsDelete,
+  hubListsGet,
+  hubListsList,
+  hubListsUpdate,
   hubMessagesDelete,
   hubMessagesList,
   hubMessagesSend,
@@ -15,8 +28,6 @@ import {
   commandOf,
   forbidUnknown,
   parseArgs,
-  requireFlag,
-  timeoutSeconds,
   type Parsed,
 } from "./parse.js";
 import type { Out } from "./render.js";
@@ -147,44 +158,48 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, fetchImpl: typeof f
       await hubMessagesDelete(p, stdout, stderr, fetchImpl);
       return;
     case "hub lists list":
-      await reserved(p, "hub lists list", ["url", "user-id", "auth-token", "room"], roomFilter(p.room));
+      await hubListsList(p, stdout, fetchImpl);
       return;
     case "hub lists get":
-      await reserved(p, "hub lists get", ["url", "user-id", "auth-token", "id"], "", () => {
-        requireFlag(p, "id", p.id, helpFor(["hub", "lists", "get"]));
-        return `id=${p.id}`;
-      });
+      await hubListsGet(p, stdout, fetchImpl);
+      return;
+    case "hub lists create":
+      await hubListsCreate(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub lists update":
+      await hubListsUpdate(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub lists delete":
+      await hubListsDelete(p, stdout, stderr, fetchImpl);
       return;
     case "hub items list":
-      await reserved(p, "hub items list", ["url", "user-id", "auth-token", "list"], "", () => {
-        requireFlag(p, "list", p.list, helpFor(["hub", "items", "list"]));
-        return `list=${p.list}`;
-      });
+      await hubItemsList(p, stdout, fetchImpl);
       return;
     case "hub items get":
-      await reserved(p, "hub items get", ["url", "user-id", "auth-token", "id"], "", () => {
-        requireFlag(p, "id", p.id, helpFor(["hub", "items", "get"]));
-        return `id=${p.id}`;
-      });
+      await hubItemsGet(p, stdout, fetchImpl);
+      return;
+    case "hub items search":
+      await hubItemsSearch(p, stdout, fetchImpl);
+      return;
+    case "hub items find":
+      await hubItemsFind(p, stdout, fetchImpl);
+      return;
+    case "hub items create":
+      await hubItemsCreate(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub items update":
+      await hubItemsUpdate(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub items delete":
+      await hubItemsDelete(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub items move":
+      await hubItemsMove(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub items reorder":
+      await hubItemsReorder(p, stdout, stderr, fetchImpl);
       return;
     default:
       throw usage(`unknown command ${JSON.stringify(cmd)}\n\nRun privos --help`);
   }
-}
-
-function roomFilter(room: string): string {
-  return room === "" ? "room=(all)" : `room=${room}`;
-}
-
-async function reserved(
-  p: Parsed,
-  cmd: string,
-  allowed: string[],
-  filter: string,
-  extra?: () => string,
-): Promise<void> {
-  forbidUnknown(p, cmd, allowed);
-  timeoutSeconds(p);
-  const detail = extra ? extra() : filter;
-  notWired(cmd, detail);
 }

@@ -23,7 +23,20 @@ Commands:
   hub messages send
   hub messages update
   hub messages delete
-  hub lists, hub items     Reserved until user-token method names are confirmed
+  hub lists list
+  hub lists get
+  hub lists create
+  hub lists update
+  hub lists delete
+  hub items list
+  hub items get
+  hub items search
+  hub items find
+  hub items create
+  hub items update
+  hub items delete
+  hub items move
+  hub items reorder
   version                  Print the CLI version
 
 Reads send GET. Writes are a dry run unless you pass --confirm: they print
@@ -192,8 +205,8 @@ const hubHelp = `Usage:
 Commands:
   rooms list|create|update|delete
   messages list|send|update|delete
-  lists list|get              Reserved. Not wired to a live request yet
-  items list|get              Reserved. Not wired to a live request yet
+  lists list|get|create|update|delete
+  items list|get|search|find|create|update|delete|move|reorder
 
 Environment (flags override):
   PRIVOS_HUB_URL          Hub base URL
@@ -323,54 +336,149 @@ const hubListsHelp = `Usage:
   privos hub lists <command>
 
 Commands:
-  list [--room ROOM_ID]    Reserved read for lists.*
-  get --id LIST_ID         Reserved read for one list
+  list [--room ROOM_ID]
+  get --id LIST_ID
+  create --room ROOM_ID [--name NAME] [--description TEXT]
+  update --id LIST_ID [--name NAME] [--description TEXT] [--room ROOM_ID]
+  delete --id LIST_ID
 
-Not wired to a live request yet: these commands parse flags and do not
-send an HTTP request. The user-token REST method names for lists are not
-confirmed. See docs/api/hub.md.
-
-Auth, once wired: X-User-Id and X-Auth-Token
-(PRIVOS_HUB_USER_ID, PRIVOS_HUB_AUTH_TOKEN).
+Reads are GET /api/v1/lists.list, lists.listByRoomId, and lists.info.
+Writes are POST /api/v1/lists.create, lists.update, and lists.delete, and
+they stay a dry run unless --confirm. Auth is X-User-Id and X-Auth-Token.
+Field CRUD (lists.addField, lists.fields.*) is not a CLI command.
+See docs/api/hub.md.
 `;
 
 const hubListsListHelp = `Usage:
   privos hub lists list [--room ROOM_ID]
 
-Reserved. Not wired to a live request in this version.
-No HTTP request is sent. See docs/api/hub.md.
+GET /api/v1/lists.list when --room is omitted.
+GET /api/v1/lists.listByRoomId?roomId=ROOM_ID when --room is set.
+The table view prints the "lists" array.
 `;
 
 const hubListsGetHelp = `Usage:
   privos hub lists get --id LIST_ID
 
-Reserved. Not wired to a live request in this version.
-No HTTP request is sent. See docs/api/hub.md.
+GET /api/v1/lists.info?listId=LIST_ID. Prints JSON.
+`;
+
+const hubListsCreateHelp = `Usage:
+  privos hub lists create --room ROOM_ID [--name NAME] [--description TEXT]
+         [--field-definitions JSON] [--cross-team true|false] [--isolated true|false]
+
+POST /api/v1/lists.create. roomId is required. fieldDefinitions is always
+sent and defaults to []. --field-definitions replaces that default and must
+be a JSON array. --cross-team sets crossTeamWorkflow. --isolated sets
+isolatedList. Omitted booleans are left to the server. Dry run unless --confirm.
+The response includes list and defaultStage. Pass defaultStage to
+"hub items create --stage" when you need a stage id.
+`;
+
+const hubListsUpdateHelp = `Usage:
+  privos hub lists update --id LIST_ID [--name NAME] [--description TEXT]
+         [--room ROOM_ID] [--cross-team true|false] [--isolated true|false]
+
+POST /api/v1/lists.update with listId plus at least one other field.
+Dry run unless --confirm.
+`;
+
+const hubListsDeleteHelp = `Usage:
+  privos hub lists delete --id LIST_ID
+
+POST /api/v1/lists.delete with {"listId":"LIST_ID"}. Dry run unless --confirm.
 `;
 
 const hubItemsHelp = `Usage:
   privos hub items <command>
 
 Commands:
-  list --list LIST_ID    Reserved read for items in one list
-  get --id ITEM_ID       Reserved read for one item
+  list --list LIST_ID
+  get --id ITEM_ID
+  search --list LIST_ID --term TEXT
+  find --list LIST_ID --field FIELD_ID --value VALUE
+  create --list LIST_ID --stage STAGE_ID [--name NAME]
+  update --id ITEM_ID
+  delete --id ITEM_ID
+  move --id ITEM_ID --stage STAGE_ID
+  reorder --id ITEM_ID --order N
 
-Not wired to a live request yet: these commands parse flags and do not
-send an HTTP request. See docs/api/hub.md.
+Reads are GET /api/v1/items.*. Writes are POST and stay a dry run unless
+--confirm. stages.* and items.bulkUpdateOrder are not CLI commands.
+See docs/api/hub.md.
 `;
 
 const hubItemsListHelp = `Usage:
-  privos hub items list --list LIST_ID
+  privos hub items list --list LIST_ID [--include-sub-items]
+  privos hub items list --list LIST_ID [--stage STAGE_ID] [--parent ITEM_ID]
+                         [--count N] [--offset N] [--sort SORT] [--after CURSOR]
+  privos hub items list --stage STAGE_ID
+  privos hub items list --parent ITEM_ID
 
-Reserved. Not wired to a live request in this version.
-No HTTP request is sent. See docs/api/hub.md.
+--list with no other item filter calls GET /api/v1/items.listByListId.
+--include-sub-items adds includeSubItems=true and cannot be combined with
+other filters. --stage, --parent, --count, --offset, --sort, or --after
+together with --list call GET /api/v1/items.list. --stage alone calls
+GET /api/v1/items.listByStageId. --parent alone calls
+GET /api/v1/items.listByParentId. The table view prints the "items" array.
 `;
 
 const hubItemsGetHelp = `Usage:
   privos hub items get --id ITEM_ID
 
-Reserved. Not wired to a live request in this version.
-No HTTP request is sent. See docs/api/hub.md.
+GET /api/v1/items.info?itemId=ITEM_ID. Prints JSON.
+`;
+
+const hubItemsSearchHelp = `Usage:
+  privos hub items search --list LIST_ID --term TEXT
+
+GET /api/v1/items.search?listId=LIST_ID&searchTerm=TEXT.
+`;
+
+const hubItemsFindHelp = `Usage:
+  privos hub items find --list LIST_ID --field FIELD_ID --value VALUE
+
+GET /api/v1/items.findByFieldValue?listId=LIST_ID&fieldId=FIELD_ID&value=VALUE.
+`;
+
+const hubItemsCreateHelp = `Usage:
+  privos hub items create --list LIST_ID --stage STAGE_ID
+         [--name NAME] [--description TEXT] [--parent ITEM_ID]
+         [--custom-fields JSON]
+
+POST /api/v1/items.create. listId and stageId are required.
+--custom-fields must be a JSON array. There is no stages list command;
+use the defaultStage from "hub lists create", or a stage id you already
+have. Dry run unless --confirm.
+`;
+
+const hubItemsUpdateHelp = `Usage:
+  privos hub items update --id ITEM_ID [--name NAME] [--description TEXT]
+         [--stage STAGE_ID] [--custom-fields JSON] [--archived true|false]
+         [--order N] [--show-archived-sub-items true|false]
+
+POST /api/v1/items.update with itemId plus at least one other field.
+--order here is the update body's "order" field, not items.updateOrder.
+Use "hub items reorder" for {"itemId","newOrder"}. Dry run unless --confirm.
+`;
+
+const hubItemsDeleteHelp = `Usage:
+  privos hub items delete --id ITEM_ID
+
+POST /api/v1/items.delete with {"itemId":"ITEM_ID"}. Dry run unless --confirm.
+`;
+
+const hubItemsMoveHelp = `Usage:
+  privos hub items move --id ITEM_ID --stage STAGE_ID
+
+POST /api/v1/items.moveToStage with {"itemId","stageId"}. Dry run unless --confirm.
+`;
+
+const hubItemsReorderHelp = `Usage:
+  privos hub items reorder --id ITEM_ID --order N
+
+POST /api/v1/items.updateOrder with {"itemId","newOrder"}. --order is an
+integer. Dry run unless --confirm. items.bulkUpdateOrder is not a command.
 `;
 
 const versionHelp = `Usage:
@@ -407,9 +515,19 @@ const HELP: Record<string, string> = {
   "hub lists": hubListsHelp,
   "hub lists list": hubListsListHelp,
   "hub lists get": hubListsGetHelp,
+  "hub lists create": hubListsCreateHelp,
+  "hub lists update": hubListsUpdateHelp,
+  "hub lists delete": hubListsDeleteHelp,
   "hub items": hubItemsHelp,
   "hub items list": hubItemsListHelp,
   "hub items get": hubItemsGetHelp,
+  "hub items search": hubItemsSearchHelp,
+  "hub items find": hubItemsFindHelp,
+  "hub items create": hubItemsCreateHelp,
+  "hub items update": hubItemsUpdateHelp,
+  "hub items delete": hubItemsDeleteHelp,
+  "hub items move": hubItemsMoveHelp,
+  "hub items reorder": hubItemsReorderHelp,
   version: versionHelp,
 };
 
