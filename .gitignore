@@ -8,3 +8,7 @@
 
 # Anything a local drill/test writes under a generated install dir.
 secrets/
+
+# Local `go build -C cli -o privos` output. Source stays in cli/.
+/privos
+/cli/privos

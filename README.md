@@ -26,6 +26,14 @@ Operator guides on the docs site:
 [Backup and restore](https://docs.privos.ai/guide/self-hosted/backup-restore) ·
 [Uninstall and FAQ](https://docs.privos.ai/guide/self-hosted/uninstall-faq)
 
+## Operator CLI
+
+`privos` is a separate read-only client for a running sandbox board and hub
+(projects, tasks, rooms, messages). It does not install or upgrade the stack.
+Build it with Go from [`cli/`](cli/) (`go build -C cli -o privos ./cmd/privos`)
+and use [docs/cli/README.md](docs/cli/README.md). API notes for the commands
+it calls are in [docs/api/](docs/api/).
+
 ## ⚠️ WARNING: Early access
 
 PrivOS is in a state of heavy development. The self-hosted path in this repository is
@@ -141,6 +149,8 @@ allowlisted and configured private endpoint — is promised for an air-gapped in
 | `SIGNING.md` | How the bundle is signed; the embedded public key |
 | `LICENSE` | PrivOS Community License 1.0 |
 | `tests/` | Bash unit tests (port-check, env render, signature/hash verify, license acceptance, activation gate) + CI |
+| `cli/` | `privos` CLI source (sandbox and hub reads). Not part of the signed install bundle |
+| `docs/cli/`, `docs/api/` | CLI configuration and the REST calls the CLI makes |
 
 ## Security
 
