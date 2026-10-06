@@ -31,8 +31,8 @@ change them. The Hub and sandbox components ship as signed container images and
 their source is not published yet. The license also restricts commercial
 hosting, offering the software under your own brand, and redistribution. None
 of that meets the Open Source Initiative's definition, so we do not use the
-term. We intend to release PrivOS under an OSI-approved license eventually. We
-have not committed to a date.
+term. The installer is source-available today; we plan to open the full
+PrivOS source in the near future (no date yet).
 
 ### What does "10 Active Human Users" count?
 

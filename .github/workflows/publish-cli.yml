@@ -1,0 +1,46 @@
+name: publish-cli
+
+# Publishes cli/ as @privos_ai/privos with npm Trusted Publishing (OIDC). There
+# is no token anywhere: npm mints a short-lived credential from GitHub's OIDC
+# identity for this exact workflow, and provenance is generated automatically.
+#
+# One-time setup on npmjs.com (Package settings -> Trusted Publisher), possible
+# only after the package exists, so the first version is published by hand:
+#   Publisher:         GitHub Actions
+#   Organization:      PrivOS-AI
+#   Repository:        privos
+#   Workflow filename: publish-cli.yml
+#   Environment:       release
+#
+# The `release` environment only accepts runs from `main` and holds each run
+# for a human approval before the OIDC credential is minted.
+#
+# Release flow: bump cli/package.json version on main, then run this workflow
+# from the Actions tab. Publishing a version that already exists fails — bump
+# first.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write # npm trusted publishing (OIDC) + provenance
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm >= 11.5.1.
+      - run: npm install -g npm@latest
+      - run: npm ci
+      - run: npm test
+      - run: npm publish --access public

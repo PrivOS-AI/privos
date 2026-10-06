@@ -33,8 +33,11 @@ npm run build
 node dist/main.js --help
 ```
 
-`npm pack` (run from `cli/`) produces the tarball. This repository does not
-publish that tarball.
+`npm pack` (run from `cli/`) produces the tarball. Releases are published by
+the `publish-cli` workflow (`.github/workflows/publish-cli.yml`): bump the
+version in `cli/package.json` on `main`, run the workflow from the Actions tab,
+and approve the `release` environment. It uses npm trusted publishing, so no
+npm token is stored in this repository.
 
 The package name is `@privos_ai/privos`. That is the npm org already used by
 `@privos_ai/app-server`, `@privos_ai/app-cluster`, and

@@ -1,7 +1,7 @@
 # PrivOS — self-hosted installer & release bundle
 
-**PrivOS is [fair-code](https://faircode.io):** free to run for your own team (up to 10 signed-in users across your company),
-source-available installer, commercial rights reserved. Not open source — see [License](#license).
+Community Edition is free and self-hosted for up to 10 users (signed-in users across your company), commercial rights reserved.
+**The installer is source-available today; we plan to open the full PrivOS source in the near future (no date yet).** See [License](#license).
 
 > **Beta — install at your own risk.** PrivOS Community Edition is in a testing phase.
 > The installer, images and upgrade path are still changing, and an install or upgrade
@@ -58,8 +58,8 @@ Host prerequisites: Linux x86_64 (arm64 is not supported yet), Docker ≥ 24 wit
 Activation is **required** on every Community Edition install: until it completes, nothing
 is usable — the UI shows a gate to every user, and the REST API refuses everything except a
 small allowlist (login, `info`, public settings, and the activation endpoints themselves).
-This is a **free lead-registration gate, not DRM**: the source is public, so an operator
-could patch it out, and we're not pretending otherwise — it exists so we know who is running
+This is a **free lead-registration gate, not DRM**: the installer in this repository is public and
+the check runs on your own host, so an operator could patch it out, and we're not pretending otherwise — it exists so we know who is running
 PrivOS, not to enforce payment. There is no card and no cost to activate.
 
 **Flow:**
@@ -165,11 +165,10 @@ public issue.
 
 ## Roadmap: open source
 
-PrivOS is **fair-code, not open source, today**. It is distributed under the
-[PrivOS Community License 1.0](./LICENSE) — the installer here is source-available, the product
-ships as container images, and commercial use beyond the Community tier is reserved. **We intend to publish the PrivOS source code and move
-to an open source license in the future.** We have not committed to a date; we will announce
-it in this repository when we do. Until then the Community License applies to every release,
+**The installer is source-available today; we plan to open the full PrivOS source in the near future
+(no date yet).** PrivOS is distributed under the [PrivOS Community License 1.0](./LICENSE) — the
+product ships as signed container images, and commercial use beyond the Community tier is reserved.
+We will announce the source opening in this repository when we do. Until then the Community License applies to every release,
 and the terms below on contributions are in effect.
 
 ## Contributing
@@ -200,7 +199,7 @@ you for your understanding.
 ## License
 
 PrivOS is licensed under the **PrivOS Community License 1.0** (see [`LICENSE`](./LICENSE)), a
-[fair-code](https://faircode.io) license: the source of the installer is available and the software
+source-available license: the source of the installer is available and the software
 is free to use within the Community tier, while commercial, hosted-service, and redistribution
 rights are reserved. Plain-English answers: [`LICENSE-FAQ.md`](./LICENSE-FAQ.md). It is **not an Open Source license** — like
 n8n's Sustainable Use License, it limits *how* the software may be used, which the OSI definition
