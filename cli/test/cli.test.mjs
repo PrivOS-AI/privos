@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { describe, test } from "node:test";
+import { Server } from "socket.io";
 import { run } from "../dist/run.js";
 
 const CRED_KEYS = [
@@ -1239,6 +1240,177 @@ describe("privos", { concurrency: false }, () => {
       assert.ok(seen.every((x) => x.method === "GET"));
     } finally {
       await srv.close();
+    }
+  });
+
+  // A board with HTTP reads and a socket.io server that records question:answer.
+  async function answerBoard({ ack = true, clears = true, pending: initial } = {}) {
+    const state = {
+      pending: initial === undefined
+        ? {
+            attemptId: "a1",
+            toolUseId: "tu1",
+            questions: [
+              { question: "Which DB?", header: "DB", options: [], multiSelect: false },
+              { question: "Proceed?", header: "Go", options: [], multiSelect: false },
+            ],
+          }
+        : initial,
+      seen: [],
+      emitted: [],
+      connections: 0,
+    };
+    const srv = await serve(async (req, res) => {
+      await readBody(req);
+      state.seen.push({ method: req.method, url: req.url });
+      res.setHeader("content-type", "application/json");
+      if (req.method === "GET" && req.url === "/api/tasks/t1") {
+        res.end(JSON.stringify({ id: "t1", projectId: "p1" }));
+      } else if (req.method === "GET" && req.url === "/api/tasks/t1/pending-question") {
+        res.end(JSON.stringify({ question: state.pending }));
+      } else if (req.method === "POST" && req.url === "/api/attempts/a1/answer") {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "projectId, workspaceId, toolUseId, questions, and answers are required" }));
+      } else {
+        res.writeHead(404);
+        res.end("{}");
+      }
+    });
+    const io = new Server(srv.server);
+    io.use((socket, next) => {
+      if (socket.handshake.auth.token === "k") next();
+      else next(new Error("Unauthorized: valid API key required"));
+    });
+    io.on("connection", (socket) => {
+      state.connections += 1;
+      socket.on("question:answer", (payload, cb) => {
+        state.emitted.push(payload);
+        if (clears) state.pending = null;
+        if (ack !== false && typeof cb === "function") cb(ack === true ? { success: true } : ack);
+      });
+    });
+    state.close = () => new Promise((done) => io.close(() => done()));
+    state.run = (...extra) =>
+      runCLI(["sandbox", "tasks", "answer", "--url", srv.url, "--timeout", "2", "--id", "t1", ...extra]);
+    return state;
+  }
+
+  const BOTH = ["--answer", "Postgres", "--answer", "Yes"];
+  const WANT = { "Which DB?": "Postgres", "Proceed?": "Yes" };
+
+  test("tasks answer dry run maps answers and opens no socket", async () => {
+    clearCreds();
+    const b = await answerBoard();
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH);
+      assert.equal(r.code, 0, r.stderr);
+      const plan = JSON.parse(r.stdout);
+      assert.deepEqual(plan.requests[0].payload.answers, WANT);
+      assert.equal(plan.requests[0].event, "question:answer");
+      assert.equal(b.connections, 0);
+      assert.ok(b.seen.every((x) => x.method === "GET"));
+      assert.match(r.stderr, /No write was sent/);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer --confirm emits question:answer and ignores the REST log error", async () => {
+    clearCreds();
+    const b = await answerBoard();
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(b.emitted.length, 1);
+      const { attemptId, projectId, toolUseId, answers } = b.emitted[0];
+      assert.deepEqual({ attemptId, projectId, toolUseId, answers }, {
+        attemptId: "a1",
+        projectId: "p1",
+        toolUseId: "tu1",
+        answers: WANT,
+      });
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.confirmedBy, "ack");
+      assert.equal(out.restLog, "not saved");
+      assert.match(r.stderr, /Answer log not saved \(ignored\)/);
+      assert.ok(b.seen.some((x) => x.method === "POST" && x.url === "/api/attempts/a1/answer"));
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer without an ack confirms by the cleared question", async () => {
+    clearCreds();
+    const b = await answerBoard({ ack: false });
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).confirmedBy, "question cleared");
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer without an ack fails while the question is still pending", async () => {
+    clearCreds();
+    const b = await answerBoard({ ack: false, clears: false });
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /not confirmed/);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer fails on a rejected ack", async () => {
+    clearCreds();
+    const b = await answerBoard({ ack: { success: false, error: "nope" } });
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /rejected: nope/);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer with a wrong key fails without echoing it", async () => {
+    clearCreds();
+    const b = await answerBoard();
+    try {
+      const r = await b.run("--api-key", "bad-secret-value", ...BOTH, "--confirm");
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /socket.io connect failed/);
+      assert.ok(!r.stderr.includes("bad-secret-value"));
+      assert.equal(b.emitted.length, 0);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer needs one --answer per question", async () => {
+    clearCreds();
+    const b = await answerBoard();
+    try {
+      const r = await b.run("--api-key", "k", "--answer", "Postgres", "--confirm");
+      assert.equal(r.code, 2);
+      assert.match(r.stderr, /Which DB\?/);
+      assert.equal(b.connections, 0);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer with no pending question", async () => {
+    clearCreds();
+    const b = await answerBoard({ pending: null });
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /no pending question/);
+    } finally {
+      await b.close();
     }
   });
 });

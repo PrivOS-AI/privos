@@ -13,6 +13,8 @@ export interface PlannedRequest {
   prepare?: (prior: unknown[]) => PlannedRequest;
 }
 
+export const DRY_RUN_NOTE = "Dry run only. No write was sent. Pass --confirm to send this request.\n";
+
 const SECRET_HEADERS = new Set(["x-api-key", "x-user-id", "x-auth-token"]);
 
 export async function mutate(
@@ -34,7 +36,7 @@ export async function mutate(
   if (mode === "dry") {
     const requests = plans.map((plan) => preview(baseURL, plan, omittedHeaderNames));
     stdout.write(`${JSON.stringify({ dryRun: true, requests }, null, 2)}\n`);
-    stderr.write("Dry run only. No write was sent. Pass --confirm to send this request.\n");
+    stderr.write(DRY_RUN_NOTE);
     return;
   }
   const client = new Client(baseURL, authHeaders, timeoutMs, fetchImpl);

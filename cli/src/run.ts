@@ -1,3 +1,4 @@
+import { sandboxTasksAnswer } from "./answer.js";
 import { VERSION } from "./config.js";
 import { helpFor, rootHelp } from "./help.js";
 import {
@@ -154,6 +155,9 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, fetchImpl: typeof f
       return;
     case "sandbox tasks question":
       await sandboxTasksQuestion(p, stdout, fetchImpl);
+      return;
+    case "sandbox tasks answer":
+      await sandboxTasksAnswer(p, stdout, stderr, fetchImpl);
       return;
     case "sandbox models list":
       await sandboxModelsList(p, stdout, fetchImpl);

@@ -19,6 +19,7 @@ export interface Parsed {
   authToken: string;
   projects: string[];
   members: string[];
+  answers: string[];
   status: string;
   limit: string;
   after: string;
@@ -127,9 +128,10 @@ const VALUE_FLAGS = new Set([
   "effort",
   "prompt",
   "before",
+  "answer",
 ]);
 
-const REPEATABLE = new Set(["project", "member"]);
+const REPEATABLE = new Set(["project", "member", "answer"]);
 
 export function commandOf(p: Parsed): string {
   return p.positionals.join(" ");
@@ -231,6 +233,7 @@ function emptyParsed(): Parsed {
     authToken: "",
     projects: [],
     members: [],
+    answers: [],
     status: "",
     limit: "",
     after: "",
@@ -518,6 +521,9 @@ function assignValue(p: Parsed, name: string, value: string): void {
       break;
     case "before":
       p.before = trimmed;
+      break;
+    case "answer":
+      p.answers.push(trimmed);
       break;
     default:
       throw usage(`unknown flag --${name}`);

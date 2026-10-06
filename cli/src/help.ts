@@ -20,6 +20,7 @@ Commands:
   sandbox tasks conversation
   sandbox tasks running
   sandbox tasks question
+  sandbox tasks answer
   sandbox models list
   hub rooms list
   hub rooms create
@@ -63,7 +64,7 @@ const sandboxHelp = `Usage:
 
 Commands:
   projects list|create|update|delete|start
-  tasks list|create|update|delete|start|attempts|conversation|running|question
+  tasks list|create|update|delete|start|attempts|conversation|running|question|answer
   models list
 
 Environment (flags override):
@@ -160,6 +161,7 @@ Commands:
   conversation --id ID [--limit N] [--before MS]
   running --id ID
   question --id ID
+  answer --id ID --answer TEXT [--answer TEXT ...]
 
 Writes require --confirm. The default is a dry run.
 `;
@@ -291,6 +293,32 @@ const sandboxTasksQuestionHelp = `Usage:
 Read the agent's pending question from GET /api/tasks/{id}/pending-question.
 "question" is null when the agent is not waiting. The questions print in
 order; each needs one --answer, in the same order. JSON only.
+
+Answer them with: privos sandbox tasks answer --id ID --answer TEXT ...
+`;
+
+const sandboxTasksAnswerHelp = `Usage:
+  privos sandbox tasks answer --id ID --answer TEXT [--answer TEXT ...]
+
+Answer the agent's pending question. Pass --answer once per question, in
+the order "privos sandbox tasks question" prints them.
+
+The CLI reads GET /api/tasks/{id} and GET /api/tasks/{id}/pending-question,
+then sends the socket.io event question:answer
+{"attemptId","projectId","toolUseId","questions","answers"} to the board,
+with the API key as the handshake auth token. "answers" maps each question
+text to its --answer. This is what the board UI sends.
+
+The dry run reads the question and prints the payload; it opens no socket.
+With --confirm the answer counts as delivered when the board acks it, or,
+when no ack comes (sandbox mode), once a re-read shows the question gone.
+The board acks a repeat of the same answer within 30 seconds without
+applying it again.
+
+After that the CLI also sends POST /api/attempts/{attemptId}/answer to save
+the answer log. This is best effort: the board accepts it only for hub
+attempts that carry a workspaceId, and any error is printed and ignored.
+Dry run unless --confirm.
 `;
 
 const sandboxModelsHelp = `Usage:
@@ -619,6 +647,7 @@ const HELP: Record<string, string> = {
   "sandbox tasks conversation": sandboxTasksConversationHelp,
   "sandbox tasks running": sandboxTasksRunningHelp,
   "sandbox tasks question": sandboxTasksQuestionHelp,
+  "sandbox tasks answer": sandboxTasksAnswerHelp,
   "sandbox models": sandboxModelsHelp,
   "sandbox models list": sandboxModelsListHelp,
   hub: hubHelp,
