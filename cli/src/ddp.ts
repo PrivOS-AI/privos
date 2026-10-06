@@ -196,6 +196,10 @@ export class DDPClient {
     return id;
   }
 
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
   close(reason = "closed"): void {
     if (this.closed) return;
     this.closed = true;

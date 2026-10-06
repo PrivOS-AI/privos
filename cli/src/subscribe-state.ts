@@ -28,8 +28,10 @@ export function defaultStatePath(): string {
   return path.join(os.homedir(), ".privos", "subscribe", "state.json");
 }
 
+/** `health` next to state.json; `<name>.health` next to any other state file, so test runs keep their own heartbeat. */
 export function healthPath(statePath: string): string {
-  return path.join(path.dirname(statePath), "health");
+  if (path.basename(statePath) === "state.json") return path.join(path.dirname(statePath), "health");
+  return statePath.replace(/(\.json)?$/, ".health");
 }
 
 export function expandHome(p: string): string {

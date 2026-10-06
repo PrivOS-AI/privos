@@ -150,7 +150,7 @@ privos hub items reorder --id ITEM_ID --order N
 
 privos hub inbox --since ISO|EPOCH_MS [--events dm,mention,message,notification] [--rooms LIST] [--include-text]
 
-privos subscribe [--events LIST] [--rooms LIST] [--lists LIST] [--projects BOARD:PID,...]
+privos subscribe [--events LIST] [--rooms LIST] [--lists LIST|all] [--projects BOARD:PID,...]
                  [--priority-from USERS] [--mode realtime|poll] [--state PATH]
                  [--stdout | --dry-run | --confirm] [--include-text] [--exclude-bots] [--group-mentions]
                  [--webhook-url-env NAME] [--webhook-key-env NAME] [--webhook-header NAME]
@@ -197,9 +197,9 @@ posts to PrivOS and never creates integrations.
 | Event | Source |
 |---|---|
 | `dm`, `mention`, `message` | DDP `stream-room-messages` `__my_messages__`; backstop `subscriptions.get?updatedSince` then `chat.syncMessages` |
-| `notification` | DDP `in_app_notifications.updates`; backstop `in-app-notifications.list` |
-| `item` | `items.list?sort=_updatedAt:-1` for each `--lists` id, every 90 s |
-| `file` | `file-management.files.filter/:channelId` for each `--rooms` room, every 5 min (full scan) |
+| `notification` | DDP `in_app_notifications.updates`; backstop `in-app-notifications.list` (every 60 s when the hub refuses the DDP feed) |
+| `item` | `items.list?sort=_updatedAt:-1` for each `--lists` id (or every list from `lists.list` with `--lists all`), every 90 s |
+| `file` | `file-management.files.filter/:channelId` for each `--rooms` room (every joined room without `--rooms`), every 5 min (full scan) |
 | `task` | Board `GET /api/tasks?projectIds=` for each `--projects` board, every 60 s |
 
 `--mode realtime` (default) also subscribes to `<uid>/notification` and
@@ -208,7 +208,11 @@ posts to PrivOS and never creates integrations.
 `WebSocket` of Node.js 22 or later; on Node.js 20 it falls back to poll. On
 start and after each reconnect it reads back from the saved cursor minus two
 minutes. The in-app notification publication replays the full history when
-it is subscribed; that replay only marks ids as seen.
+it is subscribed; that replay only marks ids as seen. If the hub refuses that
+subscription (some hubs answer it with error 500), the daemon logs it, keeps
+the message stream on the websocket, and polls `in-app-notifications.list`
+every 60 seconds; `privos subscribe status` then shows `"notifications": "poll"` (`"ddp"` when the
+feed is live, `"off"` without notification events).
 
 `--projects td:<pid>,tvibe:<pid>` names boards by alias. `td` is the default
 board (`PRIVOS_SANDBOX_URL`, `PRIVOS_SANDBOX_API_KEY`). Any other alias `X`
@@ -229,14 +233,18 @@ Ids are `hub:msg:<_id>[:edit:<editedAt>]`, `hub:notif:<_id>`,
 `sb:<board>:task:<taskId>:<updatedAt|deleted>`. `summary` (at most 200
 characters of message text, item name, file name, or task title) is present
 only with `--include-text`. `priority: true` marks DMs, mentions, and
-notifications from a `--priority-from` user.
+notifications from a `--priority-from` user. Your own messages are always
+skipped, so naming yourself in `--priority-from` has no effect.
 
 Filters: your own messages, system messages, hidden and imported messages,
 and messages from rooms you have not joined are always skipped.
 `--exclude-bots` also skips bot messages. `@all` and `@here` count as
 mentions only with `--group-mentions`. `--rooms` (room id or name) limits
 messages, notifications, and file watching; `--lists` limits item events and
-item notifications.
+item notifications. `--lists all` watches every list the hub shows you in the
+rooms you belong to (`lists.list`, re-read every 15 minutes); it does not
+filter notifications. File events without `--rooms` watch every room you
+have joined, including rooms joined later.
 
 Delivery:
 
@@ -269,19 +277,25 @@ The URL must be `https` (plain `http` only for localhost). The URL and key
 come only from the environment and never appear in logs.
 
 State lives in `~/.privos/subscribe/state.json` (change with `--state`). A dry
-run uses `state.dry-run.json` by default, because it marks events as seen and
-a later `--confirm` run must still deliver them. The state holds the
+run uses `state.dry-run.json` and `--stdout` uses `state.stdout.json` by
+default, because they mark events as seen and the `--confirm` daemon must
+still deliver them. The state holds the
 hub cursors, seen ids (10,000 ids, 7 days), item, file, and task snapshots,
 and the outbox. It is written atomically with mode `0600` in a `0700`
 directory, and a lock file allows one daemon per state file. With
 `--include-text` the outbox holds message text and the file snapshot holds file
 names; without it file names are stored only as hashes. A heartbeat is written to
-`health` next to it every 30 seconds. `privos subscribe status` prints the
+`health` next to `state.json` every 30 seconds; any other state file
+`NAME.json` gets `NAME.health`. `privos subscribe status` prints the
 heartbeat age, cursors, lag, outbox size, and counters, and exits `1` when
-there has been no heartbeat for 10 minutes. Logs carry ids and counts only.
+there has been no heartbeat for 10 minutes. It reads `state.json` unless
+`--state` names another file, such as `state.stdout.json`. Logs carry ids and counts only.
 
 Hub requests are limited to 20 a minute and hub polls are at least 30 seconds
-apart. Polling runs separately from delivery and the heartbeat, so a slow poll
+apart. Lists and rooms are polled one per step, round robin: each list every
+90 seconds but no two list reads closer than 10 seconds, and each room every
+5 minutes but no two room scans closer than 15 seconds. With 40 lists one
+round takes about 7 minutes; with 200 joined rooms about 50 minutes. Polling runs separately from delivery and the heartbeat, so a slow poll
 does not hold back a priority event. The hub message cursor is the newest
 subscription `_updatedAt` of each `subscriptions.get` snapshot, so a slow poll
 cannot skip a room that changed after the snapshot. After a websocket
@@ -313,7 +327,7 @@ Install a pinned version so the service does not change under you, and keep
 the credentials in a file only you can read:
 
 ```bash
-npm install -g @privos_ai/privos@0.4.0
+npm install -g @privos_ai/privos@0.4.1
 command -v privos   # the absolute path used below
 
 mkdir -p ~/.config/privos && chmod 700 ~/.config/privos

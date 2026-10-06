@@ -645,7 +645,7 @@ PRIVOS_PAT, or the PRIVOS_HUB_* names).
 `;
 
 const subscribeHelp = `Usage:
-  privos subscribe [--events LIST] [--rooms RID|NAME,...] [--lists LIST_ID,...]
+  privos subscribe [--events LIST] [--rooms RID|NAME,...] [--lists LIST_ID,...|all]
                    [--projects BOARD:PROJECT_ID,...] [--exclude-self] [--exclude-bots]
                    [--group-mentions] [--include-text] [--priority-from USER,...]
                    [--mode realtime|poll] [--state PATH]
@@ -663,12 +663,17 @@ Events (--events, default dm,mention,notification):
   message       Every message in your rooms (DMs and mentions keep their type)
   notification  In-app notifications (item assigned, stage changed, comments)
   item          List items created or changed (needs --lists; polled every 90 s)
-  file          Room files created, changed, or deleted (needs --rooms; every 5 min)
+  file          Room files created, changed, or deleted (every 5 min; all
+                joined rooms unless --rooms is set)
   task          Board tasks (needs --projects; polled every 60 s)
 
 Sources:
   --mode realtime (default) uses the hub websocket and polls every 5 min as a
-  backstop. --mode poll polls the hub every 60 s. Board tasks are always polled.
+  backstop. If the hub refuses the in-app notification feed, messages stay on
+  the websocket and the hub is polled every 60 s instead. --mode poll polls the
+  hub every 60 s. Board tasks are always polled. Lists and rooms are polled one
+  at a time, at least 10 s (lists) or 15 s (rooms) apart, so a long --lists all
+  or joined-room set takes longer than 90 s or 5 min to go round.
   After a reconnect or restart it reads back from the saved cursor minus 2 min.
 
 Delivery:
@@ -677,12 +682,14 @@ Delivery:
   --confirm     POST batches to the webhook: a 45 s coalescing window, at most
                 4 POSTs a minute and 60 events a POST (the rest go into the
                 digest counts). Events from --priority-from users skip the
-                window. Failed POSTs retry with backoff (2 s to 5 min); a 4xx
+                window. Naming yourself there does nothing: your own
+                messages are never reported. Failed POSTs retry with backoff (2 s to 5 min); a 4xx
                 other than 408, 413, or 429 stops the daemon with exit 1.
 
 Filters: your own messages are always skipped, as are system messages.
 --rooms limits messages, notifications, and files to those rooms; --lists
-limits item events and item notifications. Message text, item names, and file
+limits item events and item notifications. --lists all watches every list in
+the rooms you belong to that the hub shows you (re-read every 15 min). Message text, item names, and file
 names are left out unless --include-text is set (cut to 200 characters).
 
 Environment:
@@ -695,18 +702,22 @@ Environment:
   GROK_MASTER_WEBHOOK_HEADER                     Header that carries the key
 
 State: ~/.privos/subscribe/state.json (mode 0600; one daemon per file); a dry
-run defaults to state.dry-run.json so it does not use up events. It holds
-cursors, seen ids, snapshots, and the outbox, which can include message text
-when --include-text is set. A heartbeat is written to "health" next to it
-every 30 s; privos subscribe status exits 1 when it is older than 10 min.
+run defaults to state.dry-run.json and --stdout to state.stdout.json, so they
+do not use up the events of the --confirm daemon. It holds cursors, seen ids,
+snapshots, and the outbox, which can include message text when --include-text
+is set. A heartbeat is written every 30 s to "health" next to state.json, or
+to NAME.health next to any other state file NAME.json; privos subscribe status
+exits 1 when it is older than 10 min.
 Logs carry ids and counts, never message text, keys, or the webhook URL.
 `;
 
 const subscribeStatusHelp = `Usage:
   privos subscribe status [--state PATH]
 
-Prints the daemon heartbeat age, pid, mode, websocket state, cursors, lag,
-outbox size, and counters as JSON. Exits 1 when there is no heartbeat in the
+Prints the daemon heartbeat age, pid, mode, websocket state, whether
+notifications come from the websocket or polling, cursors, lag, outbox size,
+and counters as JSON. Pass --state for a --stdout or dry run
+(~/.privos/subscribe/state.stdout.json, state.dry-run.json). Exits 1 when there is no heartbeat in the
 last 10 minutes.
 `;
 
