@@ -4,10 +4,13 @@ import { Client } from "./http.js";
 import { mutate, sandboxHeaders, type PlannedRequest } from "./mutate.js";
 import {
   forbidUnknown,
+  mutationMode,
   optionalNonNegative,
   parseAutopilot,
   parseBoolWord,
+  parseEffort,
   parsePosition,
+  parseProvider,
   pathSegment,
   requireAbsolutePath,
   requireFlag,
@@ -284,6 +287,120 @@ export async function sandboxTasksDelete(
     stderr,
     fetchImpl,
   );
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export async function sandboxTasksStart(
+  p: Parsed,
+  stdout: Out,
+  stderr: Out,
+  fetchImpl: typeof fetch,
+): Promise<void> {
+  forbidUnknown(p, "sandbox tasks start", [
+    "url",
+    "api-key",
+    "confirm",
+    "dry-run",
+    "id",
+    "model",
+    "provider",
+    "llm-provider",
+    "effort",
+    "prompt",
+    "force",
+  ]);
+  requireFlag(p, "id", p.id, helpFor(["sandbox", "tasks", "start"]));
+  const id = pathSegment("id", p.id);
+  if (p.format === "table") {
+    throw usage("writes print JSON; --format table applies to list reads");
+  }
+  mutationMode(p);
+  const selection = attemptSelection(p);
+  // Both reads are pure GETs, so they run in a dry run too (Client.send blocks every write).
+  const cfg = resolveSandbox(p.url, p.apiKey);
+  const client = new Client(cfg.baseURL, sandboxHeaders(cfg.apiKey), timeoutSeconds(p) * 1000, fetchImpl);
+  const task = JSON.parse((await client.get(`/api/tasks/${id}`)).toString("utf8")) as unknown;
+  const attempts = (JSON.parse((await client.get(`/api/tasks/${id}/attempts`)).toString("utf8")) as {
+    attempts?: unknown;
+  } | null)?.attempts;
+  if (task === null || typeof task !== "object" || Array.isArray(task) || !Array.isArray(attempts)) {
+    throw new Error("unexpected response from the board");
+  }
+  const running = recentRunningAttempt(attempts, Date.now());
+  if (running) {
+    if (!p.force) {
+      throw new Error(
+        `sandbox tasks start: attempt ${String(running.id)} is still running on task ${p.id}. Check it with: privos sandbox tasks running --id ${p.id}, or pass --force to start a second agent`,
+      );
+    }
+    stderr.write(
+      `Warning: attempt ${String(running.id)} is still running; --force starts a second agent on the same task.\n`,
+    );
+  }
+  const plans = startPlans(task as Record<string, unknown>, p.id, id, selection, p.prompt);
+  await sendSandbox(p, plans, stdout, stderr, fetchImpl);
+}
+
+/** The model fields of POST /api/attempts, as the board UI sends them. */
+function attemptSelection(p: Parsed): Record<string, string> {
+  if (p.provider !== "" && p.llmProvider !== "") {
+    throw usage("pass only one of --provider and --llm-provider");
+  }
+  if (p.llmProvider !== "" && p.model === "") {
+    throw usage("--llm-provider requires --model");
+  }
+  const out: Record<string, string> = {};
+  if (p.model !== "") out.model = p.model;
+  if (p.provider !== "") out.provider = parseProvider(p.provider);
+  if (p.llmProvider !== "") out.llmProviderId = p.llmProvider;
+  if (p.effort !== "") out.effort = parseEffort(p.effort);
+  return out;
+}
+
+/** A running attempt younger than the board's own 24 h stale rule. */
+function recentRunningAttempt(attempts: unknown[], now: number): Record<string, unknown> | undefined {
+  for (const a of attempts) {
+    if (a === null || typeof a !== "object") continue;
+    const rec = a as Record<string, unknown>;
+    if (rec.status !== "running") continue;
+    if (typeof rec.createdAt !== "number" || now - rec.createdAt < DAY_MS) return rec;
+  }
+  return undefined;
+}
+
+/** The web UI's start sequence: move to in_progress, open the chat, then create the attempt. */
+function startPlans(
+  task: Record<string, unknown>,
+  taskId: string,
+  id: string,
+  selection: Record<string, string>,
+  prompt: string,
+): PlannedRequest[] {
+  const projectId = task.projectId;
+  if (typeof projectId !== "string" || projectId === "") throw new Error("task has no projectId");
+  const text = prompt !== "" ? prompt : typeof task.description === "string" ? task.description.trim() : "";
+  if (text === "") {
+    throw usage("sandbox tasks start: the task has no description; pass --prompt TEXT");
+  }
+  const plans: PlannedRequest[] = [];
+  if (task.status !== "in_progress") {
+    plans.push({
+      method: "PUT",
+      path: "/api/tasks/reorder",
+      body: { taskId, status: "in_progress", position: -Date.now() },
+    });
+  }
+  if (task.chatInit !== true) {
+    plans.push({ method: "PATCH", path: `/api/tasks/${id}`, body: { chatInit: true } });
+  }
+  plans.push({
+    method: "POST",
+    path: "/api/attempts",
+    body: { taskId, prompt: text, projectId, ...selection },
+    extraHeaders: { "x-project-id": projectId },
+  });
+  return plans;
 }
 
 async function sendSandbox(

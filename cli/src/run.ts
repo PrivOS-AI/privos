@@ -40,6 +40,7 @@ import {
   sandboxTasksCreate,
   sandboxTasksDelete,
   sandboxTasksList,
+  sandboxTasksStart,
   sandboxTasksUpdate,
 } from "./sandbox.js";
 import { isUsage, usage } from "./usage.js";
@@ -132,6 +133,9 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, fetchImpl: typeof f
       return;
     case "sandbox tasks delete":
       await sandboxTasksDelete(p, stdout, stderr, fetchImpl);
+      return;
+    case "sandbox tasks start":
+      await sandboxTasksStart(p, stdout, stderr, fetchImpl);
       return;
     case "hub rooms list":
       await hubRoomsList(p, stdout, fetchImpl);

@@ -51,7 +51,14 @@ export interface Parsed {
   order: string;
   sort: string;
   showArchivedSubItems: string;
+  model: string;
+  provider: string;
+  llmProvider: string;
+  effort: string;
+  prompt: string;
+  before: string;
   includeSubItems: boolean;
+  force: boolean;
   positionals: string[];
   seen: Set<string>;
 }
@@ -68,6 +75,7 @@ const BOOL_FLAGS = new Set([
   "auto-start",
   "hook-template",
   "include-sub-items",
+  "force",
 ]);
 
 const VALUE_FLAGS = new Set([
@@ -111,6 +119,12 @@ const VALUE_FLAGS = new Set([
   "order",
   "sort",
   "show-archived-sub-items",
+  "model",
+  "provider",
+  "llm-provider",
+  "effort",
+  "prompt",
+  "before",
 ]);
 
 const REPEATABLE = new Set(["project", "member"]);
@@ -247,7 +261,14 @@ function emptyParsed(): Parsed {
     order: "",
     sort: "",
     showArchivedSubItems: "",
+    model: "",
+    provider: "",
+    llmProvider: "",
+    effort: "",
+    prompt: "",
+    before: "",
     includeSubItems: false,
+    force: false,
     positionals: [],
     seen: new Set(),
   };
@@ -339,6 +360,9 @@ function assignBool(p: Parsed, name: string): void {
       break;
     case "include-sub-items":
       p.includeSubItems = true;
+      break;
+    case "force":
+      p.force = true;
       break;
     default:
       throw usage(`unknown flag --${name}`);
@@ -471,6 +495,24 @@ function assignValue(p: Parsed, name: string, value: string): void {
     case "show-archived-sub-items":
       p.showArchivedSubItems = trimmed;
       break;
+    case "model":
+      p.model = trimmed;
+      break;
+    case "provider":
+      p.provider = trimmed;
+      break;
+    case "llm-provider":
+      p.llmProvider = trimmed;
+      break;
+    case "effort":
+      p.effort = trimmed;
+      break;
+    case "prompt":
+      p.prompt = trimmed;
+      break;
+    case "before":
+      p.before = trimmed;
+      break;
     default:
       throw usage(`unknown flag --${name}`);
   }
@@ -535,6 +577,21 @@ export function parsePosition(value: string): number {
 export function requireAbsolutePath(value: string): string {
   if (value.startsWith("/") || /^[A-Za-z]:\\/.test(value)) return value;
   throw usage("--path must be an absolute path");
+}
+
+const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
+const PROVIDERS = ["claude-cli", "claude-sdk", "privos-agent-sdk", "codex-cli", "antigravity-cli"] as const;
+
+/** The effort values the board's attempt route accepts. */
+export function parseEffort(value: string): string {
+  if ((EFFORTS as readonly string[]).includes(value)) return value;
+  throw usage(`--effort must be one of ${EFFORTS.join(", ")}`);
+}
+
+/** The runtime providers the board can launch. */
+export function parseProvider(value: string): string {
+  if ((PROVIDERS as readonly string[]).includes(value)) return value;
+  throw usage(`--provider must be one of ${PROVIDERS.join(", ")}`);
 }
 
 export function mutationMode(p: Parsed): "dry" | "send" {

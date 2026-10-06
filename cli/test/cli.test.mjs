@@ -275,7 +275,7 @@ describe("privos", { concurrency: false }, () => {
       ]);
       assert.equal(code, 0, stderr);
       assert.equal(called, false);
-      assert.match(stderr, /No request was sent/);
+      assert.match(stderr, /No write was sent/);
       assert.match(stderr, /--confirm/);
       const plan = JSON.parse(stdout);
       assert.equal(plan.dryRun, true);
@@ -672,7 +672,7 @@ describe("privos", { concurrency: false }, () => {
         isolatedList: true,
       });
       assert.equal(result.stdout.includes("token-1"), false);
-      assert.match(result.stderr, /No request was sent/);
+      assert.match(result.stderr, /No write was sent/);
 
       result = await runCLI(["hub", "lists", "create", "--confirm", "--dry-run", ...auth, "--room", "room1"]);
       assert.equal(result.code, 2);
@@ -867,6 +867,203 @@ describe("privos", { concurrency: false }, () => {
       assert.equal(result.stdout.includes("token-1"), false);
     } finally {
       await srv.close();
+    }
+  });
+
+  // A board fake for tasks start: records every request and serves one task.
+  async function startBoard(opts = {}) {
+    const state = {
+      task: { id: "t1", projectId: "p1", description: "Do it", status: "todo", chatInit: false, ...opts.task },
+      attempts: opts.attempts ?? [],
+      seen: [],
+    };
+    const srv = await serve(async (req, res) => {
+      const body = await readBody(req);
+      state.seen.push({
+        line: `${req.method} ${req.url}`,
+        method: req.method,
+        project: req.headers["x-project-id"] ?? "",
+        body: body === "" ? undefined : JSON.parse(body),
+      });
+      res.setHeader("content-type", "application/json");
+      if (req.method === "GET" && req.url === "/api/tasks/t1") {
+        res.end(JSON.stringify(state.task));
+      } else if (req.method === "GET" && req.url === "/api/tasks/t1/attempts") {
+        res.end(JSON.stringify({ attempts: state.attempts }));
+      } else if (req.method === "PUT" && req.url === "/api/tasks/reorder") {
+        res.end("{}");
+      } else if (req.method === "PATCH" && req.url === "/api/tasks/t1") {
+        res.end(JSON.stringify(state.task));
+      } else if (req.method === "POST" && req.url === "/api/attempts") {
+        res.writeHead(opts.attemptStatus ?? 201);
+        res.end(JSON.stringify(opts.attemptBody ?? { id: "a1" }));
+      } else {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: "not found" }));
+      }
+    });
+    state.srv = srv;
+    state.writes = () => state.seen.filter((r) => r.method !== "GET");
+    state.run = (...extra) =>
+      runCLI(["sandbox", "tasks", "start", "--url", srv.url, "--api-key", "k", "--id", "t1", ...extra]);
+    return state;
+  }
+
+  test("tasks start dry run reads the task and previews the UI write order", async () => {
+    clearCreds();
+    const b = await startBoard();
+    try {
+      const r = await b.run("--model", "claude-opus-5-5", "--provider", "claude-cli", "--effort", "high");
+      assert.equal(r.code, 0, r.stderr);
+      const plan = JSON.parse(r.stdout);
+      assert.equal(plan.dryRun, true);
+      assert.equal(plan.requests.length, 3);
+      const last = plan.requests[2];
+      assert.deepEqual(last.body, {
+        taskId: "t1",
+        prompt: "Do it",
+        projectId: "p1",
+        model: "claude-opus-5-5",
+        provider: "claude-cli",
+        effort: "high",
+      });
+      assert.equal(last.headers["x-project-id"], "p1");
+      assert.deepEqual(b.writes(), []);
+      assert.match(r.stderr, /No write was sent/);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start --confirm sends reorder, chatInit, then the attempt", async () => {
+    clearCreds();
+    const b = await startBoard();
+    try {
+      const r = await b.run("--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.deepEqual(b.seen.map((x) => x.line), [
+        "GET /api/tasks/t1",
+        "GET /api/tasks/t1/attempts",
+        "PUT /api/tasks/reorder",
+        "PATCH /api/tasks/t1",
+        "POST /api/attempts",
+      ]);
+      assert.equal(b.seen[4].project, "p1");
+      assert.deepEqual(b.seen[3].body, { chatInit: true });
+      assert.equal(b.seen[2].body.status, "in_progress");
+      assert.equal(JSON.parse(r.stdout).results.length, 3);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start skips reorder and chatInit when the task is ready", async () => {
+    clearCreds();
+    const b = await startBoard({ task: { status: "in_progress", chatInit: true } });
+    try {
+      const r = await b.run("--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.deepEqual(b.writes().map((x) => x.line), ["POST /api/attempts"]);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start refuses while a recent attempt is running", async () => {
+    clearCreds();
+    const b = await startBoard({ attempts: [{ id: "a0", status: "running", createdAt: Date.now() }] });
+    try {
+      const r = await b.run("--confirm");
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /still running/);
+      assert.deepEqual(b.writes(), []);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start ignores a running attempt older than 24 hours", async () => {
+    clearCreds();
+    const b = await startBoard({
+      attempts: [{ id: "a0", status: "running", createdAt: Date.now() - 25 * 3600 * 1000 }],
+    });
+    try {
+      const r = await b.run();
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).requests.length, 3);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start --force warns and continues past a running attempt", async () => {
+    clearCreds();
+    const b = await startBoard({ attempts: [{ id: "a0", status: "running", createdAt: Date.now() }] });
+    try {
+      const r = await b.run("--force");
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).requests.length, 3);
+      assert.match(r.stderr, /--force starts a second agent/);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start --prompt overrides the description", async () => {
+    clearCreds();
+    const b = await startBoard();
+    try {
+      const r = await b.run("--prompt", "Other");
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).requests[2].body.prompt, "Other");
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start usage errors send nothing", async () => {
+    clearCreds();
+    const b = await startBoard();
+    try {
+      for (const extra of [
+        ["--effort", "turbo"],
+        ["--provider", "claude-cli", "--llm-provider", "x", "--model", "m"],
+        ["--llm-provider", "x"],
+        ["--confirm", "--dry-run"],
+      ]) {
+        const r = await b.run(...extra);
+        assert.equal(r.code, 2, `${extra.join(" ")}: ${r.stderr}`);
+      }
+      assert.deepEqual(b.seen, []);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start needs --prompt when the task has no description", async () => {
+    clearCreds();
+    const b = await startBoard({ task: { description: "" } });
+    try {
+      const r = await b.run();
+      assert.equal(r.code, 2);
+      assert.match(r.stderr, /--prompt/);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start prints earlier results when the attempt POST fails", async () => {
+    clearCreds();
+    const b = await startBoard({ attemptStatus: 500, attemptBody: { error: "boom" } });
+    try {
+      const r = await b.run("--confirm");
+      assert.equal(r.code, 1);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.results.length, 2);
+      assert.equal(out.failed.index, 2);
+      assert.match(r.stderr, /HTTP 500: boom/);
+    } finally {
+      await b.srv.close();
     }
   });
 });

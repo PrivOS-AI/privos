@@ -15,6 +15,7 @@ Commands:
   sandbox tasks create
   sandbox tasks update
   sandbox tasks delete
+  sandbox tasks start
   hub rooms list
   hub rooms create
   hub rooms update
@@ -57,7 +58,7 @@ const sandboxHelp = `Usage:
 
 Commands:
   projects list|create|update|delete|start
-  tasks list|create|update|delete
+  tasks list|create|update|delete|start
 
 Environment (flags override):
   PRIVOS_SANDBOX_URL          Board base URL
@@ -147,6 +148,7 @@ Commands:
   create --project ID --title TITLE [--description TEXT] [--status STATUS]
   update --id ID [--title T] [--description TEXT] [--status STATUS] [--position N] [--chat-init true|false]
   delete --id ID
+  start --id ID [--model M] [--provider P | --llm-provider ID] [--effort E] [--prompt TEXT]
 
 Writes require --confirm. The default is a dry run.
 `;
@@ -197,6 +199,43 @@ const sandboxTasksDeleteHelp = `Usage:
   privos sandbox tasks delete --id ID
 
 DELETE /api/tasks/{id}. Dry run unless --confirm.
+`;
+
+const sandboxTasksStartHelp = `Usage:
+  privos sandbox tasks start --id ID [--model M] [--provider P | --llm-provider ID]
+                             [--effort E] [--prompt TEXT] [--force]
+
+Start an agent on a task the way the board UI does. The CLI first reads
+GET /api/tasks/{id} and GET /api/tasks/{id}/attempts, then sends, in order:
+  1. PUT /api/tasks/reorder {"taskId","status":"in_progress","position"}
+     only when the task is not already in_progress
+  2. PATCH /api/tasks/{id} {"chatInit":true} only when chatInit is not true
+  3. POST /api/attempts {"taskId","prompt","projectId",...} with the
+     x-project-id header
+
+The prompt defaults to the task description. --prompt replaces it.
+
+The two GETs are sent even in a dry run, so the preview holds the real
+projectId and prompt. No write is sent without --confirm.
+
+start refuses while an attempt created in the last 24 hours is still
+running. --force starts anyway; two agents then work on the same task at
+the same time.
+
+Flags:
+  --model M            Model id, for example claude-opus-5-5
+  --provider P         claude-cli, claude-sdk, privos-agent-sdk, codex-cli,
+                       antigravity-cli
+  --llm-provider ID    Custom catalog provider id (needs --model). Use the
+                       LLM_PROVIDER value from "privos sandbox models list".
+  --effort E           low, medium, high, xhigh, max, ultra. ultra is honoured
+                       only by Claude runtimes. Effort is not stored on the
+                       attempt, so reads show "effort": null.
+  --prompt TEXT        Prompt for the agent (default: the task description)
+  --force              Start even while a recent attempt is running
+
+A task with no previous run should get --model and --provider; otherwise
+the board picks its default. Dry run unless --confirm.
 `;
 
 const hubHelp = `Usage:
@@ -501,6 +540,7 @@ const HELP: Record<string, string> = {
   "sandbox tasks create": sandboxTasksCreateHelp,
   "sandbox tasks update": sandboxTasksUpdateHelp,
   "sandbox tasks delete": sandboxTasksDeleteHelp,
+  "sandbox tasks start": sandboxTasksStartHelp,
   hub: hubHelp,
   "hub rooms": hubRoomsHelp,
   "hub rooms list": hubRoomsListHelp,

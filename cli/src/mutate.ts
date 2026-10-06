@@ -32,19 +32,34 @@ export async function mutate(
   if (mode === "dry") {
     const requests = plans.map((plan) => preview(baseURL, plan, omittedHeaderNames));
     stdout.write(`${JSON.stringify({ dryRun: true, requests }, null, 2)}\n`);
-    stderr.write("Dry run only. No request was sent. Pass --confirm to send this request.\n");
+    stderr.write("Dry run only. No write was sent. Pass --confirm to send this request.\n");
     return;
   }
   const client = new Client(baseURL, authHeaders, timeoutMs, fetchImpl);
   const bodies: Buffer[] = [];
-  for (const plan of plans) {
-    bodies.push(
-      await client.send(plan.method, plan.path, {
-        body: plan.body,
-        extraHeaders: plan.extraHeaders,
-        allowMutation: true,
-      }),
-    );
+  for (let i = 0; i < plans.length; i++) {
+    const plan = plans[i]!;
+    try {
+      bodies.push(
+        await client.send(plan.method, plan.path, {
+          body: plan.body,
+          extraHeaders: plan.extraHeaders,
+          allowMutation: true,
+        }),
+      );
+    } catch (err) {
+      // Earlier writes already landed; print them so the operator can see what changed.
+      if (bodies.length > 0) {
+        const failed = {
+          index: i,
+          method: plan.method,
+          path: plan.path,
+          error: err instanceof Error ? err.message : String(err),
+        };
+        stdout.write(`${JSON.stringify({ results: bodies.map(parseBody), failed }, null, 2)}\n`);
+      }
+      throw err;
+    }
   }
   if (p.raw) {
     for (const body of bodies) {
@@ -57,16 +72,17 @@ export async function mutate(
     render(stdout, bodies[0]!, p.format, false, "", []);
     return;
   }
-  const results = bodies.map((body) => {
-    const text = body.toString("utf8").trim();
-    if (text === "") return null;
-    try {
-      return JSON.parse(text) as unknown;
-    } catch {
-      return text;
-    }
-  });
-  stdout.write(`${JSON.stringify({ results }, null, 2)}\n`);
+  stdout.write(`${JSON.stringify({ results: bodies.map(parseBody) }, null, 2)}\n`);
+}
+
+function parseBody(body: Buffer): unknown {
+  const text = body.toString("utf8").trim();
+  if (text === "") return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
 }
 
 function preview(baseURL: string, plan: PlannedRequest, omittedHeaderNames: string[]) {
