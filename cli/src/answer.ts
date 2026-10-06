@@ -15,7 +15,7 @@ interface PendingQuestion {
 
 /**
  * Answers the agent's pending question over socket.io ("question:answer"), as the board UI does.
- * The REST answer route needs a workspaceId that board-created attempts lack, so it is only a
+ * The REST answer route needs a workspaceId that this CLI does not send, so it is only a
  * best-effort log write here.
  */
 export async function sandboxTasksAnswer(

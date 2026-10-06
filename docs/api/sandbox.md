@@ -179,9 +179,10 @@ the same host and port as the HTTP API, at the default path `/socket.io/`.
   `null` or a question with another `toolUseId`.
 
 `POST /api/attempts/{id}/answer` with `{"projectId","toolUseId","questions","answers"}`
-also exists, but it requires a `workspaceId` equal to the attempt's. Attempts
-created by the board or the CLI have none, so it fails for them, and
-`POST /api/attempts/{id}/cancel` fails the same way. `privos sandbox tasks
+also exists, but it requires a `workspaceId` in the body equal to the
+attempt's, and answers HTTP 400 without one. Attempts created by the board or
+the CLI have no `workspaceId`, and neither the board UI nor the CLI sends one,
+so the call fails today. `POST /api/attempts/{id}/cancel` fails the same way. `privos sandbox tasks
 answer` sends the socket event first and then this REST call as a best-effort
 answer log, ignoring its errors.
 

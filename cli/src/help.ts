@@ -156,7 +156,7 @@ Commands:
          [--start [--model M] [--provider P | --llm-provider ID] [--effort E]]
   update --id ID [--title T] [--description TEXT] [--status STATUS] [--position N] [--chat-init true|false]
   delete --id ID
-  start --id ID [--model M] [--provider P | --llm-provider ID] [--effort E] [--prompt TEXT]
+  start --id ID [--model M] [--provider P | --llm-provider ID] [--effort E] [--prompt TEXT] [--force]
   attempts --id ID
   conversation --id ID [--limit N] [--before MS]
   running --id ID
@@ -316,8 +316,9 @@ The board acks a repeat of the same answer within 30 seconds without
 applying it again.
 
 After that the CLI also sends POST /api/attempts/{attemptId}/answer to save
-the answer log. This is best effort: the board accepts it only for hub
-attempts that carry a workspaceId, and any error is printed and ignored.
+the answer log. This is best effort: the route requires a workspaceId in
+the body, which the CLI does not send, so today it answers HTTP 400. The
+error is printed and ignored.
 Dry run unless --confirm.
 `;
 

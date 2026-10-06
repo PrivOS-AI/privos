@@ -251,10 +251,11 @@ emits `question:answer` with the API key as the handshake `auth.token`. Pass
 one `--answer` per question, in the order `tasks question` prints them. The
 answer counts as delivered when the board acks it, or, when no ack comes
 (sandbox mode), once a re-read shows the question gone. The CLI then also
-sends `POST /api/attempts/{id}/answer` to save the answer log. The REST answer
-route only accepts hub attempts that carry a `workspaceId`, so for board
-attempts this call fails; the error is printed and ignored. `tasks cancel` is
-not available for the same reason.
+sends `POST /api/attempts/{id}/answer` to save the answer log. That route
+requires a `workspaceId` in the body equal to the attempt's. The CLI does not
+send one (neither does the board UI), so today the call answers HTTP 400; the
+error is printed and ignored. `tasks cancel` is not available for the same
+reason.
 
 ```bash
 privos sandbox models list --format table
