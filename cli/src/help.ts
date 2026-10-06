@@ -646,7 +646,7 @@ const agentsA2aHelp = `Usage:
   privos agents a2a [--url URL] [--bot-key KEY] <command>
 
 Commands:
-  send --team TEAM_ID --room ROOM_ID --to BOT_ID,...|team --kind KIND [--text TEXT]
+  send [--team TEAM_ID] --room ROOM_ID --to BOT_ID,...|team --kind KIND [--text TEXT]
   members --team TEAM_ID
   chain --correlation C_ID
   stop --correlation C_ID
@@ -660,12 +660,15 @@ Environment (flags override):
   PRIVOS_BOT_KEY          The bot's key, sent as Authorization: Bearer
                           (X-User-Id and X-Auth-Token are not sent)
 
-The hub accepts a send only from a bot on the team's roster. A human personal
-access token is refused with a2a-sender-not-on-roster, and an agent bot cannot
-mint a personal access token, so use the bot key. A caller holding a bot key is
-treated as acting in that bot's own agent room, so a send to any other room is a
-cross-room call: the bot and the recipient need the same owner, and that owner
-must be a member of the room.
+The hub accepts a send only from an agent bot. A human personal access token is
+refused with a2a-sender-ineligible, and an agent bot cannot mint a personal
+access token, so use the bot key. A recipient is reachable when it has the same
+owner as the bot, when both are on an agent team (--team) whose room each owner
+enabled for streaming, or, in the room the bot acts in, when its owner enabled
+streaming and "Allow everyone using this Agent" there. A caller holding a bot
+key is treated as acting in that bot's own agent room, so a send to any other
+room is a cross-room call: allowed for the same owner (who must be a member of
+the room) and for a streaming team, refused otherwise (a2a-owner-mismatch).
 
 Pairing with privos subscribe: send with agents a2a send, then watch the
 results arrive in the team room with privos subscribe (a human credential: it
@@ -677,7 +680,7 @@ Global flags: --format json|table, --raw, --timeout SECONDS, --confirm, --dry-ru
 `;
 
 const agentsA2aSendHelp = `Usage:
-  privos agents a2a send --team TEAM_ID --room ROOM_ID --to BOT_ID,...|team --kind KIND
+  privos agents a2a send [--team TEAM_ID] --room ROOM_ID --to BOT_ID,...|team --kind KIND
                          [--correlation C_ID] [--reply-to M_ID] [--priority urgent|fyi]
                          [--text TEXT] [--data JSON_OBJECT] [--file-id ID]...
                          [--deadline-at ISO] [--message-id M_ID]
@@ -685,7 +688,8 @@ const agentsA2aSendHelp = `Usage:
 POST /api/v1/agents.a2a.send with one envelope. --room is the destination room
 (a room both bots are members of). --kind is task, result, message,
 needs-approval, question, or stop. --to is bot ids separated by commas, or the
-word team for every roster bot in the room except you.
+word team for every roster bot in the room except you (needs --team). --team
+names the agent team; leave it out for the same-owner and same-room paths.
 
 Omit --correlation to start a new chain: the hub mints the id and prints it in
 the response. Later messages carry it and the chain's team and room. --reply-to

@@ -199,7 +199,7 @@ set `PRIVOS_BOT_KEY` (or `--bot-key`) and the CLI sends
 `Authorization: Bearer <key>` and no `X-User-Id` or `X-Auth-Token`. Agent bots
 cannot mint personal access tokens, so a bot key is the only credential that
 works. A human personal access token is refused by the route with
-`a2a-sender-not-on-roster`, because only a bot on the team's roster may send.
+`a2a-sender-ineligible`, because only an agent bot may send.
 The key is never printed; a dry run shows `authorization` under
 `omittedHeaderNames`.
 
@@ -220,10 +220,15 @@ initiator may do it (`a2a-stop-not-allowed` otherwise); it reads the chain's tea
 and room with one GET unless you pass them. For `needs-approval` and `question`
 pass `--data '{"approval":{"action":"..."}}'` or `--data '{"options":["a","b"]}'`.
 
-A caller holding a bot key is treated as acting in that bot's own agent room,
-so a send to another room is a cross-room call: the sender and recipient need
-the same owner and that owner must be in the room. A refusal prints the hub's
-code first, for example `HTTP 403: a2a-owner-mismatch: ...`.
+A recipient is reachable when it has the same owner as the bot, when both are
+on an agent team (`--team`) whose room each owner enabled for streaming, or, in
+the room the bot acts in, when its owner enabled streaming and "Allow everyone
+using this Agent" there. `--team` is needed only for the team path and for
+`--to team`. A caller holding a bot key is treated as acting in that bot's own
+agent room, so a send to another room is a cross-room call: allowed for the
+same owner (who must be a member of the room) and for a streaming team, refused
+otherwise. A refusal prints the hub's code first, for example
+`HTTP 403: a2a-owner-mismatch: ...`.
 
 Pairing with `privos subscribe`: send with `agents a2a send`, then watch the
 results arrive in the team room with `privos subscribe --events message --rooms

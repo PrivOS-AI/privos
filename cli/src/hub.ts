@@ -627,10 +627,10 @@ export async function hubA2aSend(
 ): Promise<void> {
   forbidUnknown(p, "agents a2a send", A2A_SEND_FLAGS);
   const help = helpFor(["agents", "a2a", "send"]);
-  requireFlag(p, "team", p.team, help);
   requireFlag(p, "room", p.room, help);
   requireFlag(p, "to", p.to, help);
   requireFlag(p, "kind", p.kind, help);
+  if (p.to.trim() === "team" && p.kind !== "stop") requireFlag(p, "team", p.team, help);
   await sendHub(
     p,
     [{ method: "POST", path: "/api/v1/agents.a2a.send", body: a2aEnvelope(p, p.kind, p.to) }],
@@ -686,11 +686,11 @@ function a2aEnvelope(p: Parsed, kind: string, to: string): Record<string, unknow
     v: 1,
     kind,
     to: ids,
-    teamId: p.team,
     roomId: p.room,
     messageId: p.messageId !== "" ? p.messageId : `m_${randomBytes(12).toString("base64url")}`,
     text: p.text,
   };
+  if (p.team !== "") body.teamId = p.team;
   if (p.correlation !== "") body.correlationId = p.correlation;
   if (p.replyTo !== "") body.replyTo = p.replyTo;
   if (p.priority !== "") body.priority = p.priority;

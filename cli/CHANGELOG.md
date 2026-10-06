@@ -16,7 +16,7 @@ All notable changes to `@privos_ai/privos`. Full command notes live in
   mint personal access tokens. `privos subscribe` and `hub inbox` still need a
   human token.
 - A hub refusal that carries an `errorType` (the a2a codes) prints it first:
-  `HTTP 403: a2a-sender-not-on-roster: ...`.
+  `HTTP 403: a2a-sender-ineligible: ...`.
 
 ## 0.4.1 — 2026-10-06
 

@@ -1505,8 +1505,11 @@ describe("privos", { concurrency: false }, () => {
     assert.match(result.stderr, /hub user id is required/);
     result = await runCLI(["agents", "a2a", "--help"]);
     assert.equal(result.code, 0);
-    assert.match(result.stdout, /a2a-sender-not-on-roster/);
+    assert.match(result.stdout, /a2a-sender-ineligible/);
     assert.match(result.stdout, /privos subscribe/);
+    result = await runCLI(["agents", "a2a", "send", ...auth, "--room", "R1", "--to", "team", "--kind", "message"]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /required flag --team/);
     result = await runCLI(["agents", "a2a"]);
     assert.equal(result.code, 2);
   });
