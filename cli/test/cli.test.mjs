@@ -13,6 +13,7 @@ const CRED_KEYS = [
   "PRIVOS_ROOT_URL",
   "PRIVOS_HUB_USER_ID",
   "PRIVOS_HUB_AUTH_TOKEN",
+  "PRIVOS_BOT_KEY",
 ];
 
 function clearCreds() {
@@ -1411,6 +1412,209 @@ describe("privos", { concurrency: false }, () => {
       assert.match(r.stderr, /no pending question/);
     } finally {
       await b.close();
+    }
+  });
+  test("agents a2a authenticates with the bot key and sends the envelope", async () => {
+    clearCreds();
+    const seen = [];
+    const srv = await serve(async (req, res) => {
+      const body = await readBody(req);
+      seen.push({
+        method: req.method,
+        url: req.url,
+        authorization: req.headers.authorization,
+        user: req.headers["x-user-id"],
+        token: req.headers["x-auth-token"],
+        body,
+      });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ success: true, correlationId: "c_new", messages: [] }));
+    });
+    const auth = ["--url", srv.url, "--bot-key", "bot-secret-key"];
+    const base = ["agents", "a2a", "send", ...auth, "--team", "T1", "--room", "R1", "--to", "b1, b2", "--kind", "task"];
+    try {
+      let result = await runCLI([...base, "--text", "Draft the brief", "--priority", "urgent", "--data", '{"k":1}', "--file-id", "f1", "--file-id", "f2"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen.length, 0);
+      const plan = JSON.parse(result.stdout);
+      assert.equal(plan.dryRun, true);
+      assert.equal(plan.requests[0].url, `${srv.url}/api/v1/agents.a2a.send`);
+      assert.deepEqual(plan.requests[0].omittedHeaderNames, ["authorization"]);
+      assert.equal(result.stdout.includes("bot-secret-key"), false);
+      assert.equal(result.stderr.includes("bot-secret-key"), false);
+      const envelope = plan.requests[0].body;
+      assert.match(envelope.messageId, /^m_[A-Za-z0-9_-]{16}$/);
+      assert.deepEqual({ ...envelope, messageId: "m_x" }, {
+        v: 1, kind: "task", to: ["b1", "b2"], teamId: "T1", roomId: "R1", messageId: "m_x",
+        text: "Draft the brief", priority: "urgent", data: { k: 1 }, fileIds: ["f1", "f2"],
+      });
+      assert.equal("correlationId" in envelope, false);
+
+      result = await runCLI([
+        ...base, "--confirm", "--correlation", "c_1", "--reply-to", "m_abcdefgh", "--message-id", "m_retry-key-1", "--text", "t",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(JSON.parse(result.stdout).correlationId, "c_new");
+      assert.equal(seen[0].method, "POST");
+      assert.equal(seen[0].url, "/api/v1/agents.a2a.send");
+      assert.equal(seen[0].authorization, "Bearer bot-secret-key");
+      assert.equal(seen[0].user, undefined);
+      assert.equal(seen[0].token, undefined);
+      assert.deepEqual(JSON.parse(seen[0].body), {
+        v: 1, kind: "task", to: ["b1", "b2"], teamId: "T1", roomId: "R1", messageId: "m_retry-key-1",
+        text: "t", correlationId: "c_1", replyTo: "m_abcdefgh",
+      });
+
+      // PRIVOS_BOT_KEY works without the flag; to=team stays the literal string.
+      process.env.PRIVOS_BOT_KEY = "env-bot-key";
+      process.env.PRIVOS_HUB_URL = srv.url;
+      result = await runCLI(["agents", "a2a", "send", "--team", "T1", "--room", "R1", "--to", "team", "--kind", "message", "--confirm"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[1].authorization, "Bearer env-bot-key");
+      assert.equal(JSON.parse(seen[1].body).to, "team");
+    } finally {
+      clearCreds();
+      await srv.close();
+    }
+  });
+
+  test("agents a2a rejects bad input before any request", async () => {
+    clearCreds();
+    const auth = ["--url", "http://127.0.0.1:9", "--bot-key", "k"];
+    const send = ["agents", "a2a", "send", ...auth, "--team", "T1", "--room", "R1", "--to", "b1", "--kind", "task"];
+    let result = await runCLI([...send.slice(0, -1), "approval"]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--kind must be one of/);
+    result = await runCLI([...send, "--message-id", "bad id"]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--message-id must match/);
+    result = await runCLI([...send, "--priority", "now"]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--priority must be urgent or fyi/);
+    result = await runCLI([...send, "--data", "[1]"]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--data must be a JSON object/);
+    result = await runCLI(["agents", "a2a", "send", ...auth, "--team", "T1", "--kind", "task", "--to", "b1"]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /required flag --room/);
+    result = await runCLI([...send, "--user-id", "u"]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--bot-key cannot be combined/);
+    result = await runCLI(["agents", "a2a", "members", "--url", "http://127.0.0.1:9", "--team", "T1"]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /hub user id is required/);
+    result = await runCLI(["agents", "a2a", "--help"]);
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, /a2a-sender-not-on-roster/);
+    assert.match(result.stdout, /privos subscribe/);
+    result = await runCLI(["agents", "a2a"]);
+    assert.equal(result.code, 2);
+  });
+
+  test("agents a2a members, chain, and stop", async () => {
+    clearCreds();
+    const seen = [];
+    const rows = [{ _id: "r1", teamId: "T9", roomId: "R9", hop: 1, kind: "task", fromUsername: "ops", toUsername: "dev", status: "delivered", ts: "t" }];
+    const srv = await serve(async (req, res) => {
+      const body = await readBody(req);
+      seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization, body });
+      res.setHeader("content-type", "application/json");
+      if (req.url.startsWith("/api/v1/agents.a2a.team.members")) {
+        res.end(JSON.stringify({ teamId: "T1", roomId: "R1", members: [{ botId: "b1", username: "ops", runtime: "sandbox", isMainBot: true }] }));
+      } else if (req.url.startsWith("/api/v1/agents.a2a.list")) {
+        res.end(JSON.stringify({ rows, count: 1, offset: 0, total: 1 }));
+      } else {
+        res.end(JSON.stringify({ success: true, correlationId: "c_1", messages: [] }));
+      }
+    });
+    const auth = ["--url", srv.url, "--bot-key", "k1"];
+    try {
+      let result = await runCLI(["agents", "a2a", "members", ...auth, "--team", "T1", "--format", "table"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stdout, /b1\s+ops\s+sandbox\s+true/);
+      assert.equal(seen[0].url, "/api/v1/agents.a2a.team.members?teamId=T1");
+      assert.equal(seen[0].authorization, "Bearer k1");
+
+      result = await runCLI(["agents", "a2a", "chain", ...auth, "--correlation", "c_1", "--count", "5"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(JSON.parse(result.stdout).rows[0]._id, "r1");
+      assert.equal(seen[1].url, "/api/v1/agents.a2a.list?correlationId=c_1&count=5");
+
+      // Dry run: the chain is read, nothing is written.
+      result = await runCLI(["agents", "a2a", "stop", ...auth, "--correlation", "c_1"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen.length, 3);
+      const plan = JSON.parse(result.stdout).requests[0];
+      assert.equal(plan.body.kind, "stop");
+      assert.equal(plan.body.to, "team");
+      assert.equal(plan.body.teamId, "T9");
+      assert.equal(plan.body.roomId, "R9");
+      assert.equal(plan.body.correlationId, "c_1");
+
+      result = await runCLI(["agents", "a2a", "stop", ...auth, "--correlation", "c_1", "--confirm", "--text", "done"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[4].method, "POST");
+      assert.equal(seen[4].url, "/api/v1/agents.a2a.send");
+      assert.equal(JSON.parse(seen[4].body).text, "done");
+
+      rows.length = 0;
+      result = await runCLI(["agents", "a2a", "stop", ...auth, "--correlation", "c_gone"]);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /no rows found for chain c_gone/);
+
+      // Team and room given: no lookup.
+      const before = seen.length;
+      result = await runCLI(["agents", "a2a", "stop", ...auth, "--correlation", "c_1", "--team", "T2", "--room", "R2"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen.length, before);
+      assert.equal(JSON.parse(result.stdout).requests[0].body.roomId, "R2");
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("agents a2a prints the hub error code and never the key", async () => {
+    clearCreds();
+    const srv = await serve(async (req, res) => {
+      await readBody(req);
+      res.statusCode = 403;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ success: false, error: "Sender is not on the team roster", errorType: "a2a-sender-not-on-roster" }));
+    });
+    try {
+      const result = await runCLI([
+        "agents", "a2a", "send", "--url", srv.url, "--bot-key", "super-secret-key",
+        "--team", "T1", "--room", "R1", "--to", "b1", "--kind", "task", "--text", "x", "--confirm",
+      ]);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /HTTP 403: a2a-sender-not-on-roster: Sender is not on the team roster/);
+      assert.equal(result.stderr.includes("super-secret-key"), false);
+      assert.equal(result.stdout.includes("super-secret-key"), false);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("hub reads accept the bot key and subscribe ignores it", async () => {
+    clearCreds();
+    const seen = [];
+    const srv = await serve(async (req, res) => {
+      seen.push({ url: req.url, authorization: req.headers.authorization, user: req.headers["x-user-id"] });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ update: [] }));
+    });
+    try {
+      const result = await runCLI(["hub", "rooms", "list", "--url", srv.url, "--bot-key", "k2"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[0].authorization, "Bearer k2");
+      assert.equal(seen[0].user, undefined);
+      process.env.PRIVOS_BOT_KEY = "k3";
+      const inbox = await runCLI(["hub", "inbox", "--since", "2026-10-06T00:00:00Z", "--url", srv.url]);
+      assert.equal(inbox.code, 2);
+      assert.match(inbox.stderr, /hub user id is required/);
+    } finally {
+      clearCreds();
+      await srv.close();
     }
   });
 });

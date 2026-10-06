@@ -16,6 +16,7 @@ import {
   type Parsed,
 } from "./parse.js";
 import { render, type Column, type Out } from "./render.js";
+import { randomBytes } from "node:crypto";
 import { usage } from "./usage.js";
 
 const roomColumns: Column[] = [
@@ -44,11 +45,11 @@ const itemColumns: Column[] = [
   { header: "STAGE", path: ["stageId"] },
 ];
 
-const HUB_READ = ["url", "user-id", "auth-token"];
-const HUB_AUTH = ["url", "user-id", "auth-token", "confirm", "dry-run"];
+const HUB_READ = ["url", "user-id", "auth-token", "bot-key"];
+const HUB_AUTH = [...HUB_READ, "confirm", "dry-run"];
 
 export async function hubRoomsList(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
-  forbidUnknown(p, "hub rooms list", ["url", "user-id", "auth-token", "updated-since"]);
+  forbidUnknown(p, "hub rooms list", [...HUB_READ, "updated-since"]);
   const query = new URLSearchParams();
   if (p.updatedSince !== "") query.set("updatedSince", p.updatedSince);
   await hubGet(p, stdout, fetchImpl, "/api/v1/rooms.get", query, "update", roomColumns);
@@ -56,9 +57,7 @@ export async function hubRoomsList(p: Parsed, stdout: Out, fetchImpl: typeof fet
 
 export async function hubMessagesList(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
   forbidUnknown(p, "hub messages list", [
-    "url",
-    "user-id",
-    "auth-token",
+    ...HUB_READ,
     "room",
     "kind",
     "count",
@@ -84,10 +83,18 @@ async function hubGet(
   unwrap: string,
   cols: Column[],
 ): Promise<void> {
-  const cfg = resolveHub(p.url, p.userId, p.authToken);
-  const client = new Client(cfg.baseURL, hubHeaders(cfg.userId, cfg.authToken), timeoutSeconds(p) * 1000, fetchImpl);
-  const body = await client.get(path, query);
+  const body = await hubClient(p, fetchImpl).get(path, query);
   render(stdout, body, p.format, p.raw, unwrap, cols);
+}
+
+function hubClient(p: Parsed, fetchImpl: typeof fetch): Client {
+  const cfg = resolveHub(p.url, p.userId, p.authToken, p.botKey);
+  return new Client(
+    cfg.baseURL,
+    hubHeaders(cfg.userId, cfg.authToken, cfg.botKey),
+    timeoutSeconds(p) * 1000,
+    fetchImpl,
+  );
 }
 
 export async function hubRoomsCreate(
@@ -224,13 +231,13 @@ async function sendHub(
   stderr: Out,
   fetchImpl: typeof fetch,
 ): Promise<void> {
-  const cfg = resolveHub(p.url, p.userId, p.authToken);
+  const cfg = resolveHub(p.url, p.userId, p.authToken, p.botKey);
   await mutate(
     p,
     plans,
     cfg.baseURL,
-    hubHeaders(cfg.userId, cfg.authToken),
-    ["x-auth-token", "x-user-id"],
+    hubHeaders(cfg.userId, cfg.authToken, cfg.botKey),
+    cfg.botKey !== "" ? ["authorization"] : ["x-auth-token", "x-user-id"],
     stdout,
     stderr,
     fetchImpl,
@@ -553,4 +560,155 @@ function rejectTable(p: Parsed, cmd: string): void {
   if (p.format === "table") {
     throw usage(`${cmd} prints JSON; --format table applies to list reads`);
   }
+}
+
+const a2aMemberColumns: Column[] = [
+  { header: "BOT", path: ["botId"] },
+  { header: "USERNAME", path: ["username"] },
+  { header: "RUNTIME", path: ["runtime"] },
+  { header: "MAIN", path: ["isMainBot"] },
+];
+
+const a2aRowColumns: Column[] = [
+  { header: "TS", path: ["ts"] },
+  { header: "HOP", path: ["hop"] },
+  { header: "KIND", path: ["kind"] },
+  { header: "FROM", path: ["fromUsername"] },
+  { header: "TO", path: ["toUsername"] },
+  { header: "STATUS", path: ["status"] },
+  { header: "ID", path: ["_id"] },
+];
+
+const A2A_KINDS = ["task", "result", "message", "needs-approval", "question", "stop"];
+const A2A_MESSAGE_ID = /^m_[A-Za-z0-9_-]{8,64}$/;
+const A2A_SEND_FLAGS = [
+  ...HUB_AUTH,
+  "team",
+  "room",
+  "to",
+  "kind",
+  "correlation",
+  "reply-to",
+  "priority",
+  "deadline-at",
+  "text",
+  "data",
+  "file-id",
+  "message-id",
+];
+
+export async function hubA2aMembers(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
+  forbidUnknown(p, "agents a2a members", [...HUB_READ, "team"]);
+  requireFlag(p, "team", p.team, helpFor(["agents", "a2a", "members"]));
+  const query = new URLSearchParams({ teamId: p.team });
+  await hubGet(p, stdout, fetchImpl, "/api/v1/agents.a2a.team.members", query, "members", a2aMemberColumns);
+}
+
+export async function hubA2aChain(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
+  forbidUnknown(p, "agents a2a chain", [...HUB_READ, "correlation", "count", "offset"]);
+  requireFlag(p, "correlation", p.correlation, helpFor(["agents", "a2a", "chain"]));
+  await hubGet(p, stdout, fetchImpl, "/api/v1/agents.a2a.list", a2aChainQuery(p), "rows", a2aRowColumns);
+}
+
+function a2aChainQuery(p: Parsed): URLSearchParams {
+  const query = new URLSearchParams({ correlationId: p.correlation });
+  const count = optionalNonNegative("--count", p.count);
+  const offset = optionalNonNegative("--offset", p.offset);
+  if (count !== undefined) query.set("count", String(count));
+  if (offset !== undefined) query.set("offset", String(offset));
+  return query;
+}
+
+export async function hubA2aSend(
+  p: Parsed,
+  stdout: Out,
+  stderr: Out,
+  fetchImpl: typeof fetch,
+): Promise<void> {
+  forbidUnknown(p, "agents a2a send", A2A_SEND_FLAGS);
+  const help = helpFor(["agents", "a2a", "send"]);
+  requireFlag(p, "team", p.team, help);
+  requireFlag(p, "room", p.room, help);
+  requireFlag(p, "to", p.to, help);
+  requireFlag(p, "kind", p.kind, help);
+  await sendHub(
+    p,
+    [{ method: "POST", path: "/api/v1/agents.a2a.send", body: a2aEnvelope(p, p.kind, p.to) }],
+    stdout,
+    stderr,
+    fetchImpl,
+  );
+}
+
+/**
+ * A bot stops a chain with kind "stop" through the send route (initiator only). The team and
+ * room come from the chain unless given, read with one GET that is safe in a dry run.
+ */
+export async function hubA2aStop(
+  p: Parsed,
+  stdout: Out,
+  stderr: Out,
+  fetchImpl: typeof fetch,
+): Promise<void> {
+  forbidUnknown(p, "agents a2a stop", [...HUB_AUTH, "correlation", "team", "room", "text"]);
+  requireFlag(p, "correlation", p.correlation, helpFor(["agents", "a2a", "stop"]));
+  let { team, room } = p;
+  if (team === "" || room === "") {
+    const body = await hubClient(p, fetchImpl).get("/api/v1/agents.a2a.list", a2aChainQuery(p));
+    const rows = (JSON.parse(body.toString("utf8") || "{}") as { rows?: Array<Record<string, unknown>> }).rows;
+    const first = Array.isArray(rows) ? rows[0] : undefined;
+    if (first === undefined) throw new Error(`no rows found for chain ${p.correlation}`);
+    team = team || String(first.teamId ?? "");
+    room = room || String(first.roomId ?? "");
+  }
+  const stop = { ...p, team, room };
+  await sendHub(
+    stop,
+    [{ method: "POST", path: "/api/v1/agents.a2a.send", body: a2aEnvelope(stop, "stop", "team") }],
+    stdout,
+    stderr,
+    fetchImpl,
+  );
+}
+
+/** The agents.a2a.send body. The hub mints correlationId on a new chain, so it is omitted then. */
+function a2aEnvelope(p: Parsed, kind: string, to: string): Record<string, unknown> {
+  if (!A2A_KINDS.includes(kind)) throw usage(`--kind must be one of ${A2A_KINDS.join(", ")}`);
+  const ids = to === "team" ? "team" : to.split(",").map((id) => id.trim()).filter((id) => id !== "");
+  if (ids.length === 0) throw usage("--to needs bot ids separated by commas, or the word team");
+  if (p.priority !== "" && p.priority !== "urgent" && p.priority !== "fyi") {
+    throw usage("--priority must be urgent or fyi");
+  }
+  if (p.messageId !== "" && !A2A_MESSAGE_ID.test(p.messageId)) {
+    throw usage("--message-id must match ^m_[A-Za-z0-9_-]{8,64}$");
+  }
+  const body: Record<string, unknown> = {
+    v: 1,
+    kind,
+    to: ids,
+    teamId: p.team,
+    roomId: p.room,
+    messageId: p.messageId !== "" ? p.messageId : `m_${randomBytes(12).toString("base64url")}`,
+    text: p.text,
+  };
+  if (p.correlation !== "") body.correlationId = p.correlation;
+  if (p.replyTo !== "") body.replyTo = p.replyTo;
+  if (p.priority !== "") body.priority = p.priority;
+  if (p.deadlineAt !== "") body.deadlineAt = p.deadlineAt;
+  if (p.data !== "") body.data = parseJSONObject("data", p.data);
+  if (p.fileIds.length > 0) body.fileIds = p.fileIds;
+  return body;
+}
+
+function parseJSONObject(flagName: string, value: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value) as unknown;
+  } catch {
+    throw usage(`--${flagName} must be a JSON object`);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw usage(`--${flagName} must be a JSON object`);
+  }
+  return parsed as Record<string, unknown>;
 }

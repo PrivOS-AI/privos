@@ -17,6 +17,16 @@ export interface Parsed {
   apiKey: string;
   userId: string;
   authToken: string;
+  botKey: string;
+  team: string;
+  to: string;
+  correlation: string;
+  replyTo: string;
+  priority: string;
+  deadlineAt: string;
+  data: string;
+  messageId: string;
+  fileIds: string[];
   projects: string[];
   members: string[];
   answers: string[];
@@ -107,6 +117,16 @@ const VALUE_FLAGS = new Set([
   "api-key",
   "user-id",
   "auth-token",
+  "bot-key",
+  "team",
+  "to",
+  "correlation",
+  "reply-to",
+  "priority",
+  "deadline-at",
+  "data",
+  "message-id",
+  "file-id",
   "project",
   "status",
   "limit",
@@ -161,7 +181,7 @@ const VALUE_FLAGS = new Set([
   "webhook-header",
 ]);
 
-const REPEATABLE = new Set(["project", "member", "answer"]);
+const REPEATABLE = new Set(["project", "member", "answer", "file-id"]);
 
 export function commandOf(p: Parsed): string {
   return p.positionals.join(" ");
@@ -261,6 +281,16 @@ function emptyParsed(): Parsed {
     apiKey: "",
     userId: "",
     authToken: "",
+    botKey: "",
+    team: "",
+    to: "",
+    correlation: "",
+    replyTo: "",
+    priority: "",
+    deadlineAt: "",
+    data: "",
+    messageId: "",
+    fileIds: [],
     projects: [],
     members: [],
     answers: [],
@@ -458,6 +488,36 @@ function assignValue(p: Parsed, name: string, value: string): void {
       break;
     case "auth-token":
       p.authToken = trimmed;
+      break;
+    case "bot-key":
+      p.botKey = trimmed;
+      break;
+    case "team":
+      p.team = trimmed;
+      break;
+    case "to":
+      p.to = trimmed;
+      break;
+    case "correlation":
+      p.correlation = trimmed;
+      break;
+    case "reply-to":
+      p.replyTo = trimmed;
+      break;
+    case "priority":
+      p.priority = trimmed;
+      break;
+    case "deadline-at":
+      p.deadlineAt = trimmed;
+      break;
+    case "data":
+      p.data = trimmed;
+      break;
+    case "message-id":
+      p.messageId = trimmed;
+      break;
+    case "file-id":
+      p.fileIds.push(trimmed);
       break;
     case "project":
       p.projects.push(trimmed);

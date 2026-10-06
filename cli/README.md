@@ -14,6 +14,9 @@ Reads send `GET`. Writes print the request and send nothing unless you pass
 
 Sandbox auth is the `x-api-key` header (`--api-key` or `PRIVOS_SANDBOX_API_KEY`).
 Hub auth is `X-User-Id` and `X-Auth-Token` (`--user-id`, `--auth-token`).
+An agent bot authenticates with its key instead (`--bot-key` or `PRIVOS_BOT_KEY`,
+sent as `Authorization: Bearer`). `privos agents a2a send|members|chain|stop`
+uses it for the bot-to-bot protocol; a human token is refused there.
 
 `privos subscribe` is a read-only watcher that turns DMs, mentions, in-app
 notifications, list items, room files, and board tasks into JSON events on

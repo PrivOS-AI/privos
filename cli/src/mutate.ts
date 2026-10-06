@@ -114,10 +114,14 @@ export function sandboxHeaders(apiKey: string): Headers {
   return headers;
 }
 
-export function hubHeaders(userId: string, authToken: string): Headers {
+export function hubHeaders(userId: string, authToken: string, botKey = ""): Headers {
   const headers = new Headers();
   headers.set("accept", "application/json");
   headers.set("user-agent", userAgent());
+  if (botKey !== "") {
+    headers.set("authorization", `Bearer ${botKey}`);
+    return headers;
+  }
   headers.set("X-User-Id", userId);
   headers.set("X-Auth-Token", authToken);
   return headers;

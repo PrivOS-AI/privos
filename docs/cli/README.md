@@ -68,6 +68,7 @@ process list. Do not put credentials in the URL.
 | Hub base URL | `--url` | `PRIVOS_HUB_URL`, then `PRIVOS_ROOT_URL` | request URL |
 | Hub user id | `--user-id` | `PRIVOS_HUB_USER_ID`, then `PRIVOS_USER_ID` | `X-User-Id` |
 | Hub auth token | `--auth-token` | `PRIVOS_HUB_AUTH_TOKEN`, then `PRIVOS_PAT` | `X-Auth-Token` |
+| Hub bot key | `--bot-key` | `PRIVOS_BOT_KEY` | `Authorization: Bearer` (replaces the two rows above; `hub` and `agents` commands only) |
 
 `API_ACCESS_KEY` is the name the board container uses. `SANDBOX_API_KEY` is
 the name `install.sh` writes into the stack `.env`. `PRIVOS_ROOT_URL` is the
@@ -150,6 +151,12 @@ privos hub items reorder --id ITEM_ID --order N
 
 privos hub inbox --since ISO|EPOCH_MS [--events dm,mention,message,notification] [--rooms LIST] [--include-text]
 
+privos agents a2a send --team TEAM_ID --room ROOM_ID --to BOT_ID,...|team --kind KIND [--correlation C_ID] [--reply-to M_ID]
+                       [--priority urgent|fyi] [--text TEXT] [--data JSON_OBJECT] [--file-id ID ...] [--deadline-at ISO] [--message-id M_ID]
+privos agents a2a members --team TEAM_ID
+privos agents a2a chain --correlation C_ID [--count N] [--offset N]
+privos agents a2a stop --correlation C_ID [--team TEAM_ID] [--room ROOM_ID] [--text REASON]
+
 privos subscribe [--events LIST] [--rooms LIST] [--lists LIST|all] [--projects BOARD:PID,...]
                  [--priority-from USERS] [--mode realtime|poll] [--state PATH]
                  [--stdout | --dry-run | --confirm] [--include-text] [--exclude-bots] [--group-mentions]
@@ -182,6 +189,46 @@ a JSON array, and its response includes `defaultStage` for
 `hub items create --stage`. Field CRUD (`lists.addField`, `lists.fields.*`),
 `items.bulkUpdateOrder`, and `stages.*` are not commands. The CLI does not
 call `/api/v1/bot/lists` or MCP `privos.lists.*`. See [Hub API](../api/hub.md).
+
+## Agent bot-to-bot messages
+
+`privos agents a2a` drives the hub's bot-to-bot protocol (`agents.a2a.send`,
+`agents.a2a.team.members`, `agents.a2a.list`) from outside the sandbox, for
+example from an external master agent. It authenticates as an agent bot:
+set `PRIVOS_BOT_KEY` (or `--bot-key`) and the CLI sends
+`Authorization: Bearer <key>` and no `X-User-Id` or `X-Auth-Token`. Agent bots
+cannot mint personal access tokens, so a bot key is the only credential that
+works. A human personal access token is refused by the route with
+`a2a-sender-not-on-roster`, because only a bot on the team's roster may send.
+The key is never printed; a dry run shows `authorization` under
+`omittedHeaderNames`.
+
+```bash
+export PRIVOS_HUB_URL=https://hub.example.com PRIVOS_BOT_KEY=...
+privos agents a2a members --team TEAM_ID --format table
+privos agents a2a send --team TEAM_ID --room ROOM_ID --to BOT_ID --kind task \
+  --text "Summarize the open incidents" --confirm     # prints the new correlationId
+privos agents a2a chain --correlation C_ID --format table
+privos agents a2a stop --correlation C_ID --confirm
+```
+
+Sends and stops are a dry run until `--confirm`, like every write. `send`
+generates the `messageId` (the idempotency key); pass `--message-id` only to
+retry the same send. Omit `--correlation` to start a chain; the hub mints the id
+and returns it. `stop` sends `kind: stop` to the team and only the chain
+initiator may do it (`a2a-stop-not-allowed` otherwise); it reads the chain's team
+and room with one GET unless you pass them. For `needs-approval` and `question`
+pass `--data '{"approval":{"action":"..."}}'` or `--data '{"options":["a","b"]}'`.
+
+A caller holding a bot key is treated as acting in that bot's own agent room,
+so a send to another room is a cross-room call: the sender and recipient need
+the same owner and that owner must be in the room. A refusal prints the hub's
+code first, for example `HTTP 403: a2a-owner-mismatch: ...`.
+
+Pairing with `privos subscribe`: send with `agents a2a send`, then watch the
+results arrive in the team room with `privos subscribe --events message --rooms
+ROOM_ID` using your own human credentials (subscribe reads the room as you and
+does not use the bot key). Read one chain on demand with `agents a2a chain`.
 
 ## Subscribe
 
