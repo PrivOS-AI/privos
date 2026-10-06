@@ -69,6 +69,10 @@ describe("privos", { concurrency: false }, () => {
       "messages send",
       "lists create",
       "items move",
+      "tasks start",
+      "tasks attempts",
+      "tasks conversation",
+      "models list",
       "--confirm",
       "dry run",
       "docs/cli/README.md",
@@ -1166,6 +1170,75 @@ describe("privos", { concurrency: false }, () => {
       assert.deepEqual(b.seen.map((x) => x.line), ["POST /api/tasks"]);
     } finally {
       await b.srv.close();
+    }
+  });
+
+  test("task reads and models list send only GETs", async () => {
+    clearCreds();
+    const seen = [];
+    const question = { attemptId: "a1", toolUseId: "tu1", questions: [{ question: "Which DB?" }] };
+    const srv = await serve(async (req, res) => {
+      seen.push({ method: req.method, url: req.url });
+      res.setHeader("content-type", "application/json");
+      const path = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+      if (path === "/api/tasks/t1/attempts") {
+        res.end(JSON.stringify({ attempts: [{ id: "a1", status: "completed", model: "m", provider: "claude-cli", createdAt: 1 }] }));
+      } else if (path === "/api/tasks/t1/conversation") {
+        res.end(JSON.stringify({ messages: [], hasMore: false }));
+      } else if (path === "/api/tasks/t1/running-attempt") {
+        res.end(JSON.stringify({ attempt: null, messages: [], backgroundShells: [] }));
+      } else if (path === "/api/tasks/t1/pending-question") {
+        res.end(JSON.stringify({ question }));
+      } else if (path === "/api/models") {
+        res.end(JSON.stringify({
+          models: [{ id: "claude-opus-5-5", name: "Opus", runtimeProvider: "claude-cli", llmProviderId: "lp1", supportedEffortLevels: ["low", "high"] }],
+          current: "claude-opus-5-5",
+        }));
+      } else {
+        res.writeHead(404);
+        res.end("{}");
+      }
+    });
+    const cli = (...args) => runCLI(["sandbox", ...args, "--url", srv.url, "--api-key", "k"]);
+    try {
+      let r = await cli("tasks", "attempts", "--id", "t1", "--format", "table");
+      assert.equal(r.code, 0, r.stderr);
+      assert.match(r.stdout, /ID\s+STATUS/);
+      assert.match(r.stdout, /\ba1\b/);
+
+      r = await cli("tasks", "conversation", "--id", "t1", "--limit", "5", "--before", "1700000000000");
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(seen.at(-1).url, "/api/tasks/t1/conversation?limit=5&before=1700000000000");
+
+      let count = seen.length;
+      r = await cli("tasks", "conversation", "--id", "t1", "--limit", "-1");
+      assert.equal(r.code, 2);
+      assert.equal(seen.length, count);
+
+      r = await cli("tasks", "running", "--id", "t1");
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).attempt, null);
+      count = seen.length;
+      r = await cli("tasks", "running", "--id", "t1", "--format", "table");
+      assert.equal(r.code, 2);
+      assert.equal(seen.length, count);
+
+      r = await cli("tasks", "question", "--id", "t1");
+      assert.equal(r.code, 0, r.stderr);
+      assert.deepEqual(JSON.parse(r.stdout).question, question);
+
+      r = await cli("models", "list", "--format", "table");
+      assert.equal(r.code, 0, r.stderr);
+      assert.match(r.stdout, /RUNTIME/);
+      assert.match(r.stdout, /LLM_PROVIDER/);
+      assert.match(r.stdout, /claude-opus-5-5/);
+
+      r = await runCLI(["sandbox", "models"]);
+      assert.equal(r.code, 2);
+
+      assert.ok(seen.every((x) => x.method === "GET"));
+    } finally {
+      await srv.close();
     }
   });
 });

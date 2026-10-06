@@ -16,6 +16,11 @@ Commands:
   sandbox tasks update
   sandbox tasks delete
   sandbox tasks start
+  sandbox tasks attempts
+  sandbox tasks conversation
+  sandbox tasks running
+  sandbox tasks question
+  sandbox models list
   hub rooms list
   hub rooms create
   hub rooms update
@@ -58,7 +63,8 @@ const sandboxHelp = `Usage:
 
 Commands:
   projects list|create|update|delete|start
-  tasks list|create|update|delete|start
+  tasks list|create|update|delete|start|attempts|conversation|running|question
+  models list
 
 Environment (flags override):
   PRIVOS_SANDBOX_URL          Board base URL
@@ -150,6 +156,10 @@ Commands:
   update --id ID [--title T] [--description TEXT] [--status STATUS] [--position N] [--chat-init true|false]
   delete --id ID
   start --id ID [--model M] [--provider P | --llm-provider ID] [--effort E] [--prompt TEXT]
+  attempts --id ID
+  conversation --id ID [--limit N] [--before MS]
+  running --id ID
+  question --id ID
 
 Writes require --confirm. The default is a dry run.
 `;
@@ -247,6 +257,59 @@ Flags:
 
 A task with no previous run should get --model and --provider; otherwise
 the board picks its default. Dry run unless --confirm.
+`;
+
+const sandboxTasksAttemptsHelp = `Usage:
+  privos sandbox tasks attempts --id ID
+
+List a task's attempts from GET /api/tasks/{id}/attempts. This read has no
+side effects. --format table shows ID, STATUS, MODEL, PROVIDER and CREATED.
+Effort is not stored on attempts, so JSON shows "effort": null.
+`;
+
+const sandboxTasksConversationHelp = `Usage:
+  privos sandbox tasks conversation --id ID [--limit N] [--before MS]
+
+Read one page of a task's conversation from GET /api/tasks/{id}/conversation.
+--limit sets the page size. --before takes a timestamp in milliseconds and
+returns older messages. JSON only.
+`;
+
+const sandboxTasksRunningHelp = `Usage:
+  privos sandbox tasks running --id ID
+
+Read the running attempt, its messages and background shells from
+GET /api/tasks/{id}/running-attempt. "attempt" is null when nothing runs.
+JSON only.
+
+Warning: the board also cleans up when you call this. It fails running attempts older than 24 hours and moves an in_progress task with no running attempt to in_review. Use "tasks attempts" for a read with no side effects.
+`;
+
+const sandboxTasksQuestionHelp = `Usage:
+  privos sandbox tasks question --id ID
+
+Read the agent's pending question from GET /api/tasks/{id}/pending-question.
+"question" is null when the agent is not waiting. The questions print in
+order; each needs one --answer, in the same order. JSON only.
+`;
+
+const sandboxModelsHelp = `Usage:
+  privos sandbox models <command>
+
+Commands:
+  list
+`;
+
+const sandboxModelsListHelp = `Usage:
+  privos sandbox models list
+
+List the board's model catalog from GET /api/models. --format table shows
+ID, NAME, RUNTIME, LLM_PROVIDER and EFFORTS.
+
+Pass the RUNTIME value to --provider and the ID to --model on "tasks start".
+Rows with an LLM_PROVIDER are custom catalog models: start them with
+--llm-provider <that id> --model <ID> instead of --provider. EFFORTS is
+empty for many built-in rows; the board UI derives those levels itself.
 `;
 
 const hubHelp = `Usage:
@@ -552,6 +615,12 @@ const HELP: Record<string, string> = {
   "sandbox tasks update": sandboxTasksUpdateHelp,
   "sandbox tasks delete": sandboxTasksDeleteHelp,
   "sandbox tasks start": sandboxTasksStartHelp,
+  "sandbox tasks attempts": sandboxTasksAttemptsHelp,
+  "sandbox tasks conversation": sandboxTasksConversationHelp,
+  "sandbox tasks running": sandboxTasksRunningHelp,
+  "sandbox tasks question": sandboxTasksQuestionHelp,
+  "sandbox models": sandboxModelsHelp,
+  "sandbox models list": sandboxModelsListHelp,
   hub: hubHelp,
   "hub rooms": hubRoomsHelp,
   "hub rooms list": hubRoomsListHelp,

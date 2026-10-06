@@ -32,14 +32,19 @@ import {
 } from "./parse.js";
 import type { Out } from "./render.js";
 import {
+  sandboxModelsList,
   sandboxProjectsCreate,
   sandboxProjectsDelete,
   sandboxProjectsList,
   sandboxProjectsStart,
   sandboxProjectsUpdate,
+  sandboxTasksAttempts,
+  sandboxTasksConversation,
   sandboxTasksCreate,
   sandboxTasksDelete,
   sandboxTasksList,
+  sandboxTasksQuestion,
+  sandboxTasksRunning,
   sandboxTasksStart,
   sandboxTasksUpdate,
 } from "./sandbox.js";
@@ -101,6 +106,7 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, fetchImpl: typeof f
     case "sandbox":
     case "sandbox projects":
     case "sandbox tasks":
+    case "sandbox models":
     case "hub":
     case "hub rooms":
     case "hub messages":
@@ -136,6 +142,21 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, fetchImpl: typeof f
       return;
     case "sandbox tasks start":
       await sandboxTasksStart(p, stdout, stderr, fetchImpl);
+      return;
+    case "sandbox tasks attempts":
+      await sandboxTasksAttempts(p, stdout, fetchImpl);
+      return;
+    case "sandbox tasks conversation":
+      await sandboxTasksConversation(p, stdout, fetchImpl);
+      return;
+    case "sandbox tasks running":
+      await sandboxTasksRunning(p, stdout, fetchImpl);
+      return;
+    case "sandbox tasks question":
+      await sandboxTasksQuestion(p, stdout, fetchImpl);
+      return;
+    case "sandbox models list":
+      await sandboxModelsList(p, stdout, fetchImpl);
       return;
     case "hub rooms list":
       await hubRoomsList(p, stdout, fetchImpl);

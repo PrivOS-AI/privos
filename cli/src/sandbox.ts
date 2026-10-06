@@ -48,6 +48,67 @@ export async function sandboxTasksList(p: Parsed, stdout: Out, fetchImpl: typeof
   await sandboxGet(p, stdout, fetchImpl, "/api/tasks", query, "", taskColumns);
 }
 
+const attemptColumns: Column[] = [
+  { header: "ID", path: ["id"] },
+  { header: "STATUS", path: ["status"] },
+  { header: "MODEL", path: ["model"] },
+  { header: "PROVIDER", path: ["provider"] },
+  { header: "CREATED", path: ["createdAt"] },
+];
+
+const modelColumns: Column[] = [
+  { header: "ID", path: ["id"] },
+  { header: "NAME", path: ["name"] },
+  { header: "RUNTIME", path: ["runtimeProvider"] },
+  { header: "LLM_PROVIDER", path: ["llmProviderId"] },
+  { header: "EFFORTS", path: ["supportedEffortLevels"] },
+];
+
+export async function sandboxTasksAttempts(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
+  forbidUnknown(p, "sandbox tasks attempts", ["url", "api-key", "id"]);
+  requireFlag(p, "id", p.id, helpFor(["sandbox", "tasks", "attempts"]));
+  const id = pathSegment("id", p.id);
+  await sandboxGet(p, stdout, fetchImpl, `/api/tasks/${id}/attempts`, undefined, "attempts", attemptColumns);
+}
+
+export async function sandboxTasksConversation(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
+  forbidUnknown(p, "sandbox tasks conversation", ["url", "api-key", "id", "limit", "before"]);
+  requireFlag(p, "id", p.id, helpFor(["sandbox", "tasks", "conversation"]));
+  const id = pathSegment("id", p.id);
+  jsonOnly(p, "sandbox tasks conversation");
+  const limit = optionalNonNegative("--limit", p.limit);
+  const before = optionalNonNegative("--before", p.before);
+  const query = new URLSearchParams();
+  if (limit !== undefined && limit > 0) query.set("limit", String(limit));
+  if (before !== undefined && before > 0) query.set("before", String(before));
+  await sandboxGet(p, stdout, fetchImpl, `/api/tasks/${id}/conversation`, query, "", []);
+}
+
+export async function sandboxTasksRunning(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
+  forbidUnknown(p, "sandbox tasks running", ["url", "api-key", "id"]);
+  requireFlag(p, "id", p.id, helpFor(["sandbox", "tasks", "running"]));
+  const id = pathSegment("id", p.id);
+  jsonOnly(p, "sandbox tasks running");
+  await sandboxGet(p, stdout, fetchImpl, `/api/tasks/${id}/running-attempt`, undefined, "", []);
+}
+
+export async function sandboxTasksQuestion(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
+  forbidUnknown(p, "sandbox tasks question", ["url", "api-key", "id"]);
+  requireFlag(p, "id", p.id, helpFor(["sandbox", "tasks", "question"]));
+  const id = pathSegment("id", p.id);
+  jsonOnly(p, "sandbox tasks question");
+  await sandboxGet(p, stdout, fetchImpl, `/api/tasks/${id}/pending-question`, undefined, "", []);
+}
+
+export async function sandboxModelsList(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
+  forbidUnknown(p, "sandbox models list", ["url", "api-key"]);
+  await sandboxGet(p, stdout, fetchImpl, "/api/models", undefined, "models", modelColumns);
+}
+
+function jsonOnly(p: Parsed, cmd: string): void {
+  if (p.format === "table") throw usage(`${cmd} prints JSON; --format table is not supported`);
+}
+
 async function sandboxGet(
   p: Parsed,
   stdout: Out,
