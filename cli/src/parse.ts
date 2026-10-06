@@ -61,6 +61,21 @@ export interface Parsed {
   includeSubItems: boolean;
   force: boolean;
   start: boolean;
+  stdout: boolean;
+  includeText: boolean;
+  groupMentions: boolean;
+  excludeBots: boolean;
+  events: string;
+  rooms: string;
+  lists: string;
+  projectsSpec: string;
+  priorityFrom: string;
+  mode: string;
+  state: string;
+  since: string;
+  webhookURLEnv: string;
+  webhookKeyEnv: string;
+  webhookHeader: string;
   positionals: string[];
   seen: Set<string>;
 }
@@ -79,6 +94,10 @@ const BOOL_FLAGS = new Set([
   "include-sub-items",
   "force",
   "start",
+  "stdout",
+  "include-text",
+  "group-mentions",
+  "exclude-bots",
 ]);
 
 const VALUE_FLAGS = new Set([
@@ -129,6 +148,17 @@ const VALUE_FLAGS = new Set([
   "prompt",
   "before",
   "answer",
+  "events",
+  "rooms",
+  "lists",
+  "projects",
+  "priority-from",
+  "mode",
+  "state",
+  "since",
+  "webhook-url-env",
+  "webhook-key-env",
+  "webhook-header",
 ]);
 
 const REPEATABLE = new Set(["project", "member", "answer"]);
@@ -275,6 +305,21 @@ function emptyParsed(): Parsed {
     includeSubItems: false,
     force: false,
     start: false,
+    stdout: false,
+    includeText: false,
+    groupMentions: false,
+    excludeBots: false,
+    events: "",
+    rooms: "",
+    lists: "",
+    projectsSpec: "",
+    priorityFrom: "",
+    mode: "",
+    state: "",
+    since: "",
+    webhookURLEnv: "",
+    webhookKeyEnv: "",
+    webhookHeader: "",
     positionals: [],
     seen: new Set(),
   };
@@ -372,6 +417,18 @@ function assignBool(p: Parsed, name: string): void {
       break;
     case "start":
       p.start = true;
+      break;
+    case "stdout":
+      p.stdout = true;
+      break;
+    case "include-text":
+      p.includeText = true;
+      break;
+    case "group-mentions":
+      p.groupMentions = true;
+      break;
+    case "exclude-bots":
+      p.excludeBots = true;
       break;
     default:
       throw usage(`unknown flag --${name}`);
@@ -524,6 +581,39 @@ function assignValue(p: Parsed, name: string, value: string): void {
       break;
     case "answer":
       p.answers.push(trimmed);
+      break;
+    case "events":
+      p.events = trimmed;
+      break;
+    case "rooms":
+      p.rooms = trimmed;
+      break;
+    case "lists":
+      p.lists = trimmed;
+      break;
+    case "projects":
+      p.projectsSpec = trimmed;
+      break;
+    case "priority-from":
+      p.priorityFrom = trimmed;
+      break;
+    case "mode":
+      p.mode = trimmed;
+      break;
+    case "state":
+      p.state = trimmed;
+      break;
+    case "since":
+      p.since = trimmed;
+      break;
+    case "webhook-url-env":
+      p.webhookURLEnv = trimmed;
+      break;
+    case "webhook-key-env":
+      p.webhookKeyEnv = trimmed;
+      break;
+    case "webhook-header":
+      p.webhookHeader = trimmed;
       break;
     default:
       throw usage(`unknown flag --${name}`);

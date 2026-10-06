@@ -1,7 +1,7 @@
 import { usage } from "./usage.js";
 
 /** Printed by `privos version`. */
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
 
 export interface SandboxConfig {
   baseURL: string;
@@ -89,8 +89,8 @@ export function resolveSandbox(flagURL: string, flagKey: string): SandboxConfig 
 
 /**
  * URL: --url, then PRIVOS_HUB_URL, then PRIVOS_ROOT_URL.
- * User: --user-id, then PRIVOS_HUB_USER_ID.
- * Token: --auth-token, then PRIVOS_HUB_AUTH_TOKEN.
+ * User: --user-id, then PRIVOS_HUB_USER_ID, then PRIVOS_USER_ID.
+ * Token: --auth-token, then PRIVOS_HUB_AUTH_TOKEN, then PRIVOS_PAT.
  */
 export function resolveHub(flagURL: string, flagUser: string, flagToken: string): HubConfig {
   const rawURL = first(flagURL, getenv("PRIVOS_HUB_URL"), getenv("PRIVOS_ROOT_URL"));
@@ -106,16 +106,16 @@ export function resolveHub(flagURL: string, flagUser: string, flagToken: string)
     const msg = err instanceof Error ? err.message : String(err);
     throw usage(msg.startsWith("hub ") ? msg : `hub ${msg}`);
   }
-  const user = first(flagUser, getenv("PRIVOS_HUB_USER_ID"));
+  const user = first(flagUser, getenv("PRIVOS_HUB_USER_ID"), getenv("PRIVOS_USER_ID"));
   if (user === "") {
     throw usage(
-      "hub user id is required.\nSet --user-id or PRIVOS_HUB_USER_ID.\nSend it as the X-User-Id header.",
+      "hub user id is required.\nSet --user-id, PRIVOS_HUB_USER_ID, or PRIVOS_USER_ID.\nSend it as the X-User-Id header.",
     );
   }
-  const token = first(flagToken, getenv("PRIVOS_HUB_AUTH_TOKEN"));
+  const token = first(flagToken, getenv("PRIVOS_HUB_AUTH_TOKEN"), getenv("PRIVOS_PAT"));
   if (token === "") {
     throw usage(
-      "hub auth token is required.\nSet --auth-token or PRIVOS_HUB_AUTH_TOKEN.\nSend it as the X-Auth-Token header.",
+      "hub auth token is required.\nSet --auth-token, PRIVOS_HUB_AUTH_TOKEN, or PRIVOS_PAT.\nSend it as the X-Auth-Token header.",
     );
   }
   rejectNewlines("hub user id", user);
