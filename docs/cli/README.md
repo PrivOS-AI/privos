@@ -307,6 +307,88 @@ Known limits:
   busy room after a long outage, or `/api/tasks` for a very large board)
   fails that source with `response exceeds 8388608 bytes` until it shrinks.
 
+### Running subscribe as a service
+
+Install a pinned version so the service does not change under you, and keep
+the credentials in a file only you can read:
+
+```bash
+npm install -g @privos_ai/privos@0.4.0
+command -v privos   # the absolute path used below
+
+mkdir -p ~/.config/privos && chmod 700 ~/.config/privos
+install -m 600 /dev/null ~/.config/privos/subscribe.env
+```
+
+`~/.config/privos/subscribe.env` (plain `KEY=value`, no `export`, no quotes):
+
+```bash
+PRIVOS_HUB_URL=https://hub.example.com
+PRIVOS_HUB_USER_ID=your-user-id
+PRIVOS_HUB_AUTH_TOKEN=your-personal-access-token
+GROK_MASTER_WEBHOOK_URL=https://receiver.example.com/privos
+GROK_MASTER_WEBHOOK_KEY=your-webhook-key
+GROK_MASTER_WEBHOOK_HEADER=x-webhook-key
+# only with --projects: td is the default board, any other alias X reads X_URL / X_API_ACCESS_KEY
+PRIVOS_SANDBOX_URL=http://127.0.0.1:8556
+PRIVOS_SANDBOX_API_KEY=your-sandbox-api-key
+TVIBE_URL=https://tvibe.example.com
+TVIBE_API_ACCESS_KEY=your-tvibe-api-key
+```
+
+Run it once in the foreground first, without `--confirm`, and check the
+batches it prints. Then start the service with `--confirm`.
+
+**systemd `--user`.** `~/.config/systemd/user/privos-subscribe.service`:
+
+```ini
+[Unit]
+Description=privos subscribe (read-only PrivOS event watcher)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/privos/subscribe.env
+# use the path printed by `command -v privos`
+ExecStart=/usr/local/bin/privos subscribe --confirm --exclude-bots --projects td:PROJECT_ID
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now privos-subscribe
+loginctl enable-linger "$USER"     # keep it running after you log out
+journalctl --user -u privos-subscribe -f
+privos subscribe status
+```
+
+If `privos` lives under nvm, `ExecStart` must use that absolute path, and
+`privos` must find a matching `node`. Set
+`Environment=PATH=/home/you/.nvm/versions/node/v22.x/bin:/usr/bin` in the unit.
+
+**pm2.** pm2 records the environment at start, so load the file first:
+
+```bash
+set -a; . ~/.config/privos/subscribe.env; set +a
+pm2 start "$(command -v privos)" --name privos-subscribe --kill-timeout 10000 \
+  -- subscribe --confirm --exclude-bots --projects td:PROJECT_ID
+pm2 save            # pm2 startup (once) restores it after a reboot
+pm2 logs privos-subscribe
+privos subscribe status
+```
+
+After changing the env file, run `pm2 delete privos-subscribe` and start it
+again. `pm2 restart` keeps the old environment unless you pass `--update-env`.
+
+Run only one of the two. The state lock already lets only one daemon use a
+state file. Exit code `1` after a webhook 4xx means the URL, key, or header is
+wrong; fix the env file instead of letting it restart. Both recipes restart
+it after 30 s (systemd) or at once (pm2), and the outbox is kept.
+
 `privos hub inbox --since` runs the same hub poll once (messages and in-app
 notifications since the given time), prints envelopes, writes
 `cursor <ISO time>` to stderr for the next run, and exits. It keeps no state.
