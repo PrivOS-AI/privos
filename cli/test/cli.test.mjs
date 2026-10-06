@@ -1066,4 +1066,106 @@ describe("privos", { concurrency: false }, () => {
       await b.srv.close();
     }
   });
+
+  async function createBoard(created = { id: "t9", projectId: "p1" }) {
+    const seen = [];
+    const srv = await serve(async (req, res) => {
+      const body = await readBody(req);
+      seen.push({
+        line: `${req.method} ${req.url}`,
+        project: req.headers["x-project-id"] ?? "",
+        body: body === "" ? undefined : JSON.parse(body),
+      });
+      res.setHeader("content-type", "application/json");
+      if (req.method === "POST" && req.url === "/api/tasks") {
+        res.writeHead(201);
+        res.end(JSON.stringify(created));
+      } else if (req.method === "PATCH" && req.url === "/api/tasks/t9") {
+        res.end(JSON.stringify(created));
+      } else if (req.method === "POST" && req.url === "/api/attempts") {
+        res.writeHead(201);
+        res.end(JSON.stringify({ id: "a9" }));
+      } else {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: "not found" }));
+      }
+    });
+    const run = (...extra) =>
+      runCLI([
+        "sandbox", "tasks", "create", "--url", srv.url, "--api-key", "k",
+        "--project", "p1", "--title", "X", ...extra,
+      ]);
+    return { srv, seen, run };
+  }
+
+  test("tasks create --start dry run previews three requests and sends nothing", async () => {
+    clearCreds();
+    const b = await createBoard();
+    try {
+      const r = await b.run("--description", "Run it", "--start", "--model", "m", "--effort", "low");
+      assert.equal(r.code, 0, r.stderr);
+      const { requests } = JSON.parse(r.stdout);
+      assert.equal(requests.length, 3);
+      assert.equal(requests[0].body.status, "in_progress");
+      assert.ok(requests[1].url.endsWith("/api/tasks/{taskId from response 1}"));
+      assert.equal(requests[2].body.taskId, "{taskId from response 1}");
+      assert.equal(requests[2].body.prompt, "Run it");
+      assert.equal(requests[2].body.effort, "low");
+      assert.deepEqual(b.seen, []);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks create --start --confirm starts the new task by its id", async () => {
+    clearCreds();
+    const b = await createBoard();
+    try {
+      const r = await b.run("--description", "Run it", "--start", "--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.deepEqual(b.seen.map((x) => x.line), [
+        "POST /api/tasks",
+        "PATCH /api/tasks/t9",
+        "POST /api/attempts",
+      ]);
+      assert.equal(b.seen[2].body.taskId, "t9");
+      assert.equal(b.seen[0].project, "p1");
+      assert.equal(b.seen[2].project, "p1");
+      assert.equal(JSON.parse(r.stdout).results.length, 3);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks create --start usage errors", async () => {
+    clearCreds();
+    const b = await createBoard();
+    try {
+      for (const extra of [
+        ["--start"],
+        ["--description", "d", "--model", "m"],
+        ["--description", "d", "--start", "--status", "todo"],
+      ]) {
+        const r = await b.run(...extra);
+        assert.equal(r.code, 2, `${extra.join(" ")}: ${r.stderr}`);
+      }
+      assert.deepEqual(b.seen, []);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks create --start reports a create response with no id", async () => {
+    clearCreds();
+    const b = await createBoard({});
+    try {
+      const r = await b.run("--description", "Run it", "--start", "--confirm");
+      assert.equal(r.code, 1);
+      assert.equal(JSON.parse(r.stdout).failed.index, 1);
+      assert.match(r.stderr, /no task id/);
+      assert.deepEqual(b.seen.map((x) => x.line), ["POST /api/tasks"]);
+    } finally {
+      await b.srv.close();
+    }
+  });
 });

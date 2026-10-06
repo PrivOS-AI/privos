@@ -197,6 +197,11 @@ export async function sandboxTasksCreate(
     "title",
     "description",
     "status",
+    "start",
+    "model",
+    "provider",
+    "llm-provider",
+    "effort",
   ]);
   if (p.projects.length !== 1) {
     throw usage(
@@ -209,20 +214,54 @@ export async function sandboxTasksCreate(
   const body: Record<string, string> = { projectId, title: p.title };
   if (p.description !== "") body.description = p.description;
   if (p.status !== "") body.status = p.status;
-  await sendSandbox(
-    p,
-    [
-      {
-        method: "POST",
-        path: "/api/tasks",
-        body,
-        extraHeaders: { "x-project-id": projectId },
-      },
-    ],
-    stdout,
-    stderr,
-    fetchImpl,
-  );
+  if (!p.start && (p.model !== "" || p.provider !== "" || p.llmProvider !== "" || p.effort !== "")) {
+    throw usage("--model, --provider, --llm-provider and --effort need --start");
+  }
+  const plans: PlannedRequest[] = [
+    {
+      method: "POST",
+      path: "/api/tasks",
+      body,
+      extraHeaders: { "x-project-id": projectId },
+    },
+  ];
+  if (p.start) {
+    if (p.description === "") {
+      throw usage("sandbox tasks create --start: pass --description; it becomes the agent prompt");
+    }
+    if (p.status !== "" && p.status !== "in_progress") {
+      throw usage("--start creates the task in in_progress; drop --status");
+    }
+    const selection = attemptSelection(p);
+    body.status = "in_progress";
+    const chatInit = (taskId: string): PlannedRequest => ({
+      method: "PATCH",
+      path: `/api/tasks/${taskId}`,
+      body: { chatInit: true },
+    });
+    const attempt = (taskId: string): PlannedRequest => ({
+      method: "POST",
+      path: "/api/attempts",
+      body: { taskId, prompt: p.description, projectId, ...selection },
+      extraHeaders: { "x-project-id": projectId },
+    });
+    plans.push(
+      { ...chatInit(NEW_TASK_ID), prepare: (prior) => chatInit(encodeURIComponent(newTaskId(prior))) },
+      { ...attempt(NEW_TASK_ID), prepare: (prior) => attempt(newTaskId(prior)) },
+    );
+  }
+  await sendSandbox(p, plans, stdout, stderr, fetchImpl);
+}
+
+/** Dry-run placeholder for the id that POST /api/tasks returns. */
+const NEW_TASK_ID = "{taskId from response 1}";
+
+function newTaskId(prior: unknown[]): string {
+  const id = (prior[0] as Record<string, unknown> | null | undefined)?.id;
+  if (typeof id !== "string" || !/^[\w.-]+$/.test(id)) {
+    throw new Error("POST /api/tasks response has no task id");
+  }
+  return id;
 }
 
 export async function sandboxTasksUpdate(

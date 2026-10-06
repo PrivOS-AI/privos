@@ -146,6 +146,7 @@ const sandboxTasksHelp = `Usage:
 Commands:
   list
   create --project ID --title TITLE [--description TEXT] [--status STATUS]
+         [--start [--model M] [--provider P | --llm-provider ID] [--effort E]]
   update --id ID [--title T] [--description TEXT] [--status STATUS] [--position N] [--chat-init true|false]
   delete --id ID
   start --id ID [--model M] [--provider P | --llm-provider ID] [--effort E] [--prompt TEXT]
@@ -174,11 +175,21 @@ Environment: PRIVOS_SANDBOX_URL, PRIVOS_SANDBOX_API_KEY
 
 const sandboxTasksCreateHelp = `Usage:
   privos sandbox tasks create --project ID --title TITLE [--description TEXT] [--status STATUS]
+         [--start [--model M] [--provider P | --llm-provider ID] [--effort E]]
 
 POST /api/tasks with a JSON body and the x-project-id header set to --project.
 The board client sends projectId, title, and optionally description and status.
 status is omitted unless --status is set. Known board statuses: todo,
 in_progress, in_review, done, cancelled. Dry run unless --confirm.
+
+--start also starts an agent on the new task, in three requests:
+  1. POST /api/tasks with "status":"in_progress"
+  2. PATCH /api/tasks/{new id} {"chatInit":true}
+  3. POST /api/attempts {"taskId","prompt","projectId",...} with x-project-id
+--description is required and becomes the agent prompt. The new id is only
+known after request 1, so the dry run shows {taskId from response 1} where
+it will go. --model, --provider, --llm-provider and --effort work as in
+"privos sandbox tasks start" and need --start.
 `;
 
 const sandboxTasksUpdateHelp = `Usage:

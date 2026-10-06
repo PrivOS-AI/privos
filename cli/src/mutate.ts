@@ -9,6 +9,8 @@ export interface PlannedRequest {
   path: string;
   body?: unknown;
   extraHeaders?: Record<string, string>;
+  /** Rebuilds the request from earlier responses just before sending. The dry run shows the template. */
+  prepare?: (prior: unknown[]) => PlannedRequest;
 }
 
 const SECRET_HEADERS = new Set(["x-api-key", "x-user-id", "x-auth-token"]);
@@ -38,8 +40,9 @@ export async function mutate(
   const client = new Client(baseURL, authHeaders, timeoutMs, fetchImpl);
   const bodies: Buffer[] = [];
   for (let i = 0; i < plans.length; i++) {
-    const plan = plans[i]!;
+    let plan = plans[i]!;
     try {
+      if (plan.prepare) plan = plan.prepare(bodies.map(parseBody));
       bodies.push(
         await client.send(plan.method, plan.path, {
           body: plan.body,

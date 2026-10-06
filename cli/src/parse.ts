@@ -59,6 +59,7 @@ export interface Parsed {
   before: string;
   includeSubItems: boolean;
   force: boolean;
+  start: boolean;
   positionals: string[];
   seen: Set<string>;
 }
@@ -76,6 +77,7 @@ const BOOL_FLAGS = new Set([
   "hook-template",
   "include-sub-items",
   "force",
+  "start",
 ]);
 
 const VALUE_FLAGS = new Set([
@@ -269,6 +271,7 @@ function emptyParsed(): Parsed {
     before: "",
     includeSubItems: false,
     force: false,
+    start: false,
     positionals: [],
     seen: new Set(),
   };
@@ -363,6 +366,9 @@ function assignBool(p: Parsed, name: string): void {
       break;
     case "force":
       p.force = true;
+      break;
+    case "start":
+      p.start = true;
       break;
     default:
       throw usage(`unknown flag --${name}`);
