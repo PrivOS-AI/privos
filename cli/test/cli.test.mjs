@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { describe, test } from "node:test";
+import { Server } from "socket.io";
 import { run } from "../dist/run.js";
 
 const CRED_KEYS = [
@@ -69,6 +70,10 @@ describe("privos", { concurrency: false }, () => {
       "messages send",
       "lists create",
       "items move",
+      "tasks start",
+      "tasks attempts",
+      "tasks conversation",
+      "models list",
       "--confirm",
       "dry run",
       "docs/cli/README.md",
@@ -275,7 +280,7 @@ describe("privos", { concurrency: false }, () => {
       ]);
       assert.equal(code, 0, stderr);
       assert.equal(called, false);
-      assert.match(stderr, /No request was sent/);
+      assert.match(stderr, /No write was sent/);
       assert.match(stderr, /--confirm/);
       const plan = JSON.parse(stdout);
       assert.equal(plan.dryRun, true);
@@ -672,7 +677,7 @@ describe("privos", { concurrency: false }, () => {
         isolatedList: true,
       });
       assert.equal(result.stdout.includes("token-1"), false);
-      assert.match(result.stderr, /No request was sent/);
+      assert.match(result.stderr, /No write was sent/);
 
       result = await runCLI(["hub", "lists", "create", "--confirm", "--dry-run", ...auth, "--room", "room1"]);
       assert.equal(result.code, 2);
@@ -867,6 +872,545 @@ describe("privos", { concurrency: false }, () => {
       assert.equal(result.stdout.includes("token-1"), false);
     } finally {
       await srv.close();
+    }
+  });
+
+  // A board fake for tasks start: records every request and serves one task.
+  async function startBoard(opts = {}) {
+    const state = {
+      task: { id: "t1", projectId: "p1", description: "Do it", status: "todo", chatInit: false, ...opts.task },
+      attempts: opts.attempts ?? [],
+      seen: [],
+    };
+    const srv = await serve(async (req, res) => {
+      const body = await readBody(req);
+      state.seen.push({
+        line: `${req.method} ${req.url}`,
+        method: req.method,
+        project: req.headers["x-project-id"] ?? "",
+        body: body === "" ? undefined : JSON.parse(body),
+      });
+      res.setHeader("content-type", "application/json");
+      if (req.method === "GET" && req.url === "/api/tasks/t1") {
+        res.end(JSON.stringify(state.task));
+      } else if (req.method === "GET" && req.url === "/api/tasks/t1/attempts") {
+        res.end(JSON.stringify({ attempts: state.attempts }));
+      } else if (req.method === "PUT" && req.url === "/api/tasks/reorder") {
+        res.end("{}");
+      } else if (req.method === "PATCH" && req.url === "/api/tasks/t1") {
+        res.end(JSON.stringify(state.task));
+      } else if (req.method === "POST" && req.url === "/api/attempts") {
+        res.writeHead(opts.attemptStatus ?? 201);
+        res.end(JSON.stringify(opts.attemptBody ?? { id: "a1" }));
+      } else {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: "not found" }));
+      }
+    });
+    state.srv = srv;
+    state.writes = () => state.seen.filter((r) => r.method !== "GET");
+    state.run = (...extra) =>
+      runCLI(["sandbox", "tasks", "start", "--url", srv.url, "--api-key", "k", "--id", "t1", ...extra]);
+    return state;
+  }
+
+  test("tasks start dry run reads the task and previews the UI write order", async () => {
+    clearCreds();
+    const b = await startBoard();
+    try {
+      const r = await b.run("--model", "claude-opus-5-5", "--provider", "claude-cli", "--effort", "high");
+      assert.equal(r.code, 0, r.stderr);
+      const plan = JSON.parse(r.stdout);
+      assert.equal(plan.dryRun, true);
+      assert.equal(plan.requests.length, 3);
+      const last = plan.requests[2];
+      assert.deepEqual(last.body, {
+        taskId: "t1",
+        prompt: "Do it",
+        projectId: "p1",
+        model: "claude-opus-5-5",
+        provider: "claude-cli",
+        effort: "high",
+      });
+      assert.equal(last.headers["x-project-id"], "p1");
+      assert.deepEqual(b.writes(), []);
+      assert.match(r.stderr, /No write was sent/);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start --confirm sends reorder, chatInit, then the attempt", async () => {
+    clearCreds();
+    const b = await startBoard();
+    try {
+      const r = await b.run("--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.deepEqual(b.seen.map((x) => x.line), [
+        "GET /api/tasks/t1",
+        "GET /api/tasks/t1/attempts",
+        "PUT /api/tasks/reorder",
+        "PATCH /api/tasks/t1",
+        "POST /api/attempts",
+      ]);
+      assert.equal(b.seen[4].project, "p1");
+      assert.deepEqual(b.seen[3].body, { chatInit: true });
+      assert.equal(b.seen[2].body.status, "in_progress");
+      assert.equal(JSON.parse(r.stdout).results.length, 3);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start skips reorder and chatInit when the task is ready", async () => {
+    clearCreds();
+    const b = await startBoard({ task: { status: "in_progress", chatInit: true } });
+    try {
+      const r = await b.run("--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.deepEqual(b.writes().map((x) => x.line), ["POST /api/attempts"]);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start refuses while a recent attempt is running", async () => {
+    clearCreds();
+    const b = await startBoard({ attempts: [{ id: "a0", status: "running", createdAt: Date.now() }] });
+    try {
+      const r = await b.run("--confirm");
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /still running/);
+      assert.deepEqual(b.writes(), []);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start ignores a running attempt older than 24 hours", async () => {
+    clearCreds();
+    const b = await startBoard({
+      attempts: [{ id: "a0", status: "running", createdAt: Date.now() - 25 * 3600 * 1000 }],
+    });
+    try {
+      const r = await b.run();
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).requests.length, 3);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start --force warns and continues past a running attempt", async () => {
+    clearCreds();
+    const b = await startBoard({ attempts: [{ id: "a0", status: "running", createdAt: Date.now() }] });
+    try {
+      const r = await b.run("--force");
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).requests.length, 3);
+      assert.match(r.stderr, /--force starts a second agent/);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start --prompt overrides the description", async () => {
+    clearCreds();
+    const b = await startBoard();
+    try {
+      const r = await b.run("--prompt", "Other");
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).requests[2].body.prompt, "Other");
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start usage errors send nothing", async () => {
+    clearCreds();
+    const b = await startBoard();
+    try {
+      for (const extra of [
+        ["--effort", "turbo"],
+        ["--provider", "claude-cli", "--llm-provider", "x", "--model", "m"],
+        ["--llm-provider", "x"],
+        ["--confirm", "--dry-run"],
+      ]) {
+        const r = await b.run(...extra);
+        assert.equal(r.code, 2, `${extra.join(" ")}: ${r.stderr}`);
+      }
+      assert.deepEqual(b.seen, []);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start needs --prompt when the task has no description", async () => {
+    clearCreds();
+    const b = await startBoard({ task: { description: "" } });
+    try {
+      const r = await b.run();
+      assert.equal(r.code, 2);
+      assert.match(r.stderr, /--prompt/);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks start prints earlier results when the attempt POST fails", async () => {
+    clearCreds();
+    const b = await startBoard({ attemptStatus: 500, attemptBody: { error: "boom" } });
+    try {
+      const r = await b.run("--confirm");
+      assert.equal(r.code, 1);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.results.length, 2);
+      assert.equal(out.failed.index, 2);
+      assert.match(r.stderr, /HTTP 500: boom/);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  async function createBoard(created = { id: "t9", projectId: "p1" }) {
+    const seen = [];
+    const srv = await serve(async (req, res) => {
+      const body = await readBody(req);
+      seen.push({
+        line: `${req.method} ${req.url}`,
+        project: req.headers["x-project-id"] ?? "",
+        body: body === "" ? undefined : JSON.parse(body),
+      });
+      res.setHeader("content-type", "application/json");
+      if (req.method === "POST" && req.url === "/api/tasks") {
+        res.writeHead(201);
+        res.end(JSON.stringify(created));
+      } else if (req.method === "PATCH" && req.url === "/api/tasks/t9") {
+        res.end(JSON.stringify(created));
+      } else if (req.method === "POST" && req.url === "/api/attempts") {
+        res.writeHead(201);
+        res.end(JSON.stringify({ id: "a9" }));
+      } else {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: "not found" }));
+      }
+    });
+    const run = (...extra) =>
+      runCLI([
+        "sandbox", "tasks", "create", "--url", srv.url, "--api-key", "k",
+        "--project", "p1", "--title", "X", ...extra,
+      ]);
+    return { srv, seen, run };
+  }
+
+  test("tasks create --start dry run previews three requests and sends nothing", async () => {
+    clearCreds();
+    const b = await createBoard();
+    try {
+      const r = await b.run("--description", "Run it", "--start", "--model", "m", "--effort", "low");
+      assert.equal(r.code, 0, r.stderr);
+      const { requests } = JSON.parse(r.stdout);
+      assert.equal(requests.length, 3);
+      assert.equal(requests[0].body.status, "in_progress");
+      assert.ok(requests[1].url.endsWith("/api/tasks/{taskId from response 1}"));
+      assert.equal(requests[2].body.taskId, "{taskId from response 1}");
+      assert.equal(requests[2].body.prompt, "Run it");
+      assert.equal(requests[2].body.effort, "low");
+      assert.deepEqual(b.seen, []);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks create --start --confirm starts the new task by its id", async () => {
+    clearCreds();
+    const b = await createBoard();
+    try {
+      const r = await b.run("--description", "Run it", "--start", "--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.deepEqual(b.seen.map((x) => x.line), [
+        "POST /api/tasks",
+        "PATCH /api/tasks/t9",
+        "POST /api/attempts",
+      ]);
+      assert.equal(b.seen[2].body.taskId, "t9");
+      assert.equal(b.seen[0].project, "p1");
+      assert.equal(b.seen[2].project, "p1");
+      assert.equal(JSON.parse(r.stdout).results.length, 3);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks create --start usage errors", async () => {
+    clearCreds();
+    const b = await createBoard();
+    try {
+      for (const extra of [
+        ["--start"],
+        ["--description", "d", "--model", "m"],
+        ["--description", "d", "--start", "--status", "todo"],
+      ]) {
+        const r = await b.run(...extra);
+        assert.equal(r.code, 2, `${extra.join(" ")}: ${r.stderr}`);
+      }
+      assert.deepEqual(b.seen, []);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks create --start reports a create response with no id", async () => {
+    clearCreds();
+    const b = await createBoard({});
+    try {
+      const r = await b.run("--description", "Run it", "--start", "--confirm");
+      assert.equal(r.code, 1);
+      assert.equal(JSON.parse(r.stdout).failed.index, 1);
+      assert.match(r.stderr, /no task id/);
+      assert.deepEqual(b.seen.map((x) => x.line), ["POST /api/tasks"]);
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("task reads and models list send only GETs", async () => {
+    clearCreds();
+    const seen = [];
+    const question = { attemptId: "a1", toolUseId: "tu1", questions: [{ question: "Which DB?" }] };
+    const srv = await serve(async (req, res) => {
+      seen.push({ method: req.method, url: req.url });
+      res.setHeader("content-type", "application/json");
+      const path = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+      if (path === "/api/tasks/t1/attempts") {
+        res.end(JSON.stringify({ attempts: [{ id: "a1", status: "completed", model: "m", provider: "claude-cli", createdAt: 1 }] }));
+      } else if (path === "/api/tasks/t1/conversation") {
+        res.end(JSON.stringify({ messages: [], hasMore: false }));
+      } else if (path === "/api/tasks/t1/running-attempt") {
+        res.end(JSON.stringify({ attempt: null, messages: [], backgroundShells: [] }));
+      } else if (path === "/api/tasks/t1/pending-question") {
+        res.end(JSON.stringify({ question }));
+      } else if (path === "/api/models") {
+        res.end(JSON.stringify({
+          models: [{ id: "claude-opus-5-5", name: "Opus", runtimeProvider: "claude-cli", llmProviderId: "lp1", supportedEffortLevels: ["low", "high"] }],
+          current: "claude-opus-5-5",
+        }));
+      } else {
+        res.writeHead(404);
+        res.end("{}");
+      }
+    });
+    const cli = (...args) => runCLI(["sandbox", ...args, "--url", srv.url, "--api-key", "k"]);
+    try {
+      let r = await cli("tasks", "attempts", "--id", "t1", "--format", "table");
+      assert.equal(r.code, 0, r.stderr);
+      assert.match(r.stdout, /ID\s+STATUS/);
+      assert.match(r.stdout, /\ba1\b/);
+
+      r = await cli("tasks", "conversation", "--id", "t1", "--limit", "5", "--before", "1700000000000");
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(seen.at(-1).url, "/api/tasks/t1/conversation?limit=5&before=1700000000000");
+
+      let count = seen.length;
+      r = await cli("tasks", "conversation", "--id", "t1", "--limit", "-1");
+      assert.equal(r.code, 2);
+      assert.equal(seen.length, count);
+
+      r = await cli("tasks", "running", "--id", "t1");
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).attempt, null);
+      count = seen.length;
+      r = await cli("tasks", "running", "--id", "t1", "--format", "table");
+      assert.equal(r.code, 2);
+      assert.equal(seen.length, count);
+
+      r = await cli("tasks", "question", "--id", "t1");
+      assert.equal(r.code, 0, r.stderr);
+      assert.deepEqual(JSON.parse(r.stdout).question, question);
+
+      r = await cli("models", "list", "--format", "table");
+      assert.equal(r.code, 0, r.stderr);
+      assert.match(r.stdout, /RUNTIME/);
+      assert.match(r.stdout, /LLM_PROVIDER/);
+      assert.match(r.stdout, /claude-opus-5-5/);
+
+      r = await runCLI(["sandbox", "models"]);
+      assert.equal(r.code, 2);
+
+      assert.ok(seen.every((x) => x.method === "GET"));
+    } finally {
+      await srv.close();
+    }
+  });
+
+  // A board with HTTP reads and a socket.io server that records question:answer.
+  async function answerBoard({ ack = true, clears = true, pending: initial } = {}) {
+    const state = {
+      pending: initial === undefined
+        ? {
+            attemptId: "a1",
+            toolUseId: "tu1",
+            questions: [
+              { question: "Which DB?", header: "DB", options: [], multiSelect: false },
+              { question: "Proceed?", header: "Go", options: [], multiSelect: false },
+            ],
+          }
+        : initial,
+      seen: [],
+      emitted: [],
+      connections: 0,
+    };
+    const srv = await serve(async (req, res) => {
+      await readBody(req);
+      state.seen.push({ method: req.method, url: req.url });
+      res.setHeader("content-type", "application/json");
+      if (req.method === "GET" && req.url === "/api/tasks/t1") {
+        res.end(JSON.stringify({ id: "t1", projectId: "p1" }));
+      } else if (req.method === "GET" && req.url === "/api/tasks/t1/pending-question") {
+        res.end(JSON.stringify({ question: state.pending }));
+      } else if (req.method === "POST" && req.url === "/api/attempts/a1/answer") {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "projectId, workspaceId, toolUseId, questions, and answers are required" }));
+      } else {
+        res.writeHead(404);
+        res.end("{}");
+      }
+    });
+    const io = new Server(srv.server);
+    io.use((socket, next) => {
+      if (socket.handshake.auth.token === "k") next();
+      else next(new Error("Unauthorized: valid API key required"));
+    });
+    io.on("connection", (socket) => {
+      state.connections += 1;
+      socket.on("question:answer", (payload, cb) => {
+        state.emitted.push(payload);
+        if (clears) state.pending = null;
+        if (ack !== false && typeof cb === "function") cb(ack === true ? { success: true } : ack);
+      });
+    });
+    state.close = () => new Promise((done) => io.close(() => done()));
+    state.run = (...extra) =>
+      runCLI(["sandbox", "tasks", "answer", "--url", srv.url, "--timeout", "2", "--id", "t1", ...extra]);
+    return state;
+  }
+
+  const BOTH = ["--answer", "Postgres", "--answer", "Yes"];
+  const WANT = { "Which DB?": "Postgres", "Proceed?": "Yes" };
+
+  test("tasks answer dry run maps answers and opens no socket", async () => {
+    clearCreds();
+    const b = await answerBoard();
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH);
+      assert.equal(r.code, 0, r.stderr);
+      const plan = JSON.parse(r.stdout);
+      assert.deepEqual(plan.requests[0].payload.answers, WANT);
+      assert.equal(plan.requests[0].event, "question:answer");
+      assert.equal(b.connections, 0);
+      assert.ok(b.seen.every((x) => x.method === "GET"));
+      assert.match(r.stderr, /No write was sent/);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer --confirm emits question:answer and ignores the REST log error", async () => {
+    clearCreds();
+    const b = await answerBoard();
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(b.emitted.length, 1);
+      const { attemptId, projectId, toolUseId, answers } = b.emitted[0];
+      assert.deepEqual({ attemptId, projectId, toolUseId, answers }, {
+        attemptId: "a1",
+        projectId: "p1",
+        toolUseId: "tu1",
+        answers: WANT,
+      });
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.confirmedBy, "ack");
+      assert.equal(out.restLog, "not saved");
+      assert.match(r.stderr, /Answer log not saved \(ignored\)/);
+      assert.ok(b.seen.some((x) => x.method === "POST" && x.url === "/api/attempts/a1/answer"));
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer without an ack confirms by the cleared question", async () => {
+    clearCreds();
+    const b = await answerBoard({ ack: false });
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).confirmedBy, "question cleared");
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer without an ack fails while the question is still pending", async () => {
+    clearCreds();
+    const b = await answerBoard({ ack: false, clears: false });
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /not confirmed/);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer fails on a rejected ack", async () => {
+    clearCreds();
+    const b = await answerBoard({ ack: { success: false, error: "nope" } });
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /rejected: nope/);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer with a wrong key fails without echoing it", async () => {
+    clearCreds();
+    const b = await answerBoard();
+    try {
+      const r = await b.run("--api-key", "bad-secret-value", ...BOTH, "--confirm");
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /socket.io connect failed/);
+      assert.ok(!r.stderr.includes("bad-secret-value"));
+      assert.equal(b.emitted.length, 0);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer needs one --answer per question", async () => {
+    clearCreds();
+    const b = await answerBoard();
+    try {
+      const r = await b.run("--api-key", "k", "--answer", "Postgres", "--confirm");
+      assert.equal(r.code, 2);
+      assert.match(r.stderr, /Which DB\?/);
+      assert.equal(b.connections, 0);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer with no pending question", async () => {
+    clearCreds();
+    const b = await answerBoard({ pending: null });
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /no pending question/);
+    } finally {
+      await b.close();
     }
   });
 });

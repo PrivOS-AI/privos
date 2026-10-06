@@ -44,7 +44,8 @@ The package name is `@privos_ai/privos`. That is the npm org already used by
 `@privos_ai/privos-agent-sdk`. The unscoped name `privos` and the scope
 `@privos-ai` are not the published org.
 
-Requires Node.js 20 or newer. There are no runtime dependencies.
+Requires Node.js 20 or newer. The only runtime dependency is socket.io-client,
+used by `tasks answer`.
 
 ### Why this is not the Go binary
 
@@ -106,8 +107,17 @@ privos sandbox projects start --id ID
 
 privos sandbox tasks list [--project ID] [--status STATUS] [--limit N] [--after CURSOR]
 privos sandbox tasks create --project ID --title TITLE [--description TEXT] [--status STATUS]
+privos sandbox tasks create --project ID --title TITLE --description TEXT --start [--model M] [--provider P | --llm-provider ID] [--effort E]
 privos sandbox tasks update --id ID [--title T] [--description TEXT] [--status STATUS] [--position N] [--chat-init true|false]
 privos sandbox tasks delete --id ID
+privos sandbox tasks start --id ID [--model M] [--provider P | --llm-provider ID] [--effort E] [--prompt TEXT] [--force]
+privos sandbox tasks attempts --id ID
+privos sandbox tasks conversation --id ID [--limit N] [--before MS]
+privos sandbox tasks running --id ID
+privos sandbox tasks question --id ID
+privos sandbox tasks answer --id ID --answer TEXT [--answer TEXT ...]
+
+privos sandbox models list
 
 privos hub rooms list [--updated-since RFC3339]
 privos hub rooms create --name NAME [--kind channel|group] [--member USER] [--read-only] [--exclude-self]
@@ -187,12 +197,76 @@ A dry run prints JSON to stdout:
 ```
 
 Credential header names are listed under `omittedHeaderNames`. Their values
-are not printed. stderr says that no request was sent. Exit code is 0.
+are not printed. stderr says that no write was sent. Exit code is 0.
+`tasks start` and `tasks answer` still send their `GET` reads in a dry run,
+so the preview holds real values.
 
 `--confirm` sends those requests in order. A task update that changes both
 text fields and status sends `PATCH /api/tasks/{id}` and then
 `PUT /api/tasks/reorder`. A room update that sets both name and topic sends
-rename, then `setTopic`.
+rename, then `setTopic`. If a later request fails, stdout shows
+`{"results": [...], "failed": {...}}` with the responses of the requests
+that already went through, and the exit code is 1.
+
+## Starting an agent
+
+`tasks start` starts an agent on a task the way the board UI does. It first
+reads `GET /api/tasks/{id}` and `GET /api/tasks/{id}/attempts`. These two
+reads are sent even in a dry run. Then, with `--confirm`, it sends:
+
+1. `PUT /api/tasks/reorder` with `status: "in_progress"`, only when the task
+   is not already `in_progress`.
+2. `PATCH /api/tasks/{id}` with `{"chatInit":true}`, only when `chatInit` is
+   not already true.
+3. `POST /api/attempts` with `{"taskId","prompt","projectId"}` plus the model
+   fields, and the `x-project-id` header.
+
+The prompt is the task description unless `--prompt` is set. `--model` and
+`--provider` (or `--llm-provider` with `--model` for a custom catalog model)
+pick the runtime; `privos sandbox models list` shows the choices. A task that
+has never run should get both, or the board uses its default.
+
+`--effort` takes `low`, `medium`, `high`, `xhigh`, `max` or `ultra`. `ultra`
+only matters to Claude runtimes. The board passes effort to the runtime and
+does not store it, so attempt reads show `"effort": null`.
+
+`start` refuses while an attempt created in the last 24 hours is still
+running, because the board would run a second agent on the same task.
+`--force` starts anyway and prints a warning.
+
+`tasks create --start` creates the task in `in_progress` and starts it in the
+same command: `POST /api/tasks`, `PATCH /api/tasks/{new id}`, then
+`POST /api/attempts`. `--description` is required and becomes the prompt. The
+dry run shows `{taskId from response 1}` where the new id goes.
+
+To follow a run:
+
+- `tasks attempts` lists attempts. It is a pure read.
+- `tasks conversation` reads one page of the conversation.
+- `tasks running` reads the running attempt. The board also cleans up on this
+  call: it fails running attempts older than 24 hours and moves an
+  `in_progress` task with no running attempt to `in_review`. Use
+  `tasks attempts` when you only want to look.
+- `tasks question` reads the question the agent is waiting on.
+
+`tasks answer` answers that question over socket.io, as the board UI does: it
+emits `question:answer` with the API key as the handshake `auth.token`. Pass
+one `--answer` per question, in the order `tasks question` prints them. The
+answer counts as delivered when the board acks it, or, when no ack comes
+(sandbox mode), once a re-read shows the question gone. The CLI then also
+sends `POST /api/attempts/{id}/answer` to save the answer log. That route
+requires a `workspaceId` in the body equal to the attempt's. The CLI does not
+send one (neither does the board UI), so today the call answers HTTP 400; the
+error is printed and ignored. `tasks cancel` is not available for the same
+reason.
+
+```bash
+privos sandbox models list --format table
+privos sandbox tasks start --id TASK_ID --model claude-opus-5-5 --provider claude-cli --effort high
+privos sandbox tasks start --id TASK_ID --model claude-opus-5-5 --provider claude-cli --effort high --confirm
+privos sandbox tasks question --id TASK_ID
+privos sandbox tasks answer --id TASK_ID --answer 'Postgres' --confirm
+```
 
 Do not point CI at a live board or hub. The tests use a local mock server.
 

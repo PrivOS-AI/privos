@@ -4,10 +4,13 @@ import { Client } from "./http.js";
 import { mutate, sandboxHeaders, type PlannedRequest } from "./mutate.js";
 import {
   forbidUnknown,
+  mutationMode,
   optionalNonNegative,
   parseAutopilot,
   parseBoolWord,
+  parseEffort,
   parsePosition,
+  parseProvider,
   pathSegment,
   requireAbsolutePath,
   requireFlag,
@@ -43,6 +46,67 @@ export async function sandboxTasksList(p: Parsed, stdout: Out, fetchImpl: typeof
   if (limit !== undefined) query.set("limit", String(limit));
   if (p.after !== "") query.set("after", p.after);
   await sandboxGet(p, stdout, fetchImpl, "/api/tasks", query, "", taskColumns);
+}
+
+const attemptColumns: Column[] = [
+  { header: "ID", path: ["id"] },
+  { header: "STATUS", path: ["status"] },
+  { header: "MODEL", path: ["model"] },
+  { header: "PROVIDER", path: ["provider"] },
+  { header: "CREATED", path: ["createdAt"] },
+];
+
+const modelColumns: Column[] = [
+  { header: "ID", path: ["id"] },
+  { header: "NAME", path: ["name"] },
+  { header: "RUNTIME", path: ["runtimeProvider"] },
+  { header: "LLM_PROVIDER", path: ["llmProviderId"] },
+  { header: "EFFORTS", path: ["supportedEffortLevels"] },
+];
+
+export async function sandboxTasksAttempts(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
+  forbidUnknown(p, "sandbox tasks attempts", ["url", "api-key", "id"]);
+  requireFlag(p, "id", p.id, helpFor(["sandbox", "tasks", "attempts"]));
+  const id = pathSegment("id", p.id);
+  await sandboxGet(p, stdout, fetchImpl, `/api/tasks/${id}/attempts`, undefined, "attempts", attemptColumns);
+}
+
+export async function sandboxTasksConversation(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
+  forbidUnknown(p, "sandbox tasks conversation", ["url", "api-key", "id", "limit", "before"]);
+  requireFlag(p, "id", p.id, helpFor(["sandbox", "tasks", "conversation"]));
+  const id = pathSegment("id", p.id);
+  jsonOnly(p, "sandbox tasks conversation");
+  const limit = optionalNonNegative("--limit", p.limit);
+  const before = optionalNonNegative("--before", p.before);
+  const query = new URLSearchParams();
+  if (limit !== undefined && limit > 0) query.set("limit", String(limit));
+  if (before !== undefined && before > 0) query.set("before", String(before));
+  await sandboxGet(p, stdout, fetchImpl, `/api/tasks/${id}/conversation`, query, "", []);
+}
+
+export async function sandboxTasksRunning(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
+  forbidUnknown(p, "sandbox tasks running", ["url", "api-key", "id"]);
+  requireFlag(p, "id", p.id, helpFor(["sandbox", "tasks", "running"]));
+  const id = pathSegment("id", p.id);
+  jsonOnly(p, "sandbox tasks running");
+  await sandboxGet(p, stdout, fetchImpl, `/api/tasks/${id}/running-attempt`, undefined, "", []);
+}
+
+export async function sandboxTasksQuestion(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
+  forbidUnknown(p, "sandbox tasks question", ["url", "api-key", "id"]);
+  requireFlag(p, "id", p.id, helpFor(["sandbox", "tasks", "question"]));
+  const id = pathSegment("id", p.id);
+  jsonOnly(p, "sandbox tasks question");
+  await sandboxGet(p, stdout, fetchImpl, `/api/tasks/${id}/pending-question`, undefined, "", []);
+}
+
+export async function sandboxModelsList(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
+  forbidUnknown(p, "sandbox models list", ["url", "api-key"]);
+  await sandboxGet(p, stdout, fetchImpl, "/api/models", undefined, "models", modelColumns);
+}
+
+function jsonOnly(p: Parsed, cmd: string): void {
+  if (p.format === "table") throw usage(`${cmd} prints JSON; --format table is not supported`);
 }
 
 async function sandboxGet(
@@ -194,6 +258,11 @@ export async function sandboxTasksCreate(
     "title",
     "description",
     "status",
+    "start",
+    "model",
+    "provider",
+    "llm-provider",
+    "effort",
   ]);
   if (p.projects.length !== 1) {
     throw usage(
@@ -206,20 +275,54 @@ export async function sandboxTasksCreate(
   const body: Record<string, string> = { projectId, title: p.title };
   if (p.description !== "") body.description = p.description;
   if (p.status !== "") body.status = p.status;
-  await sendSandbox(
-    p,
-    [
-      {
-        method: "POST",
-        path: "/api/tasks",
-        body,
-        extraHeaders: { "x-project-id": projectId },
-      },
-    ],
-    stdout,
-    stderr,
-    fetchImpl,
-  );
+  if (!p.start && (p.model !== "" || p.provider !== "" || p.llmProvider !== "" || p.effort !== "")) {
+    throw usage("--model, --provider, --llm-provider and --effort need --start");
+  }
+  const plans: PlannedRequest[] = [
+    {
+      method: "POST",
+      path: "/api/tasks",
+      body,
+      extraHeaders: { "x-project-id": projectId },
+    },
+  ];
+  if (p.start) {
+    if (p.description === "") {
+      throw usage("sandbox tasks create --start: pass --description; it becomes the agent prompt");
+    }
+    if (p.status !== "" && p.status !== "in_progress") {
+      throw usage("--start creates the task in in_progress; drop --status");
+    }
+    const selection = attemptSelection(p);
+    body.status = "in_progress";
+    const chatInit = (taskId: string): PlannedRequest => ({
+      method: "PATCH",
+      path: `/api/tasks/${taskId}`,
+      body: { chatInit: true },
+    });
+    const attempt = (taskId: string): PlannedRequest => ({
+      method: "POST",
+      path: "/api/attempts",
+      body: { taskId, prompt: p.description, projectId, ...selection },
+      extraHeaders: { "x-project-id": projectId },
+    });
+    plans.push(
+      { ...chatInit(NEW_TASK_ID), prepare: (prior) => chatInit(encodeURIComponent(newTaskId(prior))) },
+      { ...attempt(NEW_TASK_ID), prepare: (prior) => attempt(newTaskId(prior)) },
+    );
+  }
+  await sendSandbox(p, plans, stdout, stderr, fetchImpl);
+}
+
+/** Dry-run placeholder for the id that POST /api/tasks returns. */
+const NEW_TASK_ID = "{taskId from response 1}";
+
+function newTaskId(prior: unknown[]): string {
+  const id = (prior[0] as Record<string, unknown> | null | undefined)?.id;
+  if (typeof id !== "string" || !/^[\w.-]+$/.test(id)) {
+    throw new Error("POST /api/tasks response has no task id");
+  }
+  return id;
 }
 
 export async function sandboxTasksUpdate(
@@ -284,6 +387,120 @@ export async function sandboxTasksDelete(
     stderr,
     fetchImpl,
   );
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export async function sandboxTasksStart(
+  p: Parsed,
+  stdout: Out,
+  stderr: Out,
+  fetchImpl: typeof fetch,
+): Promise<void> {
+  forbidUnknown(p, "sandbox tasks start", [
+    "url",
+    "api-key",
+    "confirm",
+    "dry-run",
+    "id",
+    "model",
+    "provider",
+    "llm-provider",
+    "effort",
+    "prompt",
+    "force",
+  ]);
+  requireFlag(p, "id", p.id, helpFor(["sandbox", "tasks", "start"]));
+  const id = pathSegment("id", p.id);
+  if (p.format === "table") {
+    throw usage("writes print JSON; --format table applies to list reads");
+  }
+  mutationMode(p);
+  const selection = attemptSelection(p);
+  // Both reads are pure GETs, so they run in a dry run too (Client.send blocks every write).
+  const cfg = resolveSandbox(p.url, p.apiKey);
+  const client = new Client(cfg.baseURL, sandboxHeaders(cfg.apiKey), timeoutSeconds(p) * 1000, fetchImpl);
+  const task = JSON.parse((await client.get(`/api/tasks/${id}`)).toString("utf8")) as unknown;
+  const attempts = (JSON.parse((await client.get(`/api/tasks/${id}/attempts`)).toString("utf8")) as {
+    attempts?: unknown;
+  } | null)?.attempts;
+  if (task === null || typeof task !== "object" || Array.isArray(task) || !Array.isArray(attempts)) {
+    throw new Error("unexpected response from the board");
+  }
+  const running = recentRunningAttempt(attempts, Date.now());
+  if (running) {
+    if (!p.force) {
+      throw new Error(
+        `sandbox tasks start: attempt ${String(running.id)} is still running on task ${p.id}. Check it with: privos sandbox tasks running --id ${p.id}, or pass --force to start a second agent`,
+      );
+    }
+    stderr.write(
+      `Warning: attempt ${String(running.id)} is still running; --force starts a second agent on the same task.\n`,
+    );
+  }
+  const plans = startPlans(task as Record<string, unknown>, p.id, id, selection, p.prompt);
+  await sendSandbox(p, plans, stdout, stderr, fetchImpl);
+}
+
+/** The model fields of POST /api/attempts, as the board UI sends them. */
+function attemptSelection(p: Parsed): Record<string, string> {
+  if (p.provider !== "" && p.llmProvider !== "") {
+    throw usage("pass only one of --provider and --llm-provider");
+  }
+  if (p.llmProvider !== "" && p.model === "") {
+    throw usage("--llm-provider requires --model");
+  }
+  const out: Record<string, string> = {};
+  if (p.model !== "") out.model = p.model;
+  if (p.provider !== "") out.provider = parseProvider(p.provider);
+  if (p.llmProvider !== "") out.llmProviderId = p.llmProvider;
+  if (p.effort !== "") out.effort = parseEffort(p.effort);
+  return out;
+}
+
+/** A running attempt younger than the board's own 24 h stale rule. */
+function recentRunningAttempt(attempts: unknown[], now: number): Record<string, unknown> | undefined {
+  for (const a of attempts) {
+    if (a === null || typeof a !== "object") continue;
+    const rec = a as Record<string, unknown>;
+    if (rec.status !== "running") continue;
+    if (typeof rec.createdAt !== "number" || now - rec.createdAt < DAY_MS) return rec;
+  }
+  return undefined;
+}
+
+/** The web UI's start sequence: move to in_progress, open the chat, then create the attempt. */
+function startPlans(
+  task: Record<string, unknown>,
+  taskId: string,
+  id: string,
+  selection: Record<string, string>,
+  prompt: string,
+): PlannedRequest[] {
+  const projectId = task.projectId;
+  if (typeof projectId !== "string" || projectId === "") throw new Error("task has no projectId");
+  const text = prompt !== "" ? prompt : typeof task.description === "string" ? task.description.trim() : "";
+  if (text === "") {
+    throw usage("sandbox tasks start: the task has no description; pass --prompt TEXT");
+  }
+  const plans: PlannedRequest[] = [];
+  if (task.status !== "in_progress") {
+    plans.push({
+      method: "PUT",
+      path: "/api/tasks/reorder",
+      body: { taskId, status: "in_progress", position: -Date.now() },
+    });
+  }
+  if (task.chatInit !== true) {
+    plans.push({ method: "PATCH", path: `/api/tasks/${id}`, body: { chatInit: true } });
+  }
+  plans.push({
+    method: "POST",
+    path: "/api/attempts",
+    body: { taskId, prompt: text, projectId, ...selection },
+    extraHeaders: { "x-project-id": projectId },
+  });
+  return plans;
 }
 
 async function sendSandbox(

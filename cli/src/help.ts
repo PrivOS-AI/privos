@@ -15,6 +15,13 @@ Commands:
   sandbox tasks create
   sandbox tasks update
   sandbox tasks delete
+  sandbox tasks start
+  sandbox tasks attempts
+  sandbox tasks conversation
+  sandbox tasks running
+  sandbox tasks question
+  sandbox tasks answer
+  sandbox models list
   hub rooms list
   hub rooms create
   hub rooms update
@@ -57,7 +64,8 @@ const sandboxHelp = `Usage:
 
 Commands:
   projects list|create|update|delete|start
-  tasks list|create|update|delete
+  tasks list|create|update|delete|start|attempts|conversation|running|question|answer
+  models list
 
 Environment (flags override):
   PRIVOS_SANDBOX_URL          Board base URL
@@ -145,8 +153,15 @@ const sandboxTasksHelp = `Usage:
 Commands:
   list
   create --project ID --title TITLE [--description TEXT] [--status STATUS]
+         [--start [--model M] [--provider P | --llm-provider ID] [--effort E]]
   update --id ID [--title T] [--description TEXT] [--status STATUS] [--position N] [--chat-init true|false]
   delete --id ID
+  start --id ID [--model M] [--provider P | --llm-provider ID] [--effort E] [--prompt TEXT] [--force]
+  attempts --id ID
+  conversation --id ID [--limit N] [--before MS]
+  running --id ID
+  question --id ID
+  answer --id ID --answer TEXT [--answer TEXT ...]
 
 Writes require --confirm. The default is a dry run.
 `;
@@ -172,11 +187,21 @@ Environment: PRIVOS_SANDBOX_URL, PRIVOS_SANDBOX_API_KEY
 
 const sandboxTasksCreateHelp = `Usage:
   privos sandbox tasks create --project ID --title TITLE [--description TEXT] [--status STATUS]
+         [--start [--model M] [--provider P | --llm-provider ID] [--effort E]]
 
 POST /api/tasks with a JSON body and the x-project-id header set to --project.
 The board client sends projectId, title, and optionally description and status.
 status is omitted unless --status is set. Known board statuses: todo,
 in_progress, in_review, done, cancelled. Dry run unless --confirm.
+
+--start also starts an agent on the new task, in three requests:
+  1. POST /api/tasks with "status":"in_progress"
+  2. PATCH /api/tasks/{new id} {"chatInit":true}
+  3. POST /api/attempts {"taskId","prompt","projectId",...} with x-project-id
+--description is required and becomes the agent prompt. The new id is only
+known after request 1, so the dry run shows {taskId from response 1} where
+it will go. --model, --provider, --llm-provider and --effort work as in
+"privos sandbox tasks start" and need --start.
 `;
 
 const sandboxTasksUpdateHelp = `Usage:
@@ -197,6 +222,123 @@ const sandboxTasksDeleteHelp = `Usage:
   privos sandbox tasks delete --id ID
 
 DELETE /api/tasks/{id}. Dry run unless --confirm.
+`;
+
+const sandboxTasksStartHelp = `Usage:
+  privos sandbox tasks start --id ID [--model M] [--provider P | --llm-provider ID]
+                             [--effort E] [--prompt TEXT] [--force]
+
+Start an agent on a task the way the board UI does. The CLI first reads
+GET /api/tasks/{id} and GET /api/tasks/{id}/attempts, then sends, in order:
+  1. PUT /api/tasks/reorder {"taskId","status":"in_progress","position"}
+     only when the task is not already in_progress
+  2. PATCH /api/tasks/{id} {"chatInit":true} only when chatInit is not true
+  3. POST /api/attempts {"taskId","prompt","projectId",...} with the
+     x-project-id header
+
+The prompt defaults to the task description. --prompt replaces it.
+
+The two GETs are sent even in a dry run, so the preview holds the real
+projectId and prompt. No write is sent without --confirm.
+
+start refuses while an attempt created in the last 24 hours is still
+running. --force starts anyway; two agents then work on the same task at
+the same time.
+
+Flags:
+  --model M            Model id, for example claude-opus-5-5
+  --provider P         claude-cli, claude-sdk, privos-agent-sdk, codex-cli,
+                       antigravity-cli
+  --llm-provider ID    Custom catalog provider id (needs --model). Use the
+                       LLM_PROVIDER value from "privos sandbox models list".
+  --effort E           low, medium, high, xhigh, max, ultra. ultra is honoured
+                       only by Claude runtimes. Effort is not stored on the
+                       attempt, so reads show "effort": null.
+  --prompt TEXT        Prompt for the agent (default: the task description)
+  --force              Start even while a recent attempt is running
+
+A task with no previous run should get --model and --provider; otherwise
+the board picks its default. Dry run unless --confirm.
+`;
+
+const sandboxTasksAttemptsHelp = `Usage:
+  privos sandbox tasks attempts --id ID
+
+List a task's attempts from GET /api/tasks/{id}/attempts. This read has no
+side effects. --format table shows ID, STATUS, MODEL, PROVIDER and CREATED.
+Effort is not stored on attempts, so JSON shows "effort": null.
+`;
+
+const sandboxTasksConversationHelp = `Usage:
+  privos sandbox tasks conversation --id ID [--limit N] [--before MS]
+
+Read one page of a task's conversation from GET /api/tasks/{id}/conversation.
+--limit sets the page size. --before takes a timestamp in milliseconds and
+returns older messages. JSON only.
+`;
+
+const sandboxTasksRunningHelp = `Usage:
+  privos sandbox tasks running --id ID
+
+Read the running attempt, its messages and background shells from
+GET /api/tasks/{id}/running-attempt. "attempt" is null when nothing runs.
+JSON only.
+
+Warning: the board also cleans up when you call this. It fails running attempts older than 24 hours and moves an in_progress task with no running attempt to in_review. Use "tasks attempts" for a read with no side effects.
+`;
+
+const sandboxTasksQuestionHelp = `Usage:
+  privos sandbox tasks question --id ID
+
+Read the agent's pending question from GET /api/tasks/{id}/pending-question.
+"question" is null when the agent is not waiting. The questions print in
+order; each needs one --answer, in the same order. JSON only.
+
+Answer them with: privos sandbox tasks answer --id ID --answer TEXT ...
+`;
+
+const sandboxTasksAnswerHelp = `Usage:
+  privos sandbox tasks answer --id ID --answer TEXT [--answer TEXT ...]
+
+Answer the agent's pending question. Pass --answer once per question, in
+the order "privos sandbox tasks question" prints them.
+
+The CLI reads GET /api/tasks/{id} and GET /api/tasks/{id}/pending-question,
+then sends the socket.io event question:answer
+{"attemptId","projectId","toolUseId","questions","answers"} to the board,
+with the API key as the handshake auth token. "answers" maps each question
+text to its --answer. This is what the board UI sends.
+
+The dry run reads the question and prints the payload; it opens no socket.
+With --confirm the answer counts as delivered when the board acks it, or,
+when no ack comes (sandbox mode), once a re-read shows the question gone.
+The board acks a repeat of the same answer within 30 seconds without
+applying it again.
+
+After that the CLI also sends POST /api/attempts/{attemptId}/answer to save
+the answer log. This is best effort: the route requires a workspaceId in
+the body, which the CLI does not send, so today it answers HTTP 400. The
+error is printed and ignored.
+Dry run unless --confirm.
+`;
+
+const sandboxModelsHelp = `Usage:
+  privos sandbox models <command>
+
+Commands:
+  list
+`;
+
+const sandboxModelsListHelp = `Usage:
+  privos sandbox models list
+
+List the board's model catalog from GET /api/models. --format table shows
+ID, NAME, RUNTIME, LLM_PROVIDER and EFFORTS.
+
+Pass the RUNTIME value to --provider and the ID to --model on "tasks start".
+Rows with an LLM_PROVIDER are custom catalog models: start them with
+--llm-provider <that id> --model <ID> instead of --provider. EFFORTS is
+empty for many built-in rows; the board UI derives those levels itself.
 `;
 
 const hubHelp = `Usage:
@@ -501,6 +643,14 @@ const HELP: Record<string, string> = {
   "sandbox tasks create": sandboxTasksCreateHelp,
   "sandbox tasks update": sandboxTasksUpdateHelp,
   "sandbox tasks delete": sandboxTasksDeleteHelp,
+  "sandbox tasks start": sandboxTasksStartHelp,
+  "sandbox tasks attempts": sandboxTasksAttemptsHelp,
+  "sandbox tasks conversation": sandboxTasksConversationHelp,
+  "sandbox tasks running": sandboxTasksRunningHelp,
+  "sandbox tasks question": sandboxTasksQuestionHelp,
+  "sandbox tasks answer": sandboxTasksAnswerHelp,
+  "sandbox models": sandboxModelsHelp,
+  "sandbox models list": sandboxModelsListHelp,
   hub: hubHelp,
   "hub rooms": hubRoomsHelp,
   "hub rooms list": hubRoomsListHelp,

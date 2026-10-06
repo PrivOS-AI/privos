@@ -1,6 +1,6 @@
 {
   "name": "@privos_ai/privos",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "PrivOS operator CLI for the sandbox board and the hub",
   "type": "module",
   "bin": {
@@ -27,9 +27,13 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^22.15.0",
+    "socket.io": "^4.8.4",
     "typescript": "^5.9.0"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.8.4"
   }
 }
