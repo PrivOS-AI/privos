@@ -89,7 +89,8 @@ Response: a JSON array. Fields the CLI table prints: `id`, `title`,
 privos sandbox tasks list --project PROJECT_ID --status todo
 ```
 
-There is also `GET /api/tasks/{id}` for one task. The CLI does not call it yet.
+There is also `GET /api/tasks/{id}` for one task. `tasks start` and
+`tasks answer` read it to get `projectId` and the description.
 
 ## Create, update, delete a task
 
@@ -108,3 +109,94 @@ then `PUT`.
 
 These commands are a dry run until `--confirm`. Tests mock HTTP. They do not
 call a live board.
+
+## Start an agent on a task
+
+The board UI starts an agent with up to three writes. `privos sandbox tasks
+start` sends the same ones, after two reads.
+
+| Step | Request | When |
+|---|---|---|
+| Read the task | `GET /api/tasks/{id}` | always (also in a dry run) |
+| Read its attempts | `GET /api/tasks/{id}/attempts` | always (also in a dry run) |
+| Move the card | `PUT /api/tasks/reorder` body `{"taskId","status":"in_progress","position":-Date.now()}` | task status is not `in_progress` |
+| Open the chat | `PATCH /api/tasks/{id}` body `{"chatInit":true}` | `chatInit` is not true |
+| Create the attempt | `POST /api/attempts` with `x-project-id` | always |
+
+`POST /api/attempts` body:
+
+| Field | Required | Notes |
+|---|---|---|
+| `taskId` | yes | HTTP 400 without it |
+| `prompt` | yes | HTTP 400 without it. The CLI defaults to the task description. |
+| `projectId` | yes | from the task |
+| `model` | no | model id |
+| `provider` | no | `claude-cli`, `claude-sdk`, `privos-agent-sdk`, `codex-cli`, `antigravity-cli`. The UI sends it for built-in catalog rows. |
+| `llmProviderId` | no | sent instead of `provider` for custom catalog rows |
+| `effort` | no | `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. Passed to the runtime (claude-cli adds `--effort`), not validated and not stored on the attempt. |
+
+The response is HTTP 201 with the attempt. The board moves a `todo` task to
+`in_progress` itself, but not a task in `in_review` or `done`, which is why the
+reorder step stays. The board does not stop a second attempt on a task that
+already has one running; the CLI refuses unless `--force` is passed.
+
+`privos sandbox tasks create --start` creates the task with
+`"status":"in_progress"`, then sends the `PATCH` and `POST /api/attempts`
+with the new task id.
+
+## Read attempts, conversation and pending questions
+
+| Request | Response | CLI |
+|---|---|---|
+| `GET /api/tasks/{id}/attempts` | `{"attempts":[{id,status,model,provider,createdAt,...}]}`. A pure read. | `tasks attempts --id ID` |
+| `GET /api/tasks/{id}/conversation?limit=&before=` | one page of the conversation | `tasks conversation --id ID [--limit N] [--before MS]` |
+| `GET /api/tasks/{id}/running-attempt` | `{"attempt":null\|{id,prompt,status,hidden},"messages":[...],"backgroundShells":[...]}` | `tasks running --id ID` |
+| `GET /api/tasks/{id}/pending-question` | `{"question":null\|{attemptId,toolUseId,questions:[{question,header,options:[{label,description}],multiSelect}]}}`. A pure read. | `tasks question --id ID` |
+
+`running-attempt` has side effects. It marks running attempts older than
+24 hours as failed, and it moves an `in_progress` task with no running attempt
+to `in_review`.
+
+`effort` reads as `null` on attempts because the board never stores it.
+
+## Answer a pending question
+
+The board UI answers over socket.io, not REST. The server is socket.io 4.8 on
+the same host and port as the HTTP API, at the default path `/socket.io/`.
+
+- Auth: handshake `auth: { token: <API key> }`. A wrong key fails the
+  connection with `Unauthorized: valid API key required`. With no
+  `API_ACCESS_KEY` set on the board, auth is off.
+- Event: `question:answer` with payload
+  `{"attemptId","projectId","toolUseId","questions","answers"}`. `answers`
+  maps each question's `question` text to the answer.
+- Ack: the plain board acks `{"success":true}` or
+  `{"success":false,"error","code"}`. A repeat of the same answer within
+  30 seconds is acked without being applied again. In sandbox mode the board
+  forwards the event without an ack (and reports a missing `projectId` with an
+  `error` event).
+- A delivered answer clears the question, so `pending-question` then returns
+  `null` or a question with another `toolUseId`.
+
+`POST /api/attempts/{id}/answer` with `{"projectId","toolUseId","questions","answers"}`
+also exists, but it requires a `workspaceId` equal to the attempt's. Attempts
+created by the board or the CLI have none, so it fails for them, and
+`POST /api/attempts/{id}/cancel` fails the same way. `privos sandbox tasks
+answer` sends the socket event first and then this REST call as a best-effort
+answer log, ignoring its errors.
+
+## List models
+
+`GET /api/models`
+
+Response:
+`{"models":[{id,name,provider,providerName,runtimeProvider,llmProviderId?,supportedEffortLevels?}],"current","currentProvider","selection","source"}`.
+
+`runtimeProvider` is the value for `provider` on `POST /api/attempts`. A row
+with `llmProviderId` is a custom catalog model: send `llmProviderId` and
+`model` instead. `supportedEffortLevels` is missing on many built-in rows,
+because the board UI works those out itself.
+
+```text
+privos sandbox models list --format table
+```

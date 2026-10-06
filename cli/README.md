@@ -10,6 +10,7 @@ npx @privos_ai/privos version
 
 Reads send `GET`. Writes print the request and send nothing unless you pass
 `--confirm`. `--dry-run` is the default and cannot be combined with `--confirm`.
+`tasks start` reads the task first and sends its writes only with `--confirm`.
 
 Sandbox auth is the `x-api-key` header (`--api-key` or `PRIVOS_SANDBOX_API_KEY`).
 Hub auth is `X-User-Id` and `X-Auth-Token` (`--user-id`, `--auth-token`).
