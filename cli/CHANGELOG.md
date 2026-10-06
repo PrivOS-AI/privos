@@ -3,6 +3,31 @@
 All notable changes to `@privos_ai/privos`. Full command notes live in
 [docs/cli/README.md](https://github.com/PrivOS-AI/privos/blob/main/docs/cli/README.md).
 
+## 0.4.1 — 2026-10-06
+
+### Fixed
+
+- `privos subscribe`: when the hub refuses the `in_app_notifications.updates`
+  websocket subscription (roxane answers it with error 500), the daemon now
+  logs it, keeps the message stream live, and polls notifications every
+  60 seconds instead of reconnecting forever and falling back to the 5-minute
+  backstop. `privos subscribe status` shows `"notifications": "ddp"` or `"poll"`.
+- `--stdout` runs keep their own state (`state.stdout.json`) and heartbeat, so
+  a test run no longer consumes the cursors and seen ids of the live daemon.
+  Any state file other than `state.json` now gets its own `NAME.health`.
+
+### Added
+
+- `--lists all` watches every list the hub shows you in the rooms you belong
+  to, re-read every 15 minutes.
+- `file` events work without `--rooms` and then watch every joined room.
+  Lists and rooms are polled one at a time within the hub rate limit.
+
+### Docs
+
+- `--priority-from` has no effect for your own messages: they are always
+  skipped.
+
 ## 0.4.0 — 2026-10-06
 
 ### Added

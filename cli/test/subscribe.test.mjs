@@ -6,6 +6,7 @@ import path from "node:path";
 import { describe, test } from "node:test";
 import { DDPClient } from "../dist/ddp.js";
 import { run } from "../dist/run.js";
+import { sweepStepMs } from "../dist/subscribe.js";
 import {
   classifyMessage,
   classifyNotification,
@@ -129,7 +130,16 @@ function fakeHub(data) {
         return send({ result: { updated: data.messages[url.searchParams.get("roomId")] ?? [], deleted: [] } });
       case "/api/v1/in-app-notifications.list":
         return send({ notifications: data.notifications, count: data.notifications.length });
+      case "/api/v1/lists.list": {
+        const all = data.lists ?? [];
+        const offset = Number(url.searchParams.get("offset") ?? 0);
+        const page = all.slice(offset, offset + Number(url.searchParams.get("count") ?? 50));
+        return send({ lists: page, count: page.length, offset, total: all.length });
+      }
+      case "/api/v1/items.list":
+        return send({ items: [], nextCursor: null });
       default:
+        if (url.pathname.startsWith("/api/v1/file-management.files.filter/")) return send({ files: [], total: 0 });
         return send({ error: "not found" }, 404);
     }
   };
@@ -657,7 +667,7 @@ describe("privos subscribe", { concurrency: false }, () => {
     for (const args of [
       ["subscribe", "--events", "dm,bogus"],
       ["subscribe", "--events", "item"],
-      ["subscribe", "--events", "file"],
+      ["subscribe", "--events", "item", "--lists", "all,l1"],
       ["subscribe", "--events", "task"],
       ["subscribe", "--stdout", "--confirm"],
       ["subscribe", "--mode", "push"],
@@ -678,6 +688,8 @@ describe("privos subscribe", { concurrency: false }, () => {
     const sub = await runCLI(["subscribe", "--help"]);
     assert.equal(sub.code, 0);
     assert.ok(sub.stdout.includes("GROK_MASTER_WEBHOOK_HEADER"));
+    assert.match(sub.stdout, /Naming yourself there does nothing/, "--priority-from documents the self filter");
+    assert.ok(sub.stdout.includes("--lists all") && sub.stdout.includes("state.stdout.json"));
   });
 
   test("poll mode --stdout: NDJSON, GET only, no text, no secrets, resumes without duplicates", async () => {
@@ -981,5 +993,109 @@ describe("privos hub inbox", { concurrency: false }, () => {
     } finally {
       await srv.close();
     }
+  });
+});
+
+describe("field-test fixes", { concurrency: false }, () => {
+  test("a refused in_app_notifications.updates keeps the websocket live and polls notifications", async () => {
+    const t = iso(Date.now() - 30_000);
+    const data = {
+      subs: [{ rid: "dm9", t: "d", name: "carol", _updatedAt: t }],
+      messages: {},
+      notifications: [{ _id: "rest1", type: "comment_mention", createdAt: iso(Date.now()), metadata: {} }],
+    };
+    const hub = fakeHub(data);
+    const srv = await serve(hub.handler);
+    const { FakeWS, opened } = fakeWebSocket((m, ws) => {
+      if (m.msg === "connect") ws.push({ msg: "connected", session: "s" });
+      if (m.msg === "method" && m.method === "login") ws.push({ msg: "result", id: m.id, result: { id: USER, token: "x" } });
+      if (m.msg !== "sub") return;
+      if (m.name !== "in_app_notifications.updates") return ws.push({ msg: "ready", subs: [m.id] });
+      // What roxane answers: Meteor turns the publication's throw into a 500.
+      ws.push({ msg: "nosub", id: m.id, error: { isClientSafe: true, error: 500, reason: "Internal server error", errorType: "Meteor.Error" } });
+      const now = Date.now();
+      ws.push({
+        msg: "changed",
+        collection: "stream-room-messages",
+        id: "id",
+        fields: {
+          eventName: "__my_messages__",
+          args: [
+            { _id: "live2", rid: "dm9", msg: "hey", u: { _id: "u9", username: "carol" }, ts: { $date: now }, _updatedAt: { $date: now } },
+            { roomParticipant: true, roomType: "d", roomName: "carol" },
+          ],
+        },
+      });
+    });
+    const dir = tmpDir();
+    const statePath = path.join(dir, "state.json");
+    // A saved notification cursor, so the REST poll reports instead of seeding.
+    saveState(statePath, { ...emptyState(), cursor: { hub: t, notif: iso(Date.now() - 600_000) } });
+    resetEnv({ PRIVOS_HUB_URL: srv.url, PRIVOS_USER_ID: USER, PRIVOS_PAT: TOKEN });
+    try {
+      const res = await runDaemon(
+        ["subscribe", "--stdout", "--state", statePath],
+        (out, err) => out.includes("hub:msg:live2") && out.includes("hub:notif:rest1") && err.includes("ddp connected"),
+        { WebSocket: FakeWS },
+      );
+      assert.equal(res.code, 0, res.stderr);
+      assert.match(res.stderr, /in_app_notifications\.updates failed \(ddp subscription refused: 500\); polling notifications every 60s/);
+      assert.equal(opened.length, 1, "no reconnect loop");
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("--stdout keeps its own state and heartbeat, away from the live state.json", async () => {
+    const hub = fakeHub(hubData());
+    const srv = await serve(hub.handler);
+    const home = tmpDir();
+    const savedHome = process.env.HOME;
+    process.env.HOME = home;
+    resetEnv({ PRIVOS_HUB_URL: srv.url, PRIVOS_USER_ID: USER, PRIVOS_PAT: TOKEN });
+    const dir = path.join(home, ".privos", "subscribe");
+    try {
+      const res = await runDaemon(
+        ["subscribe", "--mode", "poll", "--stdout"],
+        (out) => lines(out).length >= 2 && fs.existsSync(path.join(dir, "state.stdout.json")),
+      );
+      assert.equal(res.code, 0, res.stderr);
+      assert.ok(!fs.existsSync(path.join(dir, "state.json")), "live state untouched");
+      assert.ok(!fs.existsSync(path.join(dir, "health")), "live heartbeat untouched");
+      assert.ok(fs.existsSync(path.join(dir, "state.stdout.health")));
+    } finally {
+      process.env.HOME = savedHome;
+      await srv.close();
+    }
+  });
+
+  test("--lists all reads lists.list; file events without --rooms watch joined rooms", async () => {
+    const data = { ...hubData(), lists: [{ _id: "l1", roomId: "room1" }] };
+    const hub = fakeHub(data);
+    const srv = await serve(hub.handler);
+    resetEnv({ PRIVOS_HUB_URL: srv.url, PRIVOS_USER_ID: USER, PRIVOS_PAT: TOKEN });
+    const filePolls = () => hub.requests.filter((r) => r.path.startsWith("/api/v1/file-management.files.filter/"));
+    try {
+      const res = await runDaemon(
+        ["subscribe", "--mode", "poll", "--stdout", "--events", "item,file", "--lists", "all", "--state", path.join(tmpDir(), "state.json")],
+        () => hub.requests.some((r) => r.path === "/api/v1/items.list") && filePolls().length >= 1,
+      );
+      assert.equal(res.code, 0, res.stderr);
+      assert.ok(hub.requests.some((r) => r.path === "/api/v1/lists.list" && r.query.count === "100"));
+      assert.ok(!hub.requests.some((r) => r.path === "/api/v1/lists.info"), "no per-list lookups");
+      assert.equal(hub.requests.find((r) => r.path === "/api/v1/items.list").query.listId, "l1");
+      assert.ok(["dm1", "room1"].includes(filePolls()[0].path.split("/").pop()));
+      assert.match(res.stderr, /lists=all\(1\) fileRooms=joined\(2\)/);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("lists and rooms are polled one per step, never faster than the minimum step", () => {
+    assert.equal(sweepStepMs(1, 90_000, 10_000), 90_000);
+    assert.equal(sweepStepMs(3, 90_000, 10_000), 30_000);
+    assert.equal(sweepStepMs(40, 90_000, 10_000), 10_000, "40 lists: 6 list reads a minute");
+    assert.equal(sweepStepMs(200, 300_000, 15_000), 15_000, "200 rooms: 4 file scans a minute");
+    assert.equal(sweepStepMs(0, 300_000, 15_000), 300_000);
   });
 });

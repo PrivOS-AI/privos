@@ -60,6 +60,12 @@ const HUB_POLL_MS = { poll: 60_000, realtime: 300_000 };
 const MIN_HUB_GAP_MS = 30_000;
 const ITEMS_POLL_MS = 90_000;
 const FILES_POLL_MS = 300_000;
+/** Lists and rooms are polled one per step so a long list of them stays inside the hub rate limit. */
+const ITEMS_MIN_STEP_MS = 10_000;
+const FILES_MIN_STEP_MS = 15_000;
+const LISTS_REFRESH_MS = 15 * 60 * 1000;
+const LIST_PAGE = 100;
+const LIST_MAX_PAGES = 50;
 const TASKS_POLL_MS = 60_000;
 const HEALTH_MS = 30_000;
 const LIVE_BOUNDARY_MS = 10 * 60 * 1000;
@@ -90,11 +96,17 @@ function parseEvents(value: string, allowed: readonly EventType[]): Set<EventTyp
   return out;
 }
 
+/** Each of `n` targets is polled once per `cycleMs`, but steps are never closer than `minStepMs`. */
+export function sweepStepMs(n: number, cycleMs: number, minStepMs: number): number {
+  return Math.max(Math.ceil(cycleMs / Math.max(1, n)), minStepMs);
+}
+
 function buildFilters(p: Parsed, events: Set<EventType>, hub: HubConfig, username: string): Filters {
   return {
     events,
     rooms: new Set(splitList(p.rooms)),
-    lists: new Set(splitList(p.lists)),
+    // `--lists all` watches every list, so it filters nothing.
+    lists: new Set(splitList(p.lists).filter((id) => id !== "all")),
     excludeSelf: true,
     excludeBots: p.excludeBots,
     groupMentions: p.groupMentions,
@@ -228,6 +240,8 @@ interface Options {
   statePath: string;
   hub: HubConfig;
   lists: string[];
+  /** `--lists all`: every list in the rooms the user belongs to, re-read every 15 min. */
+  allLists: boolean;
   boards: BoardHost[];
   webhook?: Webhook;
   timeoutMs: number;
@@ -240,6 +254,8 @@ class Subscriber {
   private readonly rooms = new Map<string, RoomInfo>();
   private readonly listRooms = new Map<string, string>();
   private fileRooms: string[] = [];
+  private lists: string[];
+  private readonly sweepAt: Record<string, number> = {};
   private readonly hubClient: Client;
   private readonly hubRetry: ReturnType<typeof retryAfterCapture>;
   private readonly boardClients = new Map<string, Client>();
@@ -252,6 +268,8 @@ class Subscriber {
   private dirty = false;
   private ddp: DDPClient | undefined;
   private ddpStatus: "off" | "connecting" | "connected" | "disconnected" = "off";
+  /** The in_app_notifications.updates publication is live on the current socket. */
+  private notifLive = false;
   private notifSeeding = false;
   private lastError = "";
   private readonly startedAt = Date.now();
@@ -270,6 +288,7 @@ class Subscriber {
     private readonly deps: SubscribeDeps,
     signal: AbortSignal,
   ) {
+    this.lists = o.lists;
     this.state = loadState(o.statePath, (m) => this.log(m));
     this.seen = new SeenLRU(this.state.seen);
     this.delivery = new Delivery(this.state.outbox);
@@ -350,11 +369,16 @@ class Subscriber {
     }
     // First run: start from the hub's own clock, not this host's.
     if (!this.state.cursor.hub) this.state.cursor.hub = isoOf(newest > 0 ? newest : Date.now());
+    if (this.o.allLists) {
+      await this.refreshLists();
+      this.next.lists = Date.now() + LISTS_REFRESH_MS;
+    }
     for (const listId of this.o.lists) {
       const res = await this.hubGet("/api/v1/lists.info", { listId });
       const rid = res.list?.roomId;
       if (typeof rid === "string") this.listRooms.set(listId, rid);
     }
+    // Without --rooms, files are watched in every joined room (fileTargets).
     if (this.o.filters.events.has("file")) {
       for (const want of this.o.filters.rooms) {
         const rid = this.rooms.has(want)
@@ -364,6 +388,51 @@ class Subscriber {
         else this.log(`room ${JSON.stringify(want)} is not one of your rooms; its files are not watched`);
       }
     }
+  }
+
+  /** lists.list: every list the hub lets this user see in the rooms they belong to. */
+  private async refreshLists(): Promise<void> {
+    const ids: string[] = [];
+    let offset = 0;
+    for (let page = 0; page < LIST_MAX_PAGES; page++) {
+      const res = await this.hubGet("/api/v1/lists.list", { count: String(LIST_PAGE), offset: String(offset) });
+      if (!Array.isArray(res.lists)) throw new Error("lists.list: response has no lists array");
+      for (const list of res.lists as Record<string, any>[]) {
+        if (typeof list?._id !== "string") continue;
+        ids.push(list._id);
+        if (typeof list.roomId === "string") this.listRooms.set(list._id, list.roomId);
+      }
+      offset += res.lists.length;
+      if (res.lists.length === 0 || offset >= (typeof res.total === "number" ? res.total : 0)) break;
+    }
+    this.lists = ids;
+  }
+
+  private fileTargets(): string[] {
+    return this.o.filters.rooms.size > 0 ? this.fileRooms : [...this.rooms.keys()];
+  }
+
+  /** Polls the next target of `targets`, round robin, one per step (see sweepStepMs). */
+  private async sweep(
+    name: string,
+    cycleMs: number,
+    minStepMs: number,
+    targets: string[],
+    fn: (target: string) => Promise<void>,
+  ): Promise<void> {
+    if (targets.length === 0) return;
+    await this.runSource(name, sweepStepMs(targets.length, cycleMs, minStepMs), async () => {
+      const i = (this.sweepAt[name] ?? 0) % targets.length;
+      // Move on even when this target fails, so one broken list or room cannot stall the rest.
+      this.sweepAt[name] = i + 1;
+      await fn(targets[i]!);
+    });
+  }
+
+  /** Without the live notification feed, notifications are polled at the --mode poll rate. */
+  private hubInterval(mode: "realtime" | "poll"): number {
+    if (mode === "poll") return HUB_POLL_MS.poll;
+    return this.o.filters.events.has("notification") && !this.notifLive ? HUB_POLL_MS.poll : HUB_POLL_MS.realtime;
   }
 
   private wantsHub(): boolean {
@@ -531,6 +600,7 @@ class Subscriber {
         onData: (m) => this.onDDP(m),
         onClose: (reason) => {
           this.ddpStatus = "disconnected";
+          this.notifLive = false;
           onClosed(reason);
         },
       });
@@ -548,6 +618,11 @@ class Subscriber {
           this.notifSeeding = true;
           try {
             await client.sub("in_app_notifications.updates", []);
+            this.notifLive = true;
+          } catch (err) {
+            // A closed socket reconnects; a refused publication must not hold up the message stream.
+            if (client.isClosed) throw err;
+            this.log(`ddp: in_app_notifications.updates failed (${errMessage(err)}); polling notifications every 60s`);
           } finally {
             this.notifSeeding = false;
           }
@@ -578,6 +653,7 @@ class Subscriber {
       mode: this.o.mode,
       sink: this.o.sink,
       ddp: this.ddpStatus,
+      notifications: !this.o.filters.events.has("notification") ? "off" : this.notifLive ? "ddp" : "poll",
       cursor: this.state.cursor,
       outbox: this.delivery.pending,
       seen: this.seen.size,
@@ -595,19 +671,16 @@ class Subscriber {
   }
 
   /** Polls every due source, one at a time. Hub rate-limit waits only hold up this loop. */
-  private async sourceLoop(hubEvery: number): Promise<void> {
+  private async sourceLoop(mode: "realtime" | "poll"): Promise<void> {
     const f = this.o.filters;
     while (!this.signal.aborted) {
-      if (this.wantsHub()) await this.runSource("hub", hubEvery, () => this.pollHub());
+      if (this.wantsHub()) await this.runSource("hub", this.hubInterval(mode), () => this.pollHub());
       if (f.events.has("item")) {
-        await this.runSource("items", ITEMS_POLL_MS, async () => {
-          for (const listId of this.o.lists) await pollItems(this.ctx, listId);
-        });
+        if (this.o.allLists) await this.runSource("lists", LISTS_REFRESH_MS, () => this.refreshLists());
+        await this.sweep("items", ITEMS_POLL_MS, ITEMS_MIN_STEP_MS, this.lists, (listId) => pollItems(this.ctx, listId));
       }
       if (f.events.has("file")) {
-        await this.runSource("files", FILES_POLL_MS, async () => {
-          for (const rid of this.fileRooms) await pollFiles(this.ctx, rid);
-        });
+        await this.sweep("files", FILES_POLL_MS, FILES_MIN_STEP_MS, this.fileTargets(), (rid) => pollFiles(this.ctx, rid));
       }
       if (f.events.has("task")) {
         await this.runSource("tasks", TASKS_POLL_MS, async () => {
@@ -646,10 +719,11 @@ class Subscriber {
     }
     this.log(
       `start mode=${mode} sink=${this.o.sink} events=${[...f.events].join(",")} rooms=${f.rooms.size} ` +
-        `lists=${this.o.lists.length} fileRooms=${this.fileRooms.length} boards=${this.o.boards.map((b) => b.alias).join(",") || "-"}`,
+        `lists=${this.o.allLists ? `all(${this.lists.length})` : this.lists.length} ` +
+        `fileRooms=${f.rooms.size > 0 ? this.fileRooms.length : `joined(${this.rooms.size})`} boards=${this.o.boards.map((b) => b.alias).join(",") || "-"}`,
     );
     const ddpDone = mode === "realtime" && this.wantsHub() ? this.ddpLoop(WebSocketImpl!) : Promise.resolve();
-    await Promise.all([this.sourceLoop(HUB_POLL_MS[mode]), this.deliveryLoop(), ddpDone]);
+    await Promise.all([this.sourceLoop(mode), this.deliveryLoop(), ddpDone]);
     this.save();
     this.writeHealth();
     this.log(`stopped events=${this.counters.events} posted=${this.counters.posted} outbox=${this.delivery.pending}`);
@@ -691,21 +765,22 @@ export async function subscribe(p: Parsed, stdout: Out, stderr: Out, deps: Subsc
   const mode = p.mode === "" ? "realtime" : p.mode;
   if (mode !== "realtime" && mode !== "poll") throw usage("--mode must be realtime or poll");
   const lists = splitList(p.lists);
-  if (events.has("item") && lists.length === 0) throw usage("item events need --lists <listId,...>");
+  const allLists = lists.includes("all");
+  if (allLists && lists.length > 1) throw usage("--lists all cannot be combined with list ids");
+  if (events.has("item") && lists.length === 0) throw usage("item events need --lists <listId,...> or --lists all");
   if (lists.length > 0 && !events.has("item") && !events.has("notification")) {
     throw usage("--lists applies to item and notification events; add item to --events");
   }
-  if (events.has("file") && splitList(p.rooms).length === 0) throw usage("file events need --rooms <rid|name,...>");
   if (events.has("task") && p.projectsSpec === "") throw usage("task events need --projects <board>:<projectId>,...");
   if (p.projectsSpec !== "" && !events.has("task")) throw usage("--projects needs task in --events");
   const sink = sinkOf(p);
   const webhook = resolveWebhook(p, sink === "post");
   const hub = resolveHub(p.url, "", "");
   const boards = events.has("task") ? parseBoards(p.projectsSpec) : [];
-  // A dry run marks events seen, so by default it keeps its own state and a later --confirm
-  // run still delivers them.
+  // Dry and stdout runs mark events seen, so by default each keeps its own state and the
+  // --confirm daemon on state.json still delivers them.
   const statePath = expandHome(
-    p.state !== "" ? p.state : sink === "dry-run" ? defaultStatePath().replace(/\.json$/, ".dry-run.json") : defaultStatePath(),
+    p.state !== "" ? p.state : sink === "post" ? defaultStatePath() : defaultStatePath().replace(/\.json$/, `.${sink}.json`),
   );
   const options: Options = {
     mode,
@@ -713,7 +788,8 @@ export async function subscribe(p: Parsed, stdout: Out, stderr: Out, deps: Subsc
     filters: buildFilters(p, events, hub, ""),
     statePath,
     hub,
-    lists,
+    lists: allLists ? [] : lists,
+    allLists: allLists && events.has("item"),
     boards,
     webhook,
     timeoutMs: timeoutSeconds(p) * 1000,
@@ -766,6 +842,7 @@ export function subscribeStatus(p: Parsed, stdout: Out): void {
     mode: health?.mode ?? null,
     sink: health?.sink ?? null,
     ddp: health?.ddp ?? null,
+    notifications: health?.notifications ?? null,
     cursor: state.cursor ?? {},
     lagSec: hubCursor ? Math.round((now - Date.parse(hubCursor)) / 1000) : null,
     outbox: Array.isArray(state.outbox) ? state.outbox.length : 0,
