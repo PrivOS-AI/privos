@@ -86,11 +86,15 @@ export async function sandboxTasksAnswer(
     // so poll until it is gone.
     const deadline = Date.now() + timeoutSeconds(p) * 1000;
     for (;;) {
-      const after = await pendingQuestion(client, id);
-      if (after === null || after.toolUseId !== toolUseId) break;
-      if (Date.now() >= deadline) {
-        throw new Error("answer sent but not confirmed: the question is still pending");
+      // A failed read says nothing about delivery; keep polling until the deadline.
+      let state = "the question is still pending";
+      try {
+        const after = await pendingQuestion(client, id);
+        if (after === null || after.toolUseId !== toolUseId) break;
+      } catch (err) {
+        state = `the question could not be re-read (${err instanceof Error ? err.message : String(err)})`;
       }
+      if (Date.now() >= deadline) throw new Error(`answer sent but not confirmed: ${state}`);
       await sleep(500);
     }
     confirmedBy = "question cleared";
