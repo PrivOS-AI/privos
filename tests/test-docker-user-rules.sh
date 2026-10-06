@@ -308,9 +308,11 @@ unset VM_EGRESS_MODE
 out="$( ( validate_vm_egress_mode ) 2>&1 )"
 assert_status 0 "$?" "validate_vm_egress_mode: unset is accepted (open)"
 for mode in open enforce; do
+  # shellcheck disable=SC2034 # read by validate_vm_egress_mode
   ( VM_EGRESS_MODE="$mode"; validate_vm_egress_mode )
   assert_status 0 "$?" "validate_vm_egress_mode: accepts ${mode}"
 done
+# shellcheck disable=SC2034 # read by validate_vm_egress_mode
 out="$( ( VM_EGRESS_MODE=Enforce; validate_vm_egress_mode ) 2>&1 )"
 rc=$?
 assert_status 1 "$rc" "validate_vm_egress_mode: rejects an unknown value (case-sensitive)"
