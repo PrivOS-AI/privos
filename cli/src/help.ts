@@ -44,6 +44,9 @@ Commands:
   hub items delete
   hub items move
   hub items reorder
+  hub inbox                One read-only poll of messages and notifications
+  subscribe                Read-only event daemon (hub, lists, files, board tasks)
+  subscribe status         Heartbeat, cursor, lag, and outbox of the daemon
   version                  Print the CLI version
 
 Reads send GET. Writes are a dry run unless you pass --confirm: they print
@@ -349,12 +352,13 @@ Commands:
   messages list|send|update|delete
   lists list|get|create|update|delete
   items list|get|search|find|create|update|delete|move|reorder
+  inbox --since TIME
 
 Environment (flags override):
   PRIVOS_HUB_URL          Hub base URL
   PRIVOS_ROOT_URL         Used when PRIVOS_HUB_URL is unset (installer)
-  PRIVOS_HUB_USER_ID      X-User-Id
-  PRIVOS_HUB_AUTH_TOKEN   X-Auth-Token
+  PRIVOS_HUB_USER_ID      X-User-Id (PRIVOS_USER_ID also works)
+  PRIVOS_HUB_AUTH_TOKEN   X-Auth-Token (PRIVOS_PAT also works)
 
 A default self-hosted hub listens on http://127.0.0.1:3000
 (PRIVOS_HUB_PORT). Create a personal access token in the hub UI, or
@@ -623,6 +627,89 @@ POST /api/v1/items.updateOrder with {"itemId","newOrder"}. --order is an
 integer. Dry run unless --confirm. items.bulkUpdateOrder is not a command.
 `;
 
+const hubInboxHelp = `Usage:
+  privos hub inbox --since ISO|EPOCH_MS [--events dm,mention,message,notification]
+                   [--rooms RID|NAME,...] [--exclude-bots] [--group-mentions]
+                   [--include-text] [--priority-from USER,...] [--url URL]
+
+One read-only poll for a cron routine: subscriptions.get?updatedSince, then
+chat.syncMessages for each changed room, then in-app-notifications.list.
+Prints one JSON event per line (the same envelope as privos subscribe --stdout)
+and exits. The next cursor is printed on stderr as "cursor <ISO time>"; it
+keeps a two-minute overlap, so dedupe events on id across runs.
+
+Default --events is dm,mention,notification. Your own messages are always
+skipped. Message text is left out unless --include-text is set.
+Credentials come from the environment only (PRIVOS_HUB_URL, PRIVOS_USER_ID,
+PRIVOS_PAT, or the PRIVOS_HUB_* names).
+`;
+
+const subscribeHelp = `Usage:
+  privos subscribe [--events LIST] [--rooms RID|NAME,...] [--lists LIST_ID,...]
+                   [--projects BOARD:PROJECT_ID,...] [--exclude-self] [--exclude-bots]
+                   [--group-mentions] [--include-text] [--priority-from USER,...]
+                   [--mode realtime|poll] [--state PATH]
+                   [--stdout | --dry-run | --confirm]
+                   [--webhook-url-env NAME] [--webhook-key-env NAME] [--webhook-header NAME]
+  privos subscribe status [--state PATH]
+
+A long-running, read-only watcher. It sends only GET requests to the hub and
+boards, and on the hub websocket only DDP connect, login (resume token), and
+sub. It never posts to PrivOS and never creates integrations.
+
+Events (--events, default dm,mention,notification):
+  dm            Direct messages
+  mention       Messages that mention you, or replies in threads you follow
+  message       Every message in your rooms (DMs and mentions keep their type)
+  notification  In-app notifications (item assigned, stage changed, comments)
+  item          List items created or changed (needs --lists; polled every 90 s)
+  file          Room files created, changed, or deleted (needs --rooms; every 5 min)
+  task          Board tasks (needs --projects; polled every 60 s)
+
+Sources:
+  --mode realtime (default) uses the hub websocket and polls every 5 min as a
+  backstop. --mode poll polls the hub every 60 s. Board tasks are always polled.
+  After a reconnect or restart it reads back from the saved cursor minus 2 min.
+
+Delivery:
+  --stdout      One JSON event per line on stdout, no webhook
+  (default)     Dry run: prints the webhook batches it would send
+  --confirm     POST batches to the webhook: a 45 s coalescing window, at most
+                4 POSTs a minute and 60 events a POST (the rest go into the
+                digest counts). Events from --priority-from users skip the
+                window. Failed POSTs retry with backoff (2 s to 5 min); a 4xx
+                other than 408, 413, or 429 stops the daemon with exit 1.
+
+Filters: your own messages are always skipped, as are system messages.
+--rooms limits messages, notifications, and files to those rooms; --lists
+limits item events and item notifications. Message text, item names, and file
+names are left out unless --include-text is set (cut to 200 characters).
+
+Environment:
+  PRIVOS_HUB_URL, PRIVOS_USER_ID, PRIVOS_PAT     Hub (PRIVOS_HUB_* names also work)
+  PRIVOS_SANDBOX_URL, PRIVOS_SANDBOX_API_KEY     Board "td" in --projects
+  <BOARD>_URL, <BOARD>_API_ACCESS_KEY            Any other board alias, e.g.
+                                                 TVIBE_URL, TVIBE_API_ACCESS_KEY
+  GROK_MASTER_WEBHOOK_URL                        Webhook URL (--webhook-url-env renames it)
+  GROK_MASTER_WEBHOOK_KEY                        Webhook key (--webhook-key-env renames it)
+  GROK_MASTER_WEBHOOK_HEADER                     Header that carries the key
+
+State: ~/.privos/subscribe/state.json (mode 0600; one daemon per file); a dry
+run defaults to state.dry-run.json so it does not use up events. It holds
+cursors, seen ids, snapshots, and the outbox, which can include message text
+when --include-text is set. A heartbeat is written to "health" next to it
+every 30 s; privos subscribe status exits 1 when it is older than 10 min.
+Logs carry ids and counts, never message text, keys, or the webhook URL.
+`;
+
+const subscribeStatusHelp = `Usage:
+  privos subscribe status [--state PATH]
+
+Prints the daemon heartbeat age, pid, mode, websocket state, cursors, lag,
+outbox size, and counters as JSON. Exits 1 when there is no heartbeat in the
+last 10 minutes.
+`;
+
 const versionHelp = `Usage:
   privos version
 
@@ -678,6 +765,9 @@ const HELP: Record<string, string> = {
   "hub items delete": hubItemsDeleteHelp,
   "hub items move": hubItemsMoveHelp,
   "hub items reorder": hubItemsReorderHelp,
+  "hub inbox": hubInboxHelp,
+  subscribe: subscribeHelp,
+  "subscribe status": subscribeStatusHelp,
   version: versionHelp,
 };
 

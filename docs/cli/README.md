@@ -66,8 +66,8 @@ process list. Do not put credentials in the URL.
 | Sandbox base URL | `--url` | `PRIVOS_SANDBOX_URL` | request URL |
 | Sandbox API key | `--api-key` | `PRIVOS_SANDBOX_API_KEY`, then `API_ACCESS_KEY`, then `SANDBOX_API_KEY` | `x-api-key` |
 | Hub base URL | `--url` | `PRIVOS_HUB_URL`, then `PRIVOS_ROOT_URL` | request URL |
-| Hub user id | `--user-id` | `PRIVOS_HUB_USER_ID` | `X-User-Id` |
-| Hub auth token | `--auth-token` | `PRIVOS_HUB_AUTH_TOKEN` | `X-Auth-Token` |
+| Hub user id | `--user-id` | `PRIVOS_HUB_USER_ID`, then `PRIVOS_USER_ID` | `X-User-Id` |
+| Hub auth token | `--auth-token` | `PRIVOS_HUB_AUTH_TOKEN`, then `PRIVOS_PAT` | `X-Auth-Token` |
 
 `API_ACCESS_KEY` is the name the board container uses. `SANDBOX_API_KEY` is
 the name `install.sh` writes into the stack `.env`. `PRIVOS_ROOT_URL` is the
@@ -147,6 +147,14 @@ privos hub items update --id ITEM_ID [--name NAME] [--description TEXT] [--stage
 privos hub items delete --id ITEM_ID
 privos hub items move --id ITEM_ID --stage STAGE_ID
 privos hub items reorder --id ITEM_ID --order N
+
+privos hub inbox --since ISO|EPOCH_MS [--events dm,mention,message,notification] [--rooms LIST] [--include-text]
+
+privos subscribe [--events LIST] [--rooms LIST] [--lists LIST] [--projects BOARD:PID,...]
+                 [--priority-from USERS] [--mode realtime|poll] [--state PATH]
+                 [--stdout | --dry-run | --confirm] [--include-text] [--exclude-bots] [--group-mentions]
+                 [--webhook-url-env NAME] [--webhook-key-env NAME] [--webhook-header NAME]
+privos subscribe status [--state PATH]
 ```
 
 `--project` may be repeated on `tasks list`. Task create takes exactly one
@@ -174,6 +182,136 @@ a JSON array, and its response includes `defaultStage` for
 `hub items create --stage`. Field CRUD (`lists.addField`, `lists.fields.*`),
 `items.bulkUpdateOrder`, and `stages.*` are not commands. The CLI does not
 call `/api/v1/bot/lists` or MCP `privos.lists.*`. See [Hub API](../api/hub.md).
+
+## Subscribe
+
+`privos subscribe` is a read-only watcher that turns hub and board activity
+into one JSON envelope per event. It is meant to run as a long-lived service
+(systemd `--user` or pm2) and hand events to a webhook.
+
+It only reads. Toward the hub and boards it sends `GET` requests and, on the
+hub websocket, the DDP `connect`, `login` (the personal access token as a
+resume token), and `sub` frames. Any other DDP method is refused. It never
+posts to PrivOS and never creates integrations.
+
+| Event | Source |
+|---|---|
+| `dm`, `mention`, `message` | DDP `stream-room-messages` `__my_messages__`; backstop `subscriptions.get?updatedSince` then `chat.syncMessages` |
+| `notification` | DDP `in_app_notifications.updates`; backstop `in-app-notifications.list` |
+| `item` | `items.list?sort=_updatedAt:-1` for each `--lists` id, every 90 s |
+| `file` | `file-management.files.filter/:channelId` for each `--rooms` room, every 5 min (full scan) |
+| `task` | Board `GET /api/tasks?projectIds=` for each `--projects` board, every 60 s |
+
+`--mode realtime` (default) also subscribes to `<uid>/notification` and
+`<uid>/subscriptions-changed`, and runs the REST backstop every 5 minutes.
+`--mode poll` polls the hub every 60 seconds. Realtime needs the built-in
+`WebSocket` of Node.js 22 or later; on Node.js 20 it falls back to poll. On
+start and after each reconnect it reads back from the saved cursor minus two
+minutes. The in-app notification publication replays the full history when
+it is subscribed; that replay only marks ids as seen.
+
+`--projects td:<pid>,tvibe:<pid>` names boards by alias. `td` is the default
+board (`PRIVOS_SANDBOX_URL`, `PRIVOS_SANDBOX_API_KEY`). Any other alias `X`
+reads `X_URL` and `X_API_ACCESS_KEY`, for example `TVIBE_URL` and
+`TVIBE_API_ACCESS_KEY`. The board Socket.IO stream is not used.
+
+Envelope:
+
+```json
+{"id":"hub:msg:<_id>","source":"hub","type":"dm","action":"created",
+ "ids":{"roomId":"...","messageId":"..."},"actor":{"id":"...","username":"..."},
+ "ts":"2026-10-06T08:00:00.000Z","link":"https://hub/direct/<rid>?msg=<_id>",
+ "raw_ref":"/api/v1/chat.getMessage?msgId=<_id>"}
+```
+
+Ids are `hub:msg:<_id>[:edit:<editedAt>]`, `hub:notif:<_id>`,
+`hub:item:<itemId>:<_updatedAt>`, `hub:file:<fileId>:<updated_at|deleted>`, and
+`sb:<board>:task:<taskId>:<updatedAt|deleted>`. `summary` (at most 200
+characters of message text, item name, file name, or task title) is present
+only with `--include-text`. `priority: true` marks DMs, mentions, and
+notifications from a `--priority-from` user.
+
+Filters: your own messages, system messages, hidden and imported messages,
+and messages from rooms you have not joined are always skipped.
+`--exclude-bots` also skips bot messages. `@all` and `@here` count as
+mentions only with `--group-mentions`. `--rooms` (room id or name) limits
+messages, notifications, and file watching; `--lists` limits item events and
+item notifications.
+
+Delivery:
+
+| Mode | Behaviour |
+|---|---|
+| `--stdout` | One envelope per line on stdout. No webhook. |
+| default / `--dry-run` | Prints each batch it would POST as `{"dryRun":true,"webhook":{...},"payload":{...}}`. |
+| `--confirm` | POSTs `{source, version, batchId, sentAt, events, digest}` to the webhook. |
+
+Batches coalesce for 45 seconds, at most 4 POSTs a minute and 60 events a
+POST. Events past 60 are counted in `digest.omitted` and `digest.omittedByType`
+instead of sent. The outbox holds at most 2,000 events; overflow is counted in
+`digest.dropped`. Events from `--priority-from` users skip the 45-second
+window but not the per-minute limit, and they go first in a batch. A failed
+POST stays queued and retries after 2 seconds, doubling to 5 minutes with up
+to 25% jitter; a 429 `Retry-After` is honoured up to 5 minutes. A 413 halves
+the batch size and retries. Any other 4xx except 408 and 429 (a wrong URL,
+key, or header) stops the daemon with exit code 1 and keeps the outbox.
+Delivery is at least once: a crash between a successful POST and the state
+write sends the events again, possibly in a batch with a different `batchId`.
+Receivers should dedupe on `events[].id`.
+
+| Webhook setting | Default source |
+|---|---|
+| URL | `GROK_MASTER_WEBHOOK_URL` (rename with `--webhook-url-env`) |
+| Key | `GROK_MASTER_WEBHOOK_KEY` (rename with `--webhook-key-env`) |
+| Header carrying the key | `--webhook-header`, else `GROK_MASTER_WEBHOOK_HEADER` |
+
+The URL must be `https` (plain `http` only for localhost). The URL and key
+come only from the environment and never appear in logs.
+
+State lives in `~/.privos/subscribe/state.json` (change with `--state`). A dry
+run uses `state.dry-run.json` by default, because it marks events as seen and
+a later `--confirm` run must still deliver them. The state holds the
+hub cursors, seen ids (10,000 ids, 7 days), item, file, and task snapshots,
+and the outbox. It is written atomically with mode `0600` in a `0700`
+directory, and a lock file allows one daemon per state file. With
+`--include-text` the outbox holds message text and the file snapshot holds file
+names; without it file names are stored only as hashes. A heartbeat is written to
+`health` next to it every 30 seconds. `privos subscribe status` prints the
+heartbeat age, cursors, lag, outbox size, and counters, and exits `1` when
+there has been no heartbeat for 10 minutes. Logs carry ids and counts only.
+
+Hub requests are limited to 20 a minute and hub polls are at least 30 seconds
+apart. Polling runs separately from delivery and the heartbeat, so a slow poll
+does not hold back a priority event. The hub message cursor is the newest
+subscription `_updatedAt` of each `subscriptions.get` snapshot, so a slow poll
+cannot skip a room that changed after the snapshot. After a websocket
+reconnect, the replayed notification history is ignored except for
+notifications newer than the cursor minus two minutes, which were created
+while the socket was down. A 429 from the hub or a board waits for `Retry-After` (60 seconds when
+absent); other errors retry from 1 second, doubling to 60 seconds.
+
+Known limits:
+
+- Hard-deleted list items are not reported (the hub keeps no tombstone).
+- Item events cover creation, stage changes, and changes to the name,
+  description, or custom fields. A comment alone only bumps the item's
+  `_updatedAt` and is left to the `comment_*` notification. The hub does not
+  record who made a normal update, so update events carry no `actor`.
+- In poll mode (and in the realtime backstop) a room is read only when its
+  subscription changes. The hub does not bump it for edits, deletes,
+  reactions, replies in threads you do not follow, or some `@all` messages, so
+  those can be missed there. The realtime stream still sees edits.
+- One notification poll reads at most 250 notifications; a larger burst logs a
+  warning and the older ones are skipped.
+- A single response over 8 MiB (for example `chat.syncMessages` for a very
+  busy room after a long outage, or `/api/tasks` for a very large board)
+  fails that source with `response exceeds 8388608 bytes` until it shrinks.
+
+`privos hub inbox --since` runs the same hub poll once (messages and in-app
+notifications since the given time), prints envelopes, writes
+`cursor <ISO time>` to stderr for the next run, and exits. It keeps no state.
+The printed cursor already keeps a two-minute overlap, so consecutive runs can
+repeat an event; dedupe on `id`.
 
 ## Writes
 

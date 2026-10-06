@@ -15,6 +15,10 @@ Reads send `GET`. Writes print the request and send nothing unless you pass
 Sandbox auth is the `x-api-key` header (`--api-key` or `PRIVOS_SANDBOX_API_KEY`).
 Hub auth is `X-User-Id` and `X-Auth-Token` (`--user-id`, `--auth-token`).
 
+`privos subscribe` is a read-only watcher that turns DMs, mentions, in-app
+notifications, list items, room files, and board tasks into JSON events on
+stdout or a webhook. `privos hub inbox --since` does one poll for cron jobs.
+
 This package is not part of the signed self-hosted install bundle. Full
 command and endpoint notes live in the repository:
 [docs/cli/README.md](https://github.com/PrivOS-AI/privos/blob/main/docs/cli/README.md).

@@ -49,17 +49,18 @@ import {
   sandboxTasksStart,
   sandboxTasksUpdate,
 } from "./sandbox.js";
+import { hubInbox, subscribe, subscribeStatus, type SubscribeDeps } from "./subscribe.js";
 import { isUsage, usage } from "./usage.js";
 
 export async function run(
   args: string[],
   stdout: Out,
   stderr: Out,
-  deps?: { fetch?: typeof fetch },
+  deps?: Partial<SubscribeDeps>,
 ): Promise<number> {
   try {
     const parsed = parseArgs(args);
-    await dispatch(parsed, stdout, stderr, deps?.fetch ?? globalThis.fetch);
+    await dispatch(parsed, stdout, stderr, { ...deps, fetch: deps?.fetch ?? globalThis.fetch });
     return 0;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -68,7 +69,8 @@ export async function run(
   }
 }
 
-async function dispatch(p: Parsed, stdout: Out, stderr: Out, fetchImpl: typeof fetch): Promise<void> {
+async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps): Promise<void> {
+  const fetchImpl = deps.fetch;
   if (p.positionals.length === 0) {
     if (p.help) {
       stdout.write(rootHelp);
@@ -114,6 +116,15 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, fetchImpl: typeof f
     case "hub lists":
     case "hub items":
       throw usage(`${text.trimEnd()}\nRun privos ${cmd} --help`);
+    case "subscribe":
+      await subscribe(p, stdout, stderr, deps);
+      return;
+    case "subscribe status":
+      subscribeStatus(p, stdout);
+      return;
+    case "hub inbox":
+      await hubInbox(p, stdout, stderr, fetchImpl);
+      return;
     case "sandbox projects list":
       await sandboxProjectsList(p, stdout, fetchImpl);
       return;
