@@ -1,4 +1,4 @@
-# PrivOS — self-hosted installer & release bundle
+# PrivOS — the AI-native operating system for enterprise work
 
 Community Edition is free and self-hosted for up to 10 users (signed-in users across your company), commercial rights reserved.
 **The installer is source-available today; we plan to open the full PrivOS source in the near future (no date yet).** See [License](#license).
