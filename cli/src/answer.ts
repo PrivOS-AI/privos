@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { resolveSandbox } from "./config.js";
+import { REQUESTER_FLAGS, requesterHeaders, resolveRequester, socketAuth, socketRequester, type Requester } from "./requester.js";
 import { helpFor } from "./help.js";
 import { Client } from "./http.js";
 import { DRY_RUN_NOTE, sandboxHeaders } from "./mutate.js";
@@ -24,7 +25,7 @@ export async function sandboxTasksAnswer(
   stderr: Out,
   fetchImpl: typeof fetch,
 ): Promise<void> {
-  forbidUnknown(p, "sandbox tasks answer", ["url", "api-key", "confirm", "dry-run", "id", "answer"]);
+  forbidUnknown(p, "sandbox tasks answer", ["url", "api-key", ...REQUESTER_FLAGS, "confirm", "dry-run", "id", "answer"]);
   requireFlag(p, "id", p.id, helpFor(["sandbox", "tasks", "answer"]));
   const id = pathSegment("id", p.id);
   if (p.format === "table") {
@@ -35,7 +36,8 @@ export async function sandboxTasksAnswer(
     throw usage("sandbox tasks answer: pass --answer TEXT once per question, in order");
   }
   const cfg = resolveSandbox(p.url, p.apiKey);
-  const client = new Client(cfg.baseURL, sandboxHeaders(cfg.apiKey), timeoutSeconds(p) * 1000, fetchImpl);
+  const requester = resolveRequester(p);
+  const client = new Client(cfg.baseURL, sandboxHeaders(cfg.apiKey, requester), timeoutSeconds(p) * 1000, fetchImpl);
   const task = readJSON(await client.get(`/api/tasks/${id}`)) as Record<string, unknown> | null;
   const projectId = task?.projectId;
   if (typeof projectId !== "string" || projectId === "") throw new Error("task has no projectId");
@@ -60,11 +62,13 @@ export async function sandboxTasksAnswer(
         url: cfg.baseURL,
         event: "question:answer",
         omittedAuthNames: ["auth.token"],
+        auth: requester === null ? {} : { requester: socketRequester(requester) },
         payload,
       },
       {
         method: "POST",
         url: `${cfg.baseURL}${logPath}`,
+        headers: requesterHeaders(requester),
         omittedHeaderNames: ["x-api-key"],
         body: logBody,
         note: "best effort; errors are ignored",
@@ -75,7 +79,7 @@ export async function sandboxTasksAnswer(
     return;
   }
 
-  const ack = await emitAnswer(cfg.baseURL, cfg.apiKey, payload, timeoutSeconds(p) * 1000);
+  const ack = await emitAnswer(cfg.baseURL, cfg.apiKey, requester, payload, timeoutSeconds(p) * 1000);
   let confirmedBy: string;
   if (ack !== null && ack.success === false) {
     throw new Error(`question:answer rejected: ${typeof ack.error === "string" ? ack.error : "unknown error"}`);
@@ -135,12 +139,13 @@ async function pendingQuestion(client: Client, id: string): Promise<PendingQuest
 async function emitAnswer(
   baseURL: string,
   apiKey: string,
+  requester: Requester | null,
   payload: unknown,
   timeoutMs: number,
 ): Promise<Record<string, unknown> | null> {
   // Loaded here so commands that never answer do not load socket.io.
   const { io } = await import("socket.io-client");
-  const socket = io(baseURL, { auth: { token: apiKey }, reconnection: false, timeout: timeoutMs });
+  const socket = io(baseURL, { auth: socketAuth(apiKey, requester), reconnection: false, timeout: timeoutMs });
   try {
     return await new Promise((resolve, reject) => {
       socket.on("connect_error", (err: Error) => {

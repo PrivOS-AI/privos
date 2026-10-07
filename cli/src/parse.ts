@@ -27,6 +27,9 @@ export interface Parsed {
   data: string;
   messageId: string;
   fileIds: string[];
+  requester: string;
+  requesterName: string;
+  requesterKind: string;
   projects: string[];
   members: string[];
   answers: string[];
@@ -127,6 +130,9 @@ const VALUE_FLAGS = new Set([
   "data",
   "message-id",
   "file-id",
+  "requester",
+  "requester-name",
+  "requester-kind",
   "project",
   "status",
   "limit",
@@ -291,6 +297,9 @@ function emptyParsed(): Parsed {
     data: "",
     messageId: "",
     fileIds: [],
+    requester: "",
+    requesterName: "",
+    requesterKind: "",
     projects: [],
     members: [],
     answers: [],
@@ -518,6 +527,15 @@ function assignValue(p: Parsed, name: string, value: string): void {
       break;
     case "file-id":
       p.fileIds.push(trimmed);
+      break;
+    case "requester":
+      p.requester = trimmed;
+      break;
+    case "requester-name":
+      p.requesterName = trimmed;
+      break;
+    case "requester-kind":
+      p.requesterKind = trimmed;
       break;
     case "project":
       p.projects.push(trimmed);
