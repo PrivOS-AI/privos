@@ -13,29 +13,38 @@ Community Edition is free and self-hosted for up to 10 users (signed-in users ac
 
 ## What is PrivOS?
 
-PrivOS is a private workspace where a team and its AI agents work together, hosted on your
-own servers. It gives an organization its own alternative to public chat and AI tools:
-messages, files, and agent work stay on infrastructure you control.
+**PrivOS is the all-in-one, AI-native operating system for enterprise work: Chat + Docs +
+Tasks + tailored Apps, with AI agents that act.**
 
-A PrivOS install has two main parts:
+Most teams spread their work across a chat tool, a document store, a task tracker, a pile of
+business apps, and an AI assistant that can only talk. PrivOS puts all of it in one
+workspace that runs on your own servers. Your messages, files, and agent work stay on
+infrastructure you control.
 
-- **PrivOS Hub** is the team workspace. It has channels, direct messages, file sharing, and
-  rooms where people talk to AI agents. Agents can read documents shared in a room and answer
-  in context. Each room can use its own S3-compatible object storage (RustFS in this bundle).
-  Firm Knowledge keeps shared company knowledge that people use in rooms and that agents read
-  through an OAuth-protected MCP interface.
-- **PrivOS Sandbox** is where agents do the work. It has a Kanban board of tasks with full
-  conversation history, a code editor with Git, checkpoints you can fork or rewind, and
-  Butler, which runs scheduled tasks on its own. Agents run in isolated VMs and use a pluggable
-  backend: Claude Code CLI, Codex CLI, the Skawld SDK, or any Anthropic- or OpenAI-compatible
-  endpoint you add. A headless REST + SSE API is available for programmatic use.
-
-The Hub connects to the Sandbox, so the agents people talk to in Hub rooms do their work in
-the Sandbox.
+- **Chat.** Channels, direct messages, and rooms where people and AI agents work side by
+  side. Agents are members of the room. They answer in context and pick up work from the
+  conversation.
+- **Docs.** Files shared in a room are parsed so agents can read and search them. Each room
+  can keep its files in its own S3-compatible object storage (RustFS in this bundle). Firm
+  Knowledge holds the company's governed knowledge, which people use in rooms and agents
+  read through an OAuth-protected MCP interface.
+- **Tasks.** A Kanban board tracks every task with its full conversation history.
+  Checkpoints let you fork or rewind a task. Butler runs scheduled tasks on its own.
+- **Tailored Apps.** Apps open as tabs inside a room and work on the room's lists, files,
+  and messages. Install them from the Marketplace, or build your own as an MCP server with
+  the PrivOS app SDK. Every app call is checked against the scopes an admin granted.
+- **Agents that act.** PrivOS agents don't stop at answering. They run tools, edit code
+  with Git, update lists, and finish tasks, each one inside an isolated VM. Use the
+  agent backend you prefer: Claude Code CLI, Codex CLI, the Skawld SDK, or any Anthropic- or
+  OpenAI-compatible model endpoint. A headless REST + SSE API and the `privos` CLI let
+  your own systems drive them.
 
 Out of the box, agents use **Roxane**, the built-in model provider served by the PrivOS
 gateway. You can add your own model endpoint instead, including a private one on your LAN
 (see [Activation](#activation)).
+
+Under the hood, a PrivOS install has two parts. **PrivOS Hub** is the workspace people use:
+chat, docs, and apps. **PrivOS Sandbox** is where agents run their tasks.
 
 PrivOS runs in two ways:
 
