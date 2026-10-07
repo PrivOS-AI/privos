@@ -130,6 +130,20 @@ validate_egress_allowlist() {
   done
 }
 
+# VM_EGRESS_MODE is `open` (default, also when unset/empty: today's rules
+# only) or `enforce` (adds a full DROP for anything leaving the agent bridge).
+# Anything else aborts, checked in main() before a single rule changes, so a
+# typo can never silently fall back to open on a host that meant enforce.
+validate_vm_egress_mode() {
+  case "${VM_EGRESS_MODE:-open}" in
+    open|enforce) ;;
+    *)
+      echo "ERROR: VM_EGRESS_MODE '${VM_EGRESS_MODE}' is invalid (must be 'open' or 'enforce')" >&2
+      exit 1
+      ;;
+  esac
+}
+
 apply_sandbox_plane_rules() {
   local protected_ports="$1"
   clear_tagged_rules "$SANDBOX_PLANE_TAG"
@@ -205,6 +219,24 @@ apply_vm_egress_rules() {
   # Same top-first insertion reasoning as apply_sandbox_plane_rules: every
   # rule below is added via `-I DOCKER-USER 1`, never `-A`, or it would land
   # after — and be shadowed by — Docker's own RETURN on Engine < 28.
+  # enforce: nothing may leave the agent bridge. Agent VMs reach sandbox-proxy
+  # (its forward-listener port and API port) and Mongo only because both sit
+  # on this same bridge, so that traffic never leaves it and is covered by the
+  # same-bridge RETURN further down. Inserted FIRST so it ends up at the
+  # bottom of this script's rules: the same-bridge RETURN and the
+  # private-range DROPs below are evaluated before it. The operator allowlist
+  # RETURNs are NOT inserted in enforce mode (deny-by-default: un-credentialed
+  # destinations go through the proxy forward listener and the hub setting
+  # PrivOSSandbox_Egress_Allowed_Hosts, never straight from a VM). All
+  # protocols (not only TCP) and not limited to NEW.
+  # NOTE: sandbox-proxy's own default route must not run over this bridge, or
+  # its public egress (LLM gateway, hub) is dropped here too.
+  if [[ "${VM_EGRESS_MODE:-open}" == "enforce" ]]; then
+    echo "WARNING: VM_EGRESS_MODE=enforce — dropping ALL traffic leaving ${VM_BRIDGE_IFACE}; PRIVOS_EGRESS_ALLOWLIST is not applied to agent VMs in this mode; sandbox-proxy must reach the internet over its other network" >&2
+    run_iptables -I DOCKER-USER 1 -i "$VM_BRIDGE_IFACE" ! -o "$VM_BRIDGE_IFACE" \
+      -m comment --comment "$VM_EGRESS_TAG" -j DROP
+  fi
+
   for dest in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16; do
     run_iptables -I DOCKER-USER 1 -i "$VM_BRIDGE_IFACE" -d "$dest" -p tcp -m conntrack --ctstate NEW \
       -m comment --comment "$VM_EGRESS_TAG" -j DROP
@@ -239,6 +271,7 @@ apply_vm_egress_rules() {
   # agree even then: the WebFetch guard never admits loopback or link-local
   # regardless of this setting, while this firewall opens whatever CIDR is
   # listed, including 127.0.0.0/8 or 169.254.0.0/16 if an operator lists one.
+  [[ "${VM_EGRESS_MODE:-open}" == "enforce" ]] && return 0
   IFS=',' read -ra allow_entries <<< "$egress_allowlist"
   for entry in "${allow_entries[@]}"; do
     entry="$(_trim "$entry")"
@@ -302,6 +335,7 @@ Requires=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+Environment="VM_EGRESS_MODE=${VM_EGRESS_MODE:-open}"
 ExecStart=/usr/local/sbin/privos-restrict-sandbox-plane.sh "${protected_ports}" "${egress_allowlist}"
 
 [Install]
@@ -332,6 +366,7 @@ main() {
   # own comment for why a bad entry must abort here and not partway through
   # either apply_* function.
   validate_egress_allowlist "$egress_allowlist"
+  validate_vm_egress_mode
 
   apply_sandbox_plane_rules "$protected_ports"
   apply_vm_egress_rules "$egress_allowlist"

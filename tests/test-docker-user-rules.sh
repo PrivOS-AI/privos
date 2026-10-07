@@ -263,6 +263,73 @@ rm -f "$calls_file"
 assert_status 1 "$rc" "main: a malformed PRIVOS_EGRESS_ALLOWLIST entry aborts the whole run"
 assert_eq "0" "$call_count" "main: no iptables call was made when the allowlist is malformed (nothing half-applied)"
 
+# --- VM_EGRESS_MODE: open (default) is exactly today's rules; enforce adds
+# one full DROP below everything else ------------------------------------
+
+FULL_DROP="-i privos-agent0 ! -o privos-agent0 -m comment --comment privos-self-hosted-vm-egress -j DROP"
+
+unset VM_EGRESS_MODE
+IPTABLES_CALLS=()
+apply_vm_egress_rules "10.20.0.0/16" 2>/dev/null
+unset_calls="$(printf '%s\n' "${IPTABLES_CALLS[@]}")"
+
+VM_EGRESS_MODE=open
+IPTABLES_CALLS=()
+apply_vm_egress_rules "10.20.0.0/16" 2>/dev/null
+open_calls="$(printf '%s\n' "${IPTABLES_CALLS[@]}")"
+assert_eq "$unset_calls" "$open_calls" "VM_EGRESS_MODE: unset and open produce identical rules"
+assert_not_contains "$open_calls" "! -o privos-agent0" "VM_EGRESS_MODE=open: no full DROP"
+
+VM_EGRESS_MODE=enforce
+IPTABLES_CALLS=()
+stderr_file="$(mktemp)"
+apply_vm_egress_rules "10.20.0.0/16" 2>"$stderr_file"
+out="$(<"$stderr_file")"
+rm -f "$stderr_file"
+enforce_calls="$(printf '%s\n' "${IPTABLES_CALLS[@]}")"
+assert_contains "$enforce_calls" "$FULL_DROP" "VM_EGRESS_MODE=enforce: drops everything leaving privos-agent0"
+assert_contains "$out" "VM_EGRESS_MODE=enforce" "VM_EGRESS_MODE=enforce: warns about the proxy default-route requirement"
+allow_rule="-I DOCKER-USER 1 -i privos-agent0 -d 10.20.0.0/16 -m comment --comment privos-self-hosted-vm-egress -j RETURN"
+assert_eq "$(printf '%s\n' "$open_calls" | grep -vxF -- "$allow_rule")" "$(printf '%s\n' "${IPTABLES_CALLS[@]}" | grep -vxF -- "-I DOCKER-USER 1 ${FULL_DROP}")" \
+  "VM_EGRESS_MODE=enforce: open's rules minus the allowlist RETURNs, plus the full DROP"
+assert_not_contains "$enforce_calls" "-d 10.20.0.0/16" "VM_EGRESS_MODE=enforce: the operator allowlist is not applied to agent VMs"
+assert_eq "0" "$(call_index_of "$FULL_DROP")" "VM_EGRESS_MODE=enforce: the full DROP is inserted first so it ends up below every other rule"
+
+# No privos-agent0 interface: enforce adds nothing either.
+IPTABLES_CALLS=()
+IP_BRIDGE_PRESENT=0
+apply_vm_egress_rules "" 2>/dev/null
+assert_eq "0" "${#IPTABLES_CALLS[@]}" "VM_EGRESS_MODE=enforce: adds no rules when privos-agent0 does not exist yet"
+IP_BRIDGE_PRESENT=1
+unset VM_EGRESS_MODE
+
+# --- VM_EGRESS_MODE: unknown value fails closed, no rule changes -----------
+
+out="$( ( validate_vm_egress_mode ) 2>&1 )"
+assert_status 0 "$?" "validate_vm_egress_mode: unset is accepted (open)"
+for mode in open enforce; do
+  # shellcheck disable=SC2034 # read by validate_vm_egress_mode
+  ( VM_EGRESS_MODE="$mode"; validate_vm_egress_mode )
+  assert_status 0 "$?" "validate_vm_egress_mode: accepts ${mode}"
+done
+# shellcheck disable=SC2034 # read by validate_vm_egress_mode
+out="$( ( VM_EGRESS_MODE=Enforce; validate_vm_egress_mode ) 2>&1 )"
+rc=$?
+assert_status 1 "$rc" "validate_vm_egress_mode: rejects an unknown value (case-sensitive)"
+assert_contains "$out" "VM_EGRESS_MODE 'Enforce' is invalid" "validate_vm_egress_mode: error names the bad value"
+
+IPTABLES_CALLS=()
+IPTABLES_STUB_OUTPUT=""
+calls_file="$(mktemp)"
+# shellcheck disable=SC2064 # ${calls_file} must expand at registration time
+( trap "_write_call_count '${calls_file}'" EXIT
+  VM_EGRESS_MODE=bogus main "8556,8557,9000,30000:30999" "" ) >/dev/null 2>&1
+rc=$?
+call_count="$(<"$calls_file")"
+rm -f "$calls_file"
+assert_status 1 "$rc" "main: an unknown VM_EGRESS_MODE aborts the whole run"
+assert_eq "0" "$call_count" "main: no iptables call was made for an unknown VM_EGRESS_MODE (nothing half-applied)"
+
 # --- main --clear: removes rules for BOTH tags (H2 / --uninstall --purge) --
 
 IPTABLES_CALLS=()
