@@ -11,6 +11,40 @@ Community Edition is free and self-hosted for up to 10 users (signed-in users ac
 > problems as GitHub issues, and security issues to security@privos.ai. By running the
 > installer you accept these risks.
 
+## What is PrivOS?
+
+PrivOS is a private workspace where a team and its AI agents work together, hosted on your
+own servers. It gives an organization its own alternative to public chat and AI tools:
+messages, files, and agent work stay on infrastructure you control.
+
+A PrivOS install has two main parts:
+
+- **PrivOS Hub** is the team workspace. It has channels, direct messages, file sharing, and
+  rooms where people talk to AI agents. Agents can read documents shared in a room and answer
+  in context. Each room can use its own S3-compatible object storage (RustFS in this bundle).
+  Firm Knowledge keeps shared company knowledge that people use in rooms and that agents read
+  through an OAuth-protected MCP interface.
+- **PrivOS Sandbox** is where agents do the work. It has a Kanban board of tasks with full
+  conversation history, a code editor with Git, checkpoints you can fork or rewind, and
+  Butler, which runs scheduled tasks on its own. Agents run in isolated VMs and use a pluggable
+  backend: Claude Code CLI, Codex CLI, the Skawld SDK, or any Anthropic- or OpenAI-compatible
+  endpoint you add. A headless REST + SSE API is available for programmatic use.
+
+The Hub connects to the Sandbox, so the agents people talk to in Hub rooms do their work in
+the Sandbox.
+
+Out of the box, agents use **Roxane**, the built-in model provider served by the PrivOS
+gateway. You can add your own model endpoint instead, including a private one on your LAN
+(see [Activation](#activation)).
+
+PrivOS runs in two ways:
+
+- **Self-hosted Community Edition** (this repository) is a single-host Docker Compose install
+  that is free for up to 10 signed-in users.
+- **PrivOS Cloud** is a managed workspace at [client.privos.io](https://client.privos.io).
+
+## This repository
+
 Single-host Docker Compose install of **privos-hub + privos-sandbox** (mongo, redis,
 rustfs, board, proxy, VM pool) with host port-conflict detection, loopback-only exposure
 of internal services, minisign-verified bundle, and digest-pinned images. After install
