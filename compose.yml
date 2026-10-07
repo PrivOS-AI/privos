@@ -523,6 +523,11 @@ services:
       # container-env.ts forwards into every agent VM/collocation core it
       # spawns (and refuses to let a room's customEnv override).
       PRIVOS_EGRESS_ALLOWLIST: ${PRIVOS_EGRESS_ALLOWLIST:-}
+      # Agent VM network egress (see env.template): open (default) changes
+      # nothing; enforce is paired with docker-user-rules.sh's full DROP.
+      VM_EGRESS_MODE: ${VM_EGRESS_MODE:-open}
+      VM_EGRESS_FORWARD_PORT: ${VM_EGRESS_FORWARD_PORT:-8558}
+      VAULT_V2_ENABLED: ${VAULT_V2_ENABLED:-}
       # Agent container memory/CPU/PIDs caps. 0 = no cap (the field is left off
       # the container), which is the Community default: the host belongs to one
       # owner. Capability drop, no-new-privileges and the init process stay on
