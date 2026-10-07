@@ -79,14 +79,28 @@ Environment (flags override):
   PRIVOS_SANDBOX_API_KEY      API key (preferred)
   API_ACCESS_KEY              Same key; the name the board process uses
   SANDBOX_API_KEY             Same key; the name install.sh writes
+  PRIVOS_REQUESTER_ID         Who is asking (--requester)
+  PRIVOS_REQUESTER_NAME       Display name (--requester-name)
+  PRIVOS_REQUESTER_KIND       human or agent, default human (--requester-kind)
 
 The key is sent as the x-api-key header. A default self-hosted board
 listens on http://127.0.0.1:8556.
+
+Requester claim: with --requester (or PRIVOS_REQUESTER_ID) every board
+request also carries x-privos-requester-id, -name and -kind, and the answer
+socket sends auth.requester, so the board records who started or answered an
+attempt. Id and name are up to 64 printable ASCII characters. Flags win over
+the environment. --requester-name and --requester-kind need --requester.
+The claim is self-declared unless the board binds the key to an identity.
+Dry runs print the claim headers and never the key.
 
 Writes (create, update, delete, start) print the request and send nothing
 unless --confirm is set.
 
 Global flags:
+  --requester ID              Requester claim id (see above)
+  --requester-name NAME       Requester display name
+  --requester-kind KIND       human (default) or agent
   --format json|table         Default json. Table is for list reads.
   --raw                       Print the response body unchanged
   --timeout SECONDS           HTTP timeout, 1-300 (default 30)
@@ -272,7 +286,8 @@ const sandboxTasksAttemptsHelp = `Usage:
   privos sandbox tasks attempts --id ID
 
 List a task's attempts from GET /api/tasks/{id}/attempts. This read has no
-side effects. --format table shows ID, STATUS, MODEL, PROVIDER and CREATED.
+side effects. --format table shows ID, STATUS, MODEL, PROVIDER, CREATED and
+REQUESTER (the requester id; JSON has the full requester record).
 Effort is not stored on attempts, so JSON shows "effort": null.
 `;
 
