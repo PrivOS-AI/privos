@@ -2,6 +2,10 @@ import { sandboxTasksAnswer } from "./answer.js";
 import { VERSION } from "./config.js";
 import { helpFor, rootHelp } from "./help.js";
 import {
+  hubA2aChain,
+  hubA2aMembers,
+  hubA2aSend,
+  hubA2aStop,
   hubItemsCreate,
   hubItemsDelete,
   hubItemsFind,
@@ -115,12 +119,26 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
     case "hub messages":
     case "hub lists":
     case "hub items":
+    case "agents":
+    case "agents a2a":
       throw usage(`${text.trimEnd()}\nRun privos ${cmd} --help`);
     case "subscribe":
       await subscribe(p, stdout, stderr, deps);
       return;
     case "subscribe status":
       subscribeStatus(p, stdout);
+      return;
+    case "agents a2a send":
+      await hubA2aSend(p, stdout, stderr, fetchImpl);
+      return;
+    case "agents a2a members":
+      await hubA2aMembers(p, stdout, fetchImpl);
+      return;
+    case "agents a2a chain":
+      await hubA2aChain(p, stdout, fetchImpl);
+      return;
+    case "agents a2a stop":
+      await hubA2aStop(p, stdout, stderr, fetchImpl);
       return;
     case "hub inbox":
       await hubInbox(p, stdout, stderr, fetchImpl);

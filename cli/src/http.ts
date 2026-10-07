@@ -30,7 +30,10 @@ function apiMessage(body: string): string {
       const value = record[key];
       if (typeof value === "string") {
         const line = oneLine(value);
-        if (line !== "") return line;
+        if (line === "") continue;
+        // Routes that refuse with a stable code (the a2a family) name it in errorType.
+        const code = record.errorType;
+        return typeof code === "string" && code !== "" ? `${code}: ${line}` : line;
       }
     }
   } catch {

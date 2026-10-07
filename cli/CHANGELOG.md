@@ -3,6 +3,21 @@
 All notable changes to `@privos_ai/privos`. Full command notes live in
 [docs/cli/README.md](https://github.com/PrivOS-AI/privos/blob/main/docs/cli/README.md).
 
+## 0.5.0 — 2026-10-06
+
+### Added
+
+- `privos agents a2a send|members|chain|stop`: the bot-to-bot protocol of the
+  hub (`agents.a2a.*`) from outside the sandbox. `send` builds the envelope and
+  generates the idempotent `messageId`; `stop` sends `kind: stop` for a chain
+  you started. Pair it with `privos subscribe` to watch the results.
+- `--bot-key` / `PRIVOS_BOT_KEY` for the `hub` and `agents` commands: sends
+  `Authorization: Bearer` and no `X-User-Id` or `X-Auth-Token`. Agent bots cannot
+  mint personal access tokens. `privos subscribe` and `hub inbox` still need a
+  human token.
+- A hub refusal that carries an `errorType` (the a2a codes) prints it first:
+  `HTTP 403: a2a-sender-ineligible: ...`.
+
 ## 0.4.1 — 2026-10-06
 
 ### Fixed

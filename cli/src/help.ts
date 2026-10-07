@@ -44,6 +44,10 @@ Commands:
   hub items delete
   hub items move
   hub items reorder
+  agents a2a send          Send a bot-to-bot message as an agent bot (--bot-key)
+  agents a2a members       List the roster bots of a team
+  agents a2a chain         Read every row of one bot-to-bot chain
+  agents a2a stop          Stop a chain you started
   hub inbox                One read-only poll of messages and notifications
   subscribe                Read-only event daemon (hub, lists, files, board tasks)
   subscribe status         Heartbeat, cursor, lag, and outbox of the daemon
@@ -359,6 +363,8 @@ Environment (flags override):
   PRIVOS_ROOT_URL         Used when PRIVOS_HUB_URL is unset (installer)
   PRIVOS_HUB_USER_ID      X-User-Id (PRIVOS_USER_ID also works)
   PRIVOS_HUB_AUTH_TOKEN   X-Auth-Token (PRIVOS_PAT also works)
+  PRIVOS_BOT_KEY          An agent bot key, sent as Authorization: Bearer instead of
+                          the two headers above (--bot-key; not used by subscribe or inbox)
 
 A default self-hosted hub listens on http://127.0.0.1:3000
 (PRIVOS_HUB_PORT). Create a personal access token in the hub UI, or
@@ -627,6 +633,99 @@ POST /api/v1/items.updateOrder with {"itemId","newOrder"}. --order is an
 integer. Dry run unless --confirm. items.bulkUpdateOrder is not a command.
 `;
 
+const agentsHelp = `Usage:
+  privos agents a2a <command>
+
+Commands:
+  a2a send|members|chain|stop    Bot-to-bot (a2a) messages between roster bots
+
+Run privos agents a2a --help.
+`;
+
+const agentsA2aHelp = `Usage:
+  privos agents a2a [--url URL] [--bot-key KEY] <command>
+
+Commands:
+  send [--team TEAM_ID] --room ROOM_ID --to BOT_ID,...|team --kind KIND [--text TEXT]
+  members --team TEAM_ID
+  chain --correlation C_ID
+  stop --correlation C_ID
+
+These call the hub routes agents.a2a.send, agents.a2a.team.members, and
+agents.a2a.list. They authenticate as an agent bot, not as a human:
+
+Environment (flags override):
+  PRIVOS_HUB_URL          Hub base URL
+  PRIVOS_ROOT_URL         Used when PRIVOS_HUB_URL is unset (installer)
+  PRIVOS_BOT_KEY          The bot's key, sent as Authorization: Bearer
+                          (X-User-Id and X-Auth-Token are not sent)
+
+The hub accepts a send only from an agent bot. A human personal access token is
+refused with a2a-sender-ineligible, and an agent bot cannot mint a personal
+access token, so use the bot key. A recipient is reachable when it has the same
+owner as the bot, when both are on an agent team (--team) whose room each owner
+enabled for streaming, or, in the room the bot acts in, when its owner enabled
+streaming and "Allow everyone using this Agent" there. A caller holding a bot
+key is treated as acting in that bot's own agent room, so a send to any other
+room is a cross-room call: allowed for the same owner (who must be a member of
+the room) and for a streaming team, refused otherwise (a2a-owner-mismatch).
+
+Pairing with privos subscribe: send with agents a2a send, then watch the
+results arrive in the team room with privos subscribe (a human credential: it
+reads the room as you). Read one chain on demand with agents a2a chain.
+
+A refusal prints the hub's error code first, for example
+"a2a-owner-mismatch: ...". Sends are a dry run unless --confirm is set.
+Global flags: --format json|table, --raw, --timeout SECONDS, --confirm, --dry-run.
+`;
+
+const agentsA2aSendHelp = `Usage:
+  privos agents a2a send [--team TEAM_ID] --room ROOM_ID --to BOT_ID,...|team --kind KIND
+                         [--correlation C_ID] [--reply-to M_ID] [--priority urgent|fyi]
+                         [--text TEXT] [--data JSON_OBJECT] [--file-id ID]...
+                         [--deadline-at ISO] [--message-id M_ID]
+
+POST /api/v1/agents.a2a.send with one envelope. --room is the destination room
+(a room both bots are members of). --kind is task, result, message,
+needs-approval, question, or stop. --to is bot ids separated by commas, or the
+word team for every roster bot in the room except you (needs --team). --team
+names the agent team; leave it out for the same-owner and same-room paths.
+
+Omit --correlation to start a new chain: the hub mints the id and prints it in
+the response. Later messages carry it and the chain's team and room. --reply-to
+names the messageId of a message addressed to you. --priority defaults to fyi
+for message and urgent for every other kind. --data is a JSON object (for
+needs-approval, {"approval":{"action":"...","draft":"..."}}; for question,
+{"options":["a","b"]}). --file-id is repeatable. The CLI generates --message-id
+(the idempotency key) unless you pass one; reuse it only to retry the same send.
+
+Authentication is the bot key (--bot-key or PRIVOS_BOT_KEY). Dry run unless
+--confirm.
+`;
+
+const agentsA2aMembersHelp = `Usage:
+  privos agents a2a members --team TEAM_ID [--url URL] [--bot-key KEY]
+
+GET /api/v1/agents.a2a.team.members?teamId=TEAM_ID. Prints the roster bots:
+botId, username, runtime (sandbox or harness), and isMainBot.
+`;
+
+const agentsA2aChainHelp = `Usage:
+  privos agents a2a chain --correlation C_ID [--count N] [--offset N] [--url URL] [--bot-key KEY]
+
+GET /api/v1/agents.a2a.list?correlationId=C_ID. Prints every row of the chain:
+kind, hop, sender, recipient, status, approval, and text.
+`;
+
+const agentsA2aStopHelp = `Usage:
+  privos agents a2a stop --correlation C_ID [--team TEAM_ID] [--room ROOM_ID] [--text REASON]
+
+Sends kind stop to the whole team on the chain through agents.a2a.send. Only the
+chain initiator may stop it; anyone else gets a2a-stop-not-allowed. The team and
+room are read from the chain with one GET unless you pass them. Dry run unless
+--confirm.
+`;
+
 const hubInboxHelp = `Usage:
   privos hub inbox --since ISO|EPOCH_MS [--events dm,mention,message,notification]
                    [--rooms RID|NAME,...] [--exclude-bots] [--group-mentions]
@@ -776,6 +875,12 @@ const HELP: Record<string, string> = {
   "hub items delete": hubItemsDeleteHelp,
   "hub items move": hubItemsMoveHelp,
   "hub items reorder": hubItemsReorderHelp,
+  agents: agentsHelp,
+  "agents a2a": agentsA2aHelp,
+  "agents a2a send": agentsA2aSendHelp,
+  "agents a2a members": agentsA2aMembersHelp,
+  "agents a2a chain": agentsA2aChainHelp,
+  "agents a2a stop": agentsA2aStopHelp,
   "hub inbox": hubInboxHelp,
   subscribe: subscribeHelp,
   "subscribe status": subscribeStatusHelp,

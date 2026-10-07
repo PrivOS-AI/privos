@@ -1,7 +1,7 @@
 import { usage } from "./usage.js";
 
 /** Printed by `privos version`. */
-export const VERSION = "0.4.1";
+export const VERSION = "0.5.0";
 
 export interface SandboxConfig {
   baseURL: string;
@@ -12,6 +12,8 @@ export interface HubConfig {
   baseURL: string;
   userId: string;
   authToken: string;
+  /** An agent bot key. When set the CLI sends Authorization: Bearer and no X-User-Id/X-Auth-Token. */
+  botKey: string;
 }
 
 function getenv(key: string): string {
@@ -91,8 +93,15 @@ export function resolveSandbox(flagURL: string, flagKey: string): SandboxConfig 
  * URL: --url, then PRIVOS_HUB_URL, then PRIVOS_ROOT_URL.
  * User: --user-id, then PRIVOS_HUB_USER_ID, then PRIVOS_USER_ID.
  * Token: --auth-token, then PRIVOS_HUB_AUTH_TOKEN, then PRIVOS_PAT.
+ * Bot key (only for callers that pass flagBotKey): --bot-key, then PRIVOS_BOT_KEY. When set it
+ * replaces the user id and token, because agent bots cannot mint personal access tokens.
  */
-export function resolveHub(flagURL: string, flagUser: string, flagToken: string): HubConfig {
+export function resolveHub(
+  flagURL: string,
+  flagUser: string,
+  flagToken: string,
+  flagBotKey?: string,
+): HubConfig {
   const rawURL = first(flagURL, getenv("PRIVOS_HUB_URL"), getenv("PRIVOS_ROOT_URL"));
   if (rawURL === "") {
     throw usage(
@@ -105,6 +114,14 @@ export function resolveHub(flagURL: string, flagUser: string, flagToken: string)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw usage(msg.startsWith("hub ") ? msg : `hub ${msg}`);
+  }
+  const botKey = flagBotKey === undefined ? "" : first(flagBotKey, getenv("PRIVOS_BOT_KEY"));
+  if (botKey !== "") {
+    if (flagBotKey !== "" && (flagUser !== "" || flagToken !== "")) {
+      throw usage("--bot-key cannot be combined with --user-id or --auth-token");
+    }
+    rejectNewlines("hub bot key", botKey);
+    return { baseURL: base, userId: "", authToken: "", botKey };
   }
   const user = first(flagUser, getenv("PRIVOS_HUB_USER_ID"), getenv("PRIVOS_USER_ID"));
   if (user === "") {
@@ -120,5 +137,5 @@ export function resolveHub(flagURL: string, flagUser: string, flagToken: string)
   }
   rejectNewlines("hub user id", user);
   rejectNewlines("hub auth token", token);
-  return { baseURL: base, userId: user, authToken: token };
+  return { baseURL: base, userId: user, authToken: token, botKey: "" };
 }
