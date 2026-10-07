@@ -6,6 +6,7 @@ import {
   hubA2aMembers,
   hubA2aSend,
   hubA2aStop,
+  hubGet,
   hubItemsCreate,
   hubItemsDelete,
   hubItemsFind,
@@ -190,6 +191,9 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
       return;
     case "sandbox models list":
       await sandboxModelsList(p, stdout, fetchImpl);
+      return;
+    case "hub get":
+      await hubGet(p, stdout, fetchImpl);
       return;
     case "hub rooms list":
       await hubRoomsList(p, stdout, fetchImpl);

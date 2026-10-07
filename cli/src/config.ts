@@ -1,7 +1,7 @@
 import { usage } from "./usage.js";
 
 /** Printed by `privos version`. */
-export const VERSION = "0.5.0";
+export const VERSION = "0.6.0";
 
 export interface SandboxConfig {
   baseURL: string;

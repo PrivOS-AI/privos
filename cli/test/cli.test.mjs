@@ -1768,4 +1768,85 @@ describe("privos", { concurrency: false }, () => {
       await srv.close();
     }
   });
+
+  test("hub get passes a read route through with the user token and never a bot key", async () => {
+    clearCreds();
+    const seen = [];
+    const srv = await serve(async (req, res) => {
+      seen.push({ url: req.url, authorization: req.headers.authorization, user: req.headers["x-user-id"], token: req.headers["x-auth-token"] });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ members: [{ _id: "u1" }], count: 1 }));
+    });
+    const auth = ["--url", srv.url, "--user-id", "u1", "--auth-token", "tok"];
+    try {
+      let result = await runCLI(["hub", "get", ...auth, "--route", "channels.members", "--param", "roomId=GENERAL", "--param", "count=5"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(JSON.parse(result.stdout).count, 1);
+      assert.equal(seen[0].url, "/api/v1/channels.members?roomId=GENERAL&count=5");
+      assert.equal(seen[0].user, "u1");
+      assert.equal(seen[0].token, "tok");
+      assert.equal(seen[0].authorization, undefined);
+
+      // Prefix stripped; values are percent-encoded, only the first "=" splits.
+      result = await runCLI(["hub", "get", ...auth, "--route", "/api/v1/spotlight", "--param", "query=a b=c"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[1].url, "/api/v1/spotlight?query=a+b%3Dc");
+
+      // No params: no query string.
+      result = await runCLI(["hub", "get", ...auth, "--route", "rooms.get"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(seen[2].url, "/api/v1/rooms.get");
+
+      // PRIVOS_BOT_KEY alone is not a credential for this command.
+      process.env.PRIVOS_BOT_KEY = "env-bot-key";
+      process.env.PRIVOS_HUB_URL = srv.url;
+      result = await runCLI(["hub", "get", "--route", "rooms.get"]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /hub user id is required/);
+      assert.equal(seen.length, 3);
+    } finally {
+      clearCreds();
+      await srv.close();
+    }
+  });
+
+  test("hub get rejects bad input before any request", async () => {
+    clearCreds();
+    const auth = ["--url", "http://127.0.0.1:9", "--user-id", "u1", "--auth-token", "tok"];
+    for (const route of ["a?b=1", "a#x", "a b", "../users.list", "a/../b", "a\\b", "a//b", "a/", "/api/v1/", "x%2Fy"]) {
+      const result = await runCLI(["hub", "get", ...auth, "--route", route]);
+      assert.equal(result.code, 2, route);
+      assert.match(result.stderr, /--route must be a hub route/, route);
+    }
+    let result = await runCLI(["hub", "get", ...auth]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /required flag --route/);
+    result = await runCLI(["hub", "get", ...auth, "--route", "rooms.get", "--bot-key", "k"]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /unsupported flag --bot-key/);
+    result = await runCLI(["hub", "get", ...auth, "--route", "rooms.get", "--format", "table"]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--format table is not supported/);
+    result = await runCLI(["hub", "get", ...auth, "--route", "rooms.get", "--param", "novalue"]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--param must be key=value/);
+    result = await runCLI(["hub", "get", ...auth, "--route", "rooms.get", "--param", "=v"]);
+    assert.equal(result.code, 2);
+  });
+
+  test("hub get prints the hub refusal", async () => {
+    clearCreds();
+    const srv = await serve((req, res) => {
+      res.statusCode = 403;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ success: false, error: "User does not have the permissions required" }));
+    });
+    try {
+      const result = await runCLI(["hub", "get", "--url", srv.url, "--user-id", "u1", "--auth-token", "tok", "--route", "rooms.adminRooms"]);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /HTTP 403: User does not have the permissions required/);
+    } finally {
+      await srv.close();
+    }
+  });
 });

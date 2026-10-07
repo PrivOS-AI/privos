@@ -250,6 +250,45 @@ privos hub items reorder --id ITEM_ID --order 10 --confirm
 privos hub items delete --id ITEM_ID --confirm
 ```
 
+## Read-route catalog
+
+`privos hub get --route ROUTE [--param key=value ...]` sends
+`GET /api/v1/ROUTE?key=value` with your own `X-User-Id` and `X-Auth-Token` and
+prints the JSON body. It works for any hub GET route, so a route added to the
+hub needs no CLI release. The hub applies your permissions and answers
+`HTTP 403: <error>` when the route is not yours. A bot key is never sent
+(`--bot-key` is refused and `PRIVOS_BOT_KEY` is ignored), and `--format table`
+is not supported because the body shape is route-specific.
+
+```text
+privos hub get --route channels.members --param roomId=GENERAL
+privos hub get --route chat.getMessage --param msgId=MESSAGE_ID
+```
+
+The hub keeps a catalog that classifies every GET route in
+`apps/meteor/lib/universal-bot-rest-read-catalog.ts` (PrivOS-AI/privos-hub). The
+Universal Assistant calls the same routes through `assistant.rest-get`, as the
+human it is chatting with, under three tiers:
+
+| Tier | Who may use the route through the assistant |
+|---|---|
+| `user` | Any signed-in human; the route's own permission check still applies. |
+| `room-owner` | The owner of the room named in the request, or an administrator. |
+| `admin` | Administrators. Off until an administrator enables it. |
+
+An administrator edits the tiers in a tier matrix (Admin → Settings → Universal
+Assistant): routes can be enabled, disabled, or moved one by one or by group.
+Only the deviations from the catalog defaults are stored. Routes in the
+catalog's never-list (secrets, tokens, side-effecting or unbounded reads)
+cannot be enabled. The tiers limit the assistant only; `hub get` is bounded by
+your own permissions.
+
+Maintenance rule: every new hub GET route needs one catalog line (a tier,
+never, or excluded). `scripts/release-audit.mjs` in the hub refuses to build a
+release with an unclassified GET route. Once classified, the route reaches the
+assistant on every tenant with the next hub release and is available to
+`hub get` immediately.
+
 ### Confirmed, and not called by this CLI
 
 | Method | Why it is not a command |

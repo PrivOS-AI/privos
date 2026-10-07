@@ -52,7 +52,7 @@ export async function hubRoomsList(p: Parsed, stdout: Out, fetchImpl: typeof fet
   forbidUnknown(p, "hub rooms list", [...HUB_READ, "updated-since"]);
   const query = new URLSearchParams();
   if (p.updatedSince !== "") query.set("updatedSince", p.updatedSince);
-  await hubGet(p, stdout, fetchImpl, "/api/v1/rooms.get", query, "update", roomColumns);
+  await hubGetPath(p, stdout, fetchImpl, "/api/v1/rooms.get", query, "update", roomColumns);
 }
 
 export async function hubMessagesList(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
@@ -71,10 +71,10 @@ export async function hubMessagesList(p: Parsed, stdout: Out, fetchImpl: typeof 
   query.set("roomId", p.room);
   if (count !== undefined) query.set("count", String(count));
   if (offset !== undefined) query.set("offset", String(offset));
-  await hubGet(p, stdout, fetchImpl, messagePath(kind), query, "messages", messageColumns);
+  await hubGetPath(p, stdout, fetchImpl, messagePath(kind), query, "messages", messageColumns);
 }
 
-async function hubGet(
+async function hubGetPath(
   p: Parsed,
   stdout: Out,
   fetchImpl: typeof fetch,
@@ -85,6 +85,46 @@ async function hubGet(
 ): Promise<void> {
   const body = await hubClient(p, fetchImpl).get(path, query);
   render(stdout, body, p.format, p.raw, unwrap, cols);
+}
+
+/** `/api/v1/` prefix dropped; a route is dot/dash/word segments only, so it cannot retarget the request. */
+function normalizeRoute(raw: string): string {
+  const route = raw.replace(/^\/?(api\/v1\/)?/, "");
+  const bad =
+    !/^[\w.\-/]+$/.test(route) ||
+    route.includes("..") ||
+    route.split("/").some((seg) => seg === "" || seg === ".");
+  if (bad) {
+    throw usage(
+      "--route must be a hub route such as channels.members (letters, digits, \".\", \"_\", \"-\", \"/\"; no query, fragment, space, backslash, or \"..\"); pass query values with --param key=value",
+    );
+  }
+  return route;
+}
+
+export async function hubGet(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
+  // No --bot-key: a bot key is not the human, so this command never sends one.
+  forbidUnknown(p, "hub get", ["url", "user-id", "auth-token", "route", "param"]);
+  requireFlag(p, "route", p.route, helpFor(["hub", "get"]));
+  if (p.format === "table") {
+    throw usage("hub get prints the route's JSON body; --format table is not supported");
+  }
+  const route = normalizeRoute(p.route);
+  const query = new URLSearchParams();
+  for (const pair of p.params) {
+    const eq = pair.indexOf("=");
+    if (eq < 1) throw usage(`--param must be key=value, got ${JSON.stringify(pair)}`);
+    query.append(pair.slice(0, eq), pair.slice(eq + 1));
+  }
+  const cfg = resolveHub(p.url, p.userId, p.authToken);
+  const client = new Client(
+    cfg.baseURL,
+    hubHeaders(cfg.userId, cfg.authToken),
+    timeoutSeconds(p) * 1000,
+    fetchImpl,
+  );
+  const body = await client.get(`/api/v1/${route}`, query);
+  render(stdout, body, "json", p.raw, "", []);
 }
 
 function hubClient(p: Parsed, fetchImpl: typeof fetch): Client {
@@ -250,7 +290,7 @@ export async function hubListsList(p: Parsed, stdout: Out, fetchImpl: typeof fet
   const query = new URLSearchParams();
   const path = p.room === "" ? "/api/v1/lists.list" : "/api/v1/lists.listByRoomId";
   if (p.room !== "") query.set("roomId", p.room);
-  await hubGet(p, stdout, fetchImpl, path, query, "lists", listColumns);
+  await hubGetPath(p, stdout, fetchImpl, path, query, "lists", listColumns);
 }
 
 export async function hubListsGet(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
@@ -259,7 +299,7 @@ export async function hubListsGet(p: Parsed, stdout: Out, fetchImpl: typeof fetc
   rejectTable(p, "hub lists get");
   const query = new URLSearchParams();
   query.set("listId", p.id);
-  await hubGet(p, stdout, fetchImpl, "/api/v1/lists.info", query, "", []);
+  await hubGetPath(p, stdout, fetchImpl, "/api/v1/lists.info", query, "", []);
 }
 
 export async function hubListsCreate(
@@ -368,13 +408,13 @@ export async function hubItemsList(p: Parsed, stdout: Out, fetchImpl: typeof fet
   if (!hasList && hasStage && !hasParent && !hasPage) {
     const query = new URLSearchParams();
     query.set("stageId", p.stage);
-    await hubGet(p, stdout, fetchImpl, "/api/v1/items.listByStageId", query, "items", itemColumns);
+    await hubGetPath(p, stdout, fetchImpl, "/api/v1/items.listByStageId", query, "items", itemColumns);
     return;
   }
   if (!hasList && hasParent && !hasStage && !hasPage) {
     const query = new URLSearchParams();
     query.set("parentId", p.parent);
-    await hubGet(p, stdout, fetchImpl, "/api/v1/items.listByParentId", query, "items", itemColumns);
+    await hubGetPath(p, stdout, fetchImpl, "/api/v1/items.listByParentId", query, "items", itemColumns);
     return;
   }
   if (!hasList) {
@@ -387,7 +427,7 @@ export async function hubItemsList(p: Parsed, stdout: Out, fetchImpl: typeof fet
   query.set("listId", p.list);
   if (!filtered) {
     if (p.includeSubItems) query.set("includeSubItems", "true");
-    await hubGet(p, stdout, fetchImpl, "/api/v1/items.listByListId", query, "items", itemColumns);
+    await hubGetPath(p, stdout, fetchImpl, "/api/v1/items.listByListId", query, "items", itemColumns);
     return;
   }
   if (hasStage) query.set("stageId", p.stage);
@@ -396,7 +436,7 @@ export async function hubItemsList(p: Parsed, stdout: Out, fetchImpl: typeof fet
   if (offset !== undefined) query.set("offset", String(offset));
   if (p.sort !== "") query.set("sort", p.sort);
   if (p.after !== "") query.set("after", p.after);
-  await hubGet(p, stdout, fetchImpl, "/api/v1/items.list", query, "items", itemColumns);
+  await hubGetPath(p, stdout, fetchImpl, "/api/v1/items.list", query, "items", itemColumns);
 }
 
 export async function hubItemsGet(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
@@ -405,7 +445,7 @@ export async function hubItemsGet(p: Parsed, stdout: Out, fetchImpl: typeof fetc
   rejectTable(p, "hub items get");
   const query = new URLSearchParams();
   query.set("itemId", p.id);
-  await hubGet(p, stdout, fetchImpl, "/api/v1/items.info", query, "", []);
+  await hubGetPath(p, stdout, fetchImpl, "/api/v1/items.info", query, "", []);
 }
 
 export async function hubItemsSearch(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
@@ -415,7 +455,7 @@ export async function hubItemsSearch(p: Parsed, stdout: Out, fetchImpl: typeof f
   const query = new URLSearchParams();
   query.set("listId", p.list);
   query.set("searchTerm", p.term);
-  await hubGet(p, stdout, fetchImpl, "/api/v1/items.search", query, "items", itemColumns);
+  await hubGetPath(p, stdout, fetchImpl, "/api/v1/items.search", query, "items", itemColumns);
 }
 
 export async function hubItemsFind(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
@@ -427,7 +467,7 @@ export async function hubItemsFind(p: Parsed, stdout: Out, fetchImpl: typeof fet
   query.set("listId", p.list);
   query.set("fieldId", p.field);
   query.set("value", p.fieldValue);
-  await hubGet(p, stdout, fetchImpl, "/api/v1/items.findByFieldValue", query, "items", itemColumns);
+  await hubGetPath(p, stdout, fetchImpl, "/api/v1/items.findByFieldValue", query, "items", itemColumns);
 }
 
 export async function hubItemsCreate(
@@ -601,13 +641,13 @@ export async function hubA2aMembers(p: Parsed, stdout: Out, fetchImpl: typeof fe
   forbidUnknown(p, "agents a2a members", [...HUB_READ, "team"]);
   requireFlag(p, "team", p.team, helpFor(["agents", "a2a", "members"]));
   const query = new URLSearchParams({ teamId: p.team });
-  await hubGet(p, stdout, fetchImpl, "/api/v1/agents.a2a.team.members", query, "members", a2aMemberColumns);
+  await hubGetPath(p, stdout, fetchImpl, "/api/v1/agents.a2a.team.members", query, "members", a2aMemberColumns);
 }
 
 export async function hubA2aChain(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
   forbidUnknown(p, "agents a2a chain", [...HUB_READ, "correlation", "count", "offset"]);
   requireFlag(p, "correlation", p.correlation, helpFor(["agents", "a2a", "chain"]));
-  await hubGet(p, stdout, fetchImpl, "/api/v1/agents.a2a.list", a2aChainQuery(p), "rows", a2aRowColumns);
+  await hubGetPath(p, stdout, fetchImpl, "/api/v1/agents.a2a.list", a2aChainQuery(p), "rows", a2aRowColumns);
 }
 
 function a2aChainQuery(p: Parsed): URLSearchParams {

@@ -22,6 +22,7 @@ Commands:
   sandbox tasks question
   sandbox tasks answer
   sandbox models list
+  hub get                  Read any hub GET route with your own token
   hub rooms list
   hub rooms create
   hub rooms update
@@ -367,6 +368,7 @@ const hubHelp = `Usage:
   privos hub [--url URL] [--user-id ID] [--auth-token TOKEN] <command>
 
 Commands:
+  get --route ROUTE [--param k=v]
   rooms list|create|update|delete
   messages list|send|update|delete
   lists list|get|create|update|delete
@@ -514,6 +516,17 @@ Writes are POST /api/v1/lists.create, lists.update, and lists.delete, and
 they stay a dry run unless --confirm. Auth is X-User-Id and X-Auth-Token.
 Field CRUD (lists.addField, lists.fields.*) is not a CLI command.
 See docs/api/hub.md.
+`;
+
+const hubGetHelp = `Usage:
+  privos hub get --route ROUTE [--param key=value ...]
+
+GET /api/v1/ROUTE?key=value with your X-User-Id and X-Auth-Token. Prints the
+JSON body (--format table is not supported). ROUTE is a hub route such as
+channels.members; a leading /api/v1/ is dropped. --param repeats.
+Bot keys are refused: --bot-key and PRIVOS_BOT_KEY do not apply. The hub
+applies your own permissions and answers 4xx when the route is not yours.
+Example: privos hub get --route channels.members --param roomId=GENERAL
 `;
 
 const hubListsListHelp = `Usage:
@@ -864,6 +877,7 @@ const HELP: Record<string, string> = {
   "sandbox models": sandboxModelsHelp,
   "sandbox models list": sandboxModelsListHelp,
   hub: hubHelp,
+  "hub get": hubGetHelp,
   "hub rooms": hubRoomsHelp,
   "hub rooms list": hubRoomsListHelp,
   "hub rooms create": hubRoomsCreateHelp,
