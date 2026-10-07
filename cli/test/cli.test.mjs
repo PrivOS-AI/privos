@@ -14,6 +14,9 @@ const CRED_KEYS = [
   "PRIVOS_HUB_USER_ID",
   "PRIVOS_HUB_AUTH_TOKEN",
   "PRIVOS_BOT_KEY",
+  "PRIVOS_REQUESTER_ID",
+  "PRIVOS_REQUESTER_NAME",
+  "PRIVOS_REQUESTER_KIND",
 ];
 
 function clearCreds() {
@@ -1259,11 +1262,12 @@ describe("privos", { concurrency: false }, () => {
         : initial,
       seen: [],
       emitted: [],
+      auths: [],
       connections: 0,
     };
     const srv = await serve(async (req, res) => {
       await readBody(req);
-      state.seen.push({ method: req.method, url: req.url });
+      state.seen.push({ method: req.method, url: req.url, requesterId: req.headers["x-privos-requester-id"] });
       res.setHeader("content-type", "application/json");
       if (req.method === "GET" && req.url === "/api/tasks/t1") {
         res.end(JSON.stringify({ id: "t1", projectId: "p1" }));
@@ -1284,6 +1288,7 @@ describe("privos", { concurrency: false }, () => {
     });
     io.on("connection", (socket) => {
       state.connections += 1;
+      state.auths.push(socket.handshake.auth);
       socket.on("question:answer", (payload, cb) => {
         state.emitted.push(payload);
         if (clears) state.pending = null;
@@ -1412,6 +1417,149 @@ describe("privos", { concurrency: false }, () => {
       assert.match(r.stderr, /no pending question/);
     } finally {
       await b.close();
+    }
+  });
+
+  const CLAIM = ["--requester", "agent-7", "--requester-name", "Build Bot", "--requester-kind", "agent"];
+
+  test("tasks answer --confirm sends the requester claim on the socket and the REST log", async () => {
+    clearCreds();
+    const b = await answerBoard();
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, ...CLAIM, "--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.deepEqual(b.auths, [{ token: "k", requester: { kind: "agent", id: "agent-7", name: "Build Bot" } }]);
+      assert.ok(b.seen.length > 0);
+      assert.ok(b.seen.every((x) => x.requesterId === "agent-7"));
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer without a claim sends only the key on the socket", async () => {
+    clearCreds();
+    const b = await answerBoard();
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.deepEqual(b.auths, [{ token: "k" }]);
+      assert.ok(b.seen.every((x) => x.requesterId === undefined));
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer dry run prints the claim but never the key", async () => {
+    clearCreds();
+    const b = await answerBoard();
+    try {
+      const r = await b.run("--api-key", "secret-answer-key", ...BOTH, ...CLAIM);
+      assert.equal(r.code, 0, r.stderr);
+      const plan = JSON.parse(r.stdout);
+      assert.deepEqual(plan.requests[0].auth, { requester: { kind: "agent", id: "agent-7", name: "Build Bot" } });
+      assert.deepEqual(plan.requests[0].omittedAuthNames, ["auth.token"]);
+      assert.equal(plan.requests[1].headers["x-privos-requester-id"], "agent-7");
+      assert.deepEqual(plan.requests[1].omittedHeaderNames, ["x-api-key"]);
+      assert.equal(b.connections, 0);
+      assert.ok(!r.stdout.includes("secret-answer-key"));
+      assert.ok(!r.stderr.includes("secret-answer-key"));
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("write dry run prints the requester headers but never the key", async () => {
+    clearCreds();
+    let called = false;
+    const srv = await serve((_req, res) => {
+      called = true;
+      res.writeHead(500);
+      res.end("should not be called");
+    });
+    try {
+      const r = await runCLI([
+        "sandbox", "projects", "create", "--url", srv.url, "--api-key", "secret-key",
+        "--name", "Alpha", "--path", "/work/alpha", ...CLAIM,
+      ]);
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(called, false);
+      const { headers } = JSON.parse(r.stdout).requests[0];
+      assert.equal(headers["x-privos-requester-id"], "agent-7");
+      assert.equal(headers["x-privos-requester-name"], "Build Bot");
+      assert.equal(headers["x-privos-requester-kind"], "agent");
+      assert.equal(headers["x-api-key"], undefined);
+      assert.ok(!r.stdout.includes("secret-key"));
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("requester claim: env fallback, flag precedence, and no claim", async () => {
+    clearCreds();
+    const seen = [];
+    const srv = await serve((req, res) => {
+      seen.push({
+        id: req.headers["x-privos-requester-id"],
+        name: req.headers["x-privos-requester-name"],
+        kind: req.headers["x-privos-requester-kind"],
+      });
+      res.setHeader("content-type", "application/json");
+      res.end("[]");
+    });
+    const list = (...extra) =>
+      runCLI(["sandbox", "projects", "list", "--url", srv.url, "--api-key", "k", "--format", "json", ...extra]);
+    try {
+      let r = await list();
+      assert.equal(r.code, 0, r.stderr);
+
+      process.env.PRIVOS_REQUESTER_ID = "env-user";
+      process.env.PRIVOS_REQUESTER_NAME = "Env User";
+      r = await list();
+      assert.equal(r.code, 0, r.stderr);
+
+      process.env.PRIVOS_REQUESTER_KIND = "agent";
+      r = await list("--requester", "flag-user", "--requester-kind", "human");
+      assert.equal(r.code, 0, r.stderr);
+
+      assert.deepEqual(seen, [
+        { id: undefined, name: undefined, kind: undefined },
+        { id: "env-user", name: "Env User", kind: "human" },
+        { id: "flag-user", name: "Env User", kind: "human" },
+      ]);
+    } finally {
+      clearCreds();
+      await srv.close();
+    }
+  });
+
+  test("requester claim validation fails before any request", async () => {
+    clearCreds();
+    let called = false;
+    const srv = await serve((_req, res) => {
+      called = true;
+      res.end("[]");
+    });
+    const list = (...extra) => runCLI(["sandbox", "projects", "list", "--url", srv.url, "--api-key", "k", ...extra]);
+    try {
+      for (const [args, want] of [
+        [["--requester-name", "Bot"], /need --requester ID/],
+        [["--requester-kind", "agent"], /need --requester ID/],
+        [["--requester", "x", "--requester-kind", "robot"], /must be human or agent/],
+        [["--requester", "x".repeat(65)], /longer than 64/],
+        [["--requester", "x", "--requester-name", "Bôt"], /printable ASCII/],
+      ]) {
+        const r = await list(...args);
+        assert.equal(r.code, 2, `${args.join(" ")}: ${r.stderr}`);
+        assert.match(r.stderr, want);
+      }
+      process.env.PRIVOS_REQUESTER_NAME = "Env Only";
+      const r = await list();
+      assert.equal(r.code, 2);
+      assert.match(r.stderr, /need --requester ID/);
+      assert.equal(called, false);
+    } finally {
+      clearCreds();
+      await srv.close();
     }
   });
   test("agents a2a authenticates with the bot key and sends the envelope", async () => {
