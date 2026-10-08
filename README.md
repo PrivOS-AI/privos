@@ -137,9 +137,9 @@ exactly once on upgrade — the same request-code flow above, run a single time.
 key (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`), if it pointed at a **publicly reachable** endpoint,
 reappears afterwards as a regular custom provider, and — if no default provider was chosen yet
 — becomes the default, so the agent keeps answering with your own key. A BYO key pointing at a
-**private/LAN address** needs a sandbox image with the LAN-LLM-provider change (see
-`env.template`) to keep answering the same way; without one, activation silently moves it to
-Roxane at $0 credit. Roxane stays listed either way, and you can switch to it after a top-up.
+**private/LAN address** keeps answering the same way once that endpoint's IPv4 address/CIDR is
+listed in `PRIVOS_EGRESS_ALLOWLIST` in `.env` (see "LAN / private LLM endpoints" in
+`env.template`). Roxane stays listed either way, and you can switch to it after a top-up.
 
 **Licence expiry or reinstalling.** A licence that lapses past its grace period, fails
 validation, or no longer matches this host's identity re-arms the gate. Re-registering with
@@ -175,8 +175,8 @@ internet access on the PrivOS host:
 
 A fully offline host still needs an LLM to talk to: point it at a private/LAN Anthropic-/
 OpenAI-compatible endpoint using the same `PRIVOS_EGRESS_ALLOWLIST` + BYO-provider path
-described under "LAN / private LLM endpoints" in `env.template`, which requires a sandbox
-image with the LAN-LLM-provider change. Nothing beyond exactly that path — an explicitly
+described under "LAN / private LLM endpoints" in `env.template`.
+Nothing beyond exactly that path — an explicitly
 allowlisted and configured private endpoint — is promised for an air-gapped install.
 
 ## Contents
@@ -202,8 +202,11 @@ The installer verifies a **minisign** signature over `versions.json` + `compose.
 every other bundle file against the sha256 hashes carried in the signed `versions.json`, and
 pulls images by immutable `@sha256` digest. Only the hub port is published on `0.0.0.0`;
 board, proxy, RustFS and the VM pool bind `127.0.0.1`. See `SIGNING.md` for the public key.
-The current published key is **DEV-only**; production releases are re-signed with a securely
-held key. Found a vulnerability? Please email `security@privos.ai` rather than opening a
+Release bundles are signed with the production minisign key (key ID `344D3F6424820E15`, public
+key `RWQVDoIkZD9NNKyCJhKYcl7tGiAAys+Pp+PvLH1DJ5Ai1Ze7nTzm3cK2`), which `install.sh` embeds with
+`MINISIGN_PUBLIC_KEY_IS_DEV_ONLY="false"`. `install.sh` itself is not minisign-signed: it is
+fetched over TLS from GitHub, so for a stronger check, verify its sha256 out-of-band and run a
+local copy. Found a vulnerability? Please email `security@privos.ai` rather than opening a
 public issue.
 
 ## Roadmap: open source
