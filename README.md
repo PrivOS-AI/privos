@@ -34,7 +34,7 @@ infrastructure you control.
   and messages. Install them from the Marketplace, or build your own as an MCP server with
   the PrivOS app SDK. Every app call is checked against the scopes an admin granted.
 - **Agents that act.** PrivOS agents don't stop at answering. They run tools, edit code
-  with Git, update lists, and finish tasks, each one inside an isolated VM. Use the
+  with Git, update lists, and finish tasks, each one inside a sandboxed container. Use the
   agent backend you prefer: Claude Code CLI, Codex CLI, the Skawld SDK, or any Anthropic- or
   OpenAI-compatible model endpoint. A headless REST + SSE API and the `privos` CLI let
   your own systems drive them.
