@@ -510,7 +510,7 @@ desktop_firewall_note() {
 purge_desktop_resources() {
   local item
   while IFS= read -r item; do
-    [[ -n "$item" ]] && docker rm -f "$item" >/dev/null 2>&1 || true
+    if [[ -n "$item" ]]; then docker rm -f "$item" >/dev/null 2>&1 || true; fi
   done < <(docker ps -aq --filter "network=${PRIVOS_AGENT_NETWORK}" 2>/dev/null || true)
   while IFS= read -r item; do
     [[ -n "$item" ]] || continue
