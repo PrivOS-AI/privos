@@ -13,6 +13,13 @@ All notable changes to `@privos_ai/privos`. Full command notes live in
   release. Bot keys are refused (`--bot-key` and `PRIVOS_BOT_KEY` do not apply)
   and `--format table` is not supported. The hub's own permission check
   decides; its refusal prints as `HTTP 403: <error>`.
+- `--requester ID`, `--requester-name NAME` and `--requester-kind human|agent`
+  (env `PRIVOS_REQUESTER_ID`, `PRIVOS_REQUESTER_NAME`, `PRIVOS_REQUESTER_KIND`)
+  on board writes: sent as `x-privos-requester-id|name|kind` headers on every
+  board request and as `auth.requester` on the answer socket, so the board
+  records who started or answered an attempt. `tasks attempts` shows the
+  requester. The claim is self-declared unless the board binds the key to an
+  identity.
 
 ## 0.5.0 — 2026-10-06
 
