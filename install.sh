@@ -84,6 +84,15 @@ DEFAULT_PROXY_PORT=8557
 DEFAULT_RUSTFS_PORT=9000
 DEFAULT_VM_PORT_RANGE="30000-30999"
 MIN_RAM_MB=3800
+# Docker Desktop: the whole stack shares one VM (container limits add up to about
+# 5.4 GB with the App Cluster, agent containers are unbounded, and the VM itself
+# needs headroom). docker info reports a little less than the configured limit,
+# so these match the Desktop settings "6 GB" (refuse below) and "8 GB" (warn below).
+DESKTOP_MIN_RAM_MB=5800
+DESKTOP_RECOMMENDED_RAM_MB=7600
+# Network the App Cluster creates for marketplace apps (privos-cluster
+# DOCKER_NETWORK default; the bundle does not override it).
+APP_CLUSTER_APPS_NETWORK="mcp-apps-network"
 MIN_DISK_KB=$(( 20 * 1024 * 1024 ))
 MIN_DOCKER_MAJOR=24
 PROJECT_NAME="privos"
@@ -507,11 +516,25 @@ desktop_firewall_note() {
 
 # Desktop --uninstall --purge: everything the compose project and the agent VMs
 # created. Named volumes are the data, so this is the point of no return.
-purge_desktop_resources() {
+# --purge on every platform: what the stack started outside compose. Agent VM
+# containers (sandbox-proxy, on the agent network) and the marketplace apps the
+# App Cluster runs (containers and volumes labelled mcp-app=true, plus their
+# network). Images stay: they are a cache, not data.
+purge_app_resources() {
   local item
   while IFS= read -r item; do
     if [[ -n "$item" ]]; then docker rm -f "$item" >/dev/null 2>&1 || true; fi
-  done < <(docker ps -aq --filter "network=${PRIVOS_AGENT_NETWORK}" 2>/dev/null || true)
+  done < <({ docker ps -aq --filter "network=${PRIVOS_AGENT_NETWORK}"; docker ps -aq --filter "label=mcp-app=true"; } 2>/dev/null | sort -u || true)
+  while IFS= read -r item; do
+    [[ -n "$item" ]] || continue
+    docker volume rm "$item" >/dev/null 2>&1 || log "could not remove app volume ${item} — remove it with: docker volume rm ${item}"
+  done < <(docker volume ls -q --filter "label=mcp-app=true" 2>/dev/null || true)
+  docker network rm "$APP_CLUSTER_APPS_NETWORK" >/dev/null 2>&1 || true
+}
+
+purge_desktop_resources() {
+  local item
+  purge_app_resources
   while IFS= read -r item; do
     [[ -n "$item" ]] || continue
     docker volume rm "$item" >/dev/null 2>&1 || log "could not remove volume ${item} (still in use?) — remove it with: docker volume rm ${item}"
@@ -985,7 +1008,8 @@ check_resources() {
   local mem_kb mem_mb check_dir avail_kb
   if host_is_desktop; then
     mem_mb="$(desktop_vm_memory_mb)"
-    (( mem_mb >= MIN_RAM_MB )) || die "the Docker Desktop VM has ${mem_mb} MB of memory; PrivOS needs about 4 GB (more with the knowledge-vector sidecar). Raise it at Docker Desktop → Settings → Resources → Memory limit, then Apply & restart and re-run."
+    (( mem_mb >= DESKTOP_MIN_RAM_MB )) || die "the Docker Desktop VM has ${mem_mb} MB of memory; PrivOS needs at least 6 GB there (8 GB recommended, more with the knowledge-vector sidecar). Raise it at Docker Desktop → Settings → Resources → Memory limit, then Apply & restart and re-run."
+    (( mem_mb >= DESKTOP_RECOMMENDED_RAM_MB )) || log "WARNING: the Docker Desktop VM has ${mem_mb} MB of memory; 8 GB is recommended once agents and marketplace apps run (Docker Desktop → Settings → Resources → Memory limit)."
   else
     mem_kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo)"
     mem_mb=$(( mem_kb / 1024 ))
@@ -2106,6 +2130,7 @@ do_uninstall() {
   fi
   compose down --remove-orphans || true
   if [[ "$PURGE" == "true" ]]; then
+    purge_app_resources
     docker network rm "$PRIVOS_NETWORK" >/dev/null 2>&1 || true
     docker network rm "$PRIVOS_AGENT_NETWORK" >/dev/null 2>&1 || true
     docker volume rm "${PRIVOS_PROJECT}-hub-lib" >/dev/null 2>&1 || true

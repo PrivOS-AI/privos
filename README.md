@@ -113,8 +113,8 @@ irm https://github.com/PrivOS-AI/privos/releases/latest/download/install.ps1 | i
 | Platform | Container runtime | Images | Data lives in |
 |---|---|---|---|
 | Linux x86_64 (arm64 pulls arm64 images, not yet verified) | Docker Engine ≥ 24 with compose v2 (or `--install-docker`) | linux/amd64 | `/opt/privos/data` |
-| macOS 13+, Apple Silicon or Intel | Docker Desktop ≥ 4.30 | linux/arm64 natively on Apple Silicon (no Rosetta), linux/amd64 on Intel | Docker named volumes `privos-*` inside Docker Desktop; install dir `~/.privos` |
-| Windows 10 22H2 / 11, x64 | Docker Desktop ≥ 4.30, WSL 2 backend (Hyper-V backend not supported) | linux/amd64 | Docker named volumes `privos-*`; install dir `%LOCALAPPDATA%\PrivOS` |
+| macOS 13+, Apple Silicon or Intel | Docker Desktop ≥ 4.30, memory ≥ 6 GB (8 GB recommended) | linux/arm64 natively on Apple Silicon (no Rosetta), linux/amd64 on Intel | Docker named volumes `privos-*` inside Docker Desktop; install dir `~/.privos` |
+| Windows 10 22H2 / 11, x64 | Docker Desktop ≥ 4.30, WSL 2 backend (Hyper-V backend not supported), memory ≥ 6 GB (8 GB recommended) | linux/amd64 | Docker named volumes `privos-*`; install dir `%LOCALAPPDATA%\PrivOS` |
 
 On macOS and Windows the installer adds `compose.desktop.yml` (signed like `compose.yml`): data
 moves into named volumes, and a small `privos-netguard` container applies the same loopback and
@@ -123,6 +123,12 @@ Linux host. The hub is published on all interfaces (`0.0.0.0:3000`) on every pla
 once to allow Docker Desktop through the firewall. Enable Docker Desktop's "Start Docker Desktop when
 you sign in" so PrivOS comes back after a reboot. macOS ships with the first release whose images all
 carry `linux/arm64`; until then the macOS installer stops with a clear message.
+
+`--uninstall --purge` (`-Uninstall -Purge` on Windows) deletes everything the install created: the
+stack's containers and data (`/opt/privos`, or the `privos-*` volumes on Desktop), agent containers,
+the marketplace apps the App Cluster runs (containers and volumes labelled `mcp-app=true`, network
+`mcp-apps-network`), both networks, the firewall rules and the install directory. Downloaded images
+are kept; remove them with `docker image prune -a` if you want the disk space back.
 
 Host prerequisites on Linux: `curl`, `jq`, `minisign`, `openssl` on PATH (Debian/Ubuntu:
 `apt-get install -y jq minisign`). On macOS the installer uses Homebrew when present and otherwise
