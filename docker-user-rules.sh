@@ -49,7 +49,9 @@ VM_BRIDGE_IFACE="privos-agent0"
 # the exact invocations made without mutating a real host firewall (same
 # reason tests/test-port-check.sh overrides run_ss/run_lsof instead of
 # calling `ss`/`lsof` for real).
-run_iptables() { iptables "$@"; }
+# PRIVOS_IPTABLES selects the backend binary (iptables-nft / iptables-legacy);
+# --loop resolves it itself, see select_iptables_backend.
+run_iptables() { "${PRIVOS_IPTABLES:-iptables}" "$@"; }
 run_ip() { ip "$@"; }
 
 # Trims leading/trailing whitespace from a comma-list entry. Shared by
@@ -97,7 +99,7 @@ validate_egress_allowlist() {
   local egress_allowlist="$1" entry ip prefix octet
   local -a entries octets
   IFS=',' read -ra entries <<< "$egress_allowlist"
-  for entry in "${entries[@]}"; do
+  for entry in ${entries[@]+"${entries[@]}"}; do
     entry="$(_trim "$entry")"
     [[ -z "$entry" ]] && continue
     [[ "$entry" == *.*.*.* ]] || continue
@@ -273,7 +275,7 @@ apply_vm_egress_rules() {
   # listed, including 127.0.0.0/8 or 169.254.0.0/16 if an operator lists one.
   [[ "${VM_EGRESS_MODE:-open}" == "enforce" ]] && return 0
   IFS=',' read -ra allow_entries <<< "$egress_allowlist"
-  for entry in "${allow_entries[@]}"; do
+  for entry in ${allow_entries[@]+"${allow_entries[@]}"}; do
     entry="$(_trim "$entry")"
     [[ -z "$entry" ]] && continue
     if [[ "$entry" != *.*.*.* ]]; then
@@ -347,16 +349,89 @@ UNIT
   run_iptables -L DOCKER-USER -n --line-numbers | tail -n +3
 }
 
+# A helper container (privos-netguard, compose.desktop.yml) cannot know which
+# iptables backend the Docker daemon on its host uses; pick the one whose
+# DOCKER-USER chain exists. Falls back to plain `iptables` when neither has it
+# yet (the daemon creates the chain at its first container start).
+select_iptables_backend() {
+  local b
+  [[ -n "${PRIVOS_IPTABLES:-}" ]] && return 0
+  for b in iptables-nft iptables-legacy; do
+    if command -v "$b" >/dev/null 2>&1 && "$b" -S DOCKER-USER >/dev/null 2>&1; then
+      PRIVOS_IPTABLES="$b"
+      return 0
+    fi
+  done
+  PRIVOS_IPTABLES="iptables"
+}
+
+# True when this script's rules are live: the sandbox-plane DROPs, plus the
+# agent-VM egress rules once the agent bridge exists.
+rules_present() {
+  local rules
+  rules="$(run_iptables -S DOCKER-USER 2>/dev/null)" || return 1
+  grep -q -- "--comment $SANDBOX_PLANE_TAG" <<< "$rules" || return 1
+  run_ip link show "$VM_BRIDGE_IFACE" >/dev/null 2>&1 || return 0
+  grep -q -- "--comment $VM_EGRESS_TAG" <<< "$rules"
+}
+
+# `--loop`: the Docker Desktop form (privos-netguard, compose.desktop.yml). There
+# is no systemd unit inside the Desktop VM, and the daemon recreates DOCKER-USER
+# empty whenever Docker Desktop restarts, so apply now and re-apply every
+# PRIVOS_NETGUARD_INTERVAL seconds (default 60) whenever the tagged rules are
+# missing. Stopping the container deliberately leaves the rules in place: agent
+# containers are started by sandbox-proxy outside compose and can outlive a
+# `compose down`, so their egress must stay restricted. `--clear` (run by the
+# installers' `--uninstall --purge`) is the only way the rules are removed.
+loop_rules() {
+  local protected_ports="$1" egress_allowlist="$2"
+  select_iptables_backend
+  echo "netguard: using ${PRIVOS_IPTABLES}"
+  trap 'echo "netguard: stopping, rules left in place"; exit 0' TERM INT
+  while :; do
+    if ! rules_present; then
+      apply_sandbox_plane_rules "$protected_ports"
+      apply_vm_egress_rules "$egress_allowlist"
+      echo "netguard: rules applied"
+    fi
+    sleep "${PRIVOS_NETGUARD_INTERVAL:-60}" &
+    wait $! || true
+  done
+}
+
 main() {
   # `--clear`: remove every rule this script ever adds (both tags) and stop
   # — used by install.sh's `--uninstall --purge` so the (now-live, see
   # apply_sandbox_plane_rules) DROPs never outlive the install they came
   # from. Deliberately does not touch the persisted unit/script files;
   # install.sh's do_uninstall removes those itself after this returns.
+  # `--present`: exit 0 only when the rules are live — privos-netguard's
+  # healthcheck, which sandbox-proxy (the only service that starts agent
+  # containers) waits for on Docker Desktop.
+  if [[ "${1:-}" == "--present" ]]; then
+    [[ -n "${PRIVOS_NETGUARD:-}" ]] && select_iptables_backend
+    rules_present
+    return
+  fi
+  # `--check`: validate the arguments and VM_EGRESS_MODE without touching any
+  # rule — the Docker Desktop installers run it before `compose up` so a typo
+  # aborts the install exactly as it does on Linux.
+  if [[ "${1:-}" == "--check" ]]; then
+    validate_egress_allowlist "${3:-}"
+    validate_vm_egress_mode
+    return 0
+  fi
   if [[ "${1:-}" == "--clear" ]]; then
+    [[ -n "${PRIVOS_NETGUARD:-}" ]] && select_iptables_backend
     clear_tagged_rules "$SANDBOX_PLANE_TAG"
     clear_tagged_rules "$VM_EGRESS_TAG"
     return 0
+  fi
+
+  local loop="false"
+  if [[ "${1:-}" == "--loop" ]]; then
+    loop="true"
+    shift
   fi
 
   local protected_ports="${1:?comma-separated protected ports/ranges required, e.g. 8556,8557,9000,30000:30999}"
@@ -367,6 +442,11 @@ main() {
   # either apply_* function.
   validate_egress_allowlist "$egress_allowlist"
   validate_vm_egress_mode
+
+  if [[ "$loop" == "true" ]]; then
+    loop_rules "$protected_ports" "$egress_allowlist"
+    return 0
+  fi
 
   apply_sandbox_plane_rules "$protected_ports"
   apply_vm_egress_rules "$egress_allowlist"

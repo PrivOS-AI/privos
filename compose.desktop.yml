@@ -1,0 +1,244 @@
+# PrivOS self-hosted bundle: Docker Desktop overlay (macOS and Windows).
+#
+#   docker compose -f compose.yml -f compose.desktop.yml --env-file .env up -d
+#
+# install.sh (macOS) and install.ps1 (Windows) add this file automatically. It
+# is a PUBLISHED, SIGNED artifact like compose.yml (minisign, SIGNING.md).
+#
+# Why an overlay instead of compose.yml's host binds:
+#   - Host binds on Docker Desktop cross a file-sharing layer (virtiofs / 9p)
+#     that cannot hold uid ownership (no chown from macOS or Windows) and breaks
+#     MongoDB's WiredTiger on Windows. Every data directory is therefore a named
+#     volume inside the Desktop VM, and `privos-init` sets the same owners and
+#     modes install.sh sets with chown/chmod on Linux.
+#   - The Mongo keyfile must be 0400 and owned by uid 999; a bind from the host
+#     cannot be. privos-init copies it into the `mongo-keyfile` volume.
+#   - sandbox-proxy spawns agent containers through the Docker API with binds
+#     under POOL_DATA_BASE, and the App Cluster does the same under
+#     MCP_BROKER_ROOT. Those paths must be valid for the daemon, so both volumes
+#     are mounted at the daemon-side mountpoint path of the volume itself
+#     (/var/lib/docker/volumes/<name>/_data): the path the container sees is the
+#     path the daemon can bind.
+#   - The DOCKER-USER hardening (docker-user-rules.sh) has to run inside the
+#     Desktop VM, where the daemon and its iptables live: `privos-netguard`
+#     applies it with host networking and re-applies it after a Desktop restart.
+#
+# `!override` (Compose 2.24.4+, Docker Desktop 4.30+) replaces a service's whole
+# volume list rather than merging it with compose.yml's binds.
+
+volumes:
+  mongo:
+    name: ${PRIVOS_PROJECT:-privos}-mongo
+  mongo-keyfile:
+    name: ${PRIVOS_PROJECT:-privos}-mongo-keyfile
+  rustfs:
+    name: ${PRIVOS_PROJECT:-privos}-rustfs
+  hub-lib:
+    name: ${PRIVOS_PROJECT:-privos}-hub-lib
+  hub-uploads:
+    name: ${PRIVOS_PROJECT:-privos}-hub-uploads
+  hub-marketplace:
+    name: ${PRIVOS_PROJECT:-privos}-hub-marketplace
+  sandbox-board:
+    name: ${PRIVOS_PROJECT:-privos}-sandbox-board
+  sandbox-proxy:
+    name: ${PRIVOS_PROJECT:-privos}-sandbox-proxy
+  sandbox-pool:
+    name: ${PRIVOS_PROJECT:-privos}-sandbox-pool
+  weaviate:
+    name: ${PRIVOS_PROJECT:-privos}-weaviate
+  app-cluster-state:
+    name: ${PRIVOS_PROJECT:-privos}-app-cluster-state
+  mcp-broker:
+    name: ${PRIVOS_PROJECT:-privos}-mcp-broker
+
+services:
+  # One-shot: owners and modes for every data volume, the same values install.sh
+  # sets on Linux (see its "network + firewall setup" stage). Idempotent; only
+  # files not already owned correctly are touched, so a large pool is cheap.
+  # The netguard image is reused (alpine + bash) so no extra image is pinned.
+  privos-init:
+    image: ghcr.io/privos-ai/privos-netguard:${PRIVOS_STACK_VERSION:?PRIVOS_STACK_VERSION is required}@sha256:__NETGUARD_DIGEST__
+    container_name: ${PRIVOS_PROJECT:-privos}-init
+    restart: "no"
+    network_mode: none
+    entrypoint: ["/bin/sh", "-euc"]
+    command:
+      - |
+        # chown -h / the -L guard: never follow a link a compromised service
+        # planted (install.sh refuse_symlink parity).
+        own() { find "$$2" ! -user "$${1%%:*}" -exec chown -h "$$1" {} +; }
+        for d in /v/hub-marketplace/apps /v/hub-lib/self-hosted; do
+          [ ! -L "$$d" ] || { echo "refusing: $$d is a symlink" >&2; exit 1; }
+        done
+        install -m 0400 -o 999 -g 999 /src/mongo-keyfile /v/mongo-keyfile/mongo-keyfile
+        chown 999:999 /v/mongo-keyfile /v/mongo
+        chmod 0500 /v/mongo-keyfile
+        chown 10001:10001 /v/rustfs
+        own 1001:1001 /v/sandbox-board
+        own 1001:1001 /v/sandbox-proxy
+        own 1001:1001 /v/sandbox-pool
+        mkdir -p /v/hub-marketplace/apps /v/hub-lib/self-hosted
+        chown -h 1001:1001 /v/hub-uploads /v/hub-marketplace /v/hub-marketplace/apps /v/hub-lib /v/hub-lib/self-hosted
+        chmod 0750 /v/hub-marketplace/apps
+        chmod 0700 /v/hub-lib /v/hub-lib/self-hosted
+        chown 1000:1000 /v/app-cluster-state /v/mcp-broker
+        chmod 0700 /v/mcp-broker
+    volumes:
+      - ${PRIVOS_DIR:?PRIVOS_DIR is required}/secrets/mongo-keyfile:/src/mongo-keyfile:ro
+      - mongo:/v/mongo
+      - mongo-keyfile:/v/mongo-keyfile
+      - rustfs:/v/rustfs
+      - hub-lib:/v/hub-lib
+      - hub-uploads:/v/hub-uploads
+      - hub-marketplace:/v/hub-marketplace
+      - sandbox-board:/v/sandbox-board
+      - sandbox-proxy:/v/sandbox-proxy
+      - sandbox-pool:/v/sandbox-pool
+      - weaviate:/v/weaviate
+      - app-cluster-state:/v/app-cluster-state
+      - mcp-broker:/v/mcp-broker
+    security_opt: ["no-new-privileges:true"]
+
+  # docker-user-rules.sh --loop inside the Desktop VM: sandbox-plane ports stay
+  # loopback-only and agent VMs cannot open connections to private, CGNAT or
+  # link-local ranges (the operator's LAN, cloud metadata). Healthy only while
+  # the rules are live; sandbox-proxy, which starts agent containers, waits for
+  # it. Rules stay in place when this container stops (agents may outlive the
+  # stack); `--uninstall --purge` removes them with `--clear`.
+  privos-netguard:
+    image: ghcr.io/privos-ai/privos-netguard:${PRIVOS_STACK_VERSION:?PRIVOS_STACK_VERSION is required}@sha256:__NETGUARD_DIGEST__
+    container_name: ${PRIVOS_PROJECT:-privos}-netguard
+    restart: unless-stopped
+    network_mode: host
+    cap_drop: ["ALL"]
+    cap_add: ["NET_ADMIN", "NET_RAW"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      VM_EGRESS_MODE: ${VM_EGRESS_MODE:-open}
+    command:
+      - --loop
+      - ${PRIVOS_BOARD_PORT:-8556},${PRIVOS_PROXY_PORT:-8557},${PRIVOS_RUSTFS_PORT:-9000},${PRIVOS_VM_PORT_RANGE:-30000-30999}
+      - ${PRIVOS_EGRESS_ALLOWLIST:-}
+    healthcheck:
+      test: ["CMD", "/usr/local/sbin/privos-docker-user-rules.sh", "--present"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: 64m
+    cpus: 0.1
+
+  mongo:
+    depends_on:
+      privos-init:
+        condition: service_completed_successfully
+    volumes: !override
+      - type: volume
+        source: mongo
+        target: /data/db
+        volume: {nocopy: true}
+      - type: volume
+        source: mongo-keyfile
+        target: /run/secrets
+        read_only: true
+
+  rustfs:
+    depends_on:
+      privos-init:
+        condition: service_completed_successfully
+    volumes: !override
+      - type: volume
+        source: rustfs
+        target: /data
+        volume: {nocopy: true}
+
+  hub:
+    depends_on:
+      privos-init:
+        condition: service_completed_successfully
+    volumes: !override
+      - type: volume
+        source: hub-lib
+        target: /var/lib/privos
+        volume: {nocopy: true}
+      - type: volume
+        source: hub-uploads
+        target: /app/bundle/uploads
+        volume: {nocopy: true}
+      - type: volume
+        source: hub-marketplace
+        target: /var/lib/privos/marketplace
+        volume: {nocopy: true}
+
+  sandbox-board:
+    depends_on:
+      privos-init:
+        condition: service_completed_successfully
+    environment:
+      POOL_DATA_BASE: /var/lib/docker/volumes/${PRIVOS_PROJECT:-privos}-sandbox-pool/_data
+    volumes: !override
+      - type: volume
+        source: sandbox-board
+        target: /app/data
+        volume: {nocopy: true}
+      - type: volume
+        source: sandbox-pool
+        target: /var/lib/docker/volumes/${PRIVOS_PROJECT:-privos}-sandbox-pool/_data
+        volume: {nocopy: true}
+      - type: volume
+        source: hub-lib
+        target: /var/lib/privos/self-hosted
+        read_only: true
+        volume: {nocopy: true, subpath: self-hosted}
+
+  sandbox-proxy:
+    depends_on:
+      privos-init:
+        condition: service_completed_successfully
+      privos-netguard:
+        condition: service_healthy
+    environment:
+      POOL_DATA_BASE: /var/lib/docker/volumes/${PRIVOS_PROJECT:-privos}-sandbox-pool/_data
+    volumes: !override
+      - type: volume
+        source: sandbox-proxy
+        target: /app/data
+        volume: {nocopy: true}
+      - type: volume
+        source: sandbox-pool
+        target: /var/lib/docker/volumes/${PRIVOS_PROJECT:-privos}-sandbox-pool/_data
+        volume: {nocopy: true}
+      - /var/run/docker.sock:/var/run/docker.sock
+      - type: volume
+        source: hub-lib
+        target: /var/lib/privos/self-hosted
+        read_only: true
+        volume: {nocopy: true, subpath: self-hosted}
+
+  weaviate:
+    depends_on:
+      privos-init:
+        condition: service_completed_successfully
+    volumes: !override
+      - type: volume
+        source: weaviate
+        target: /var/lib/weaviate
+        volume: {nocopy: true}
+
+  app-cluster:
+    depends_on:
+      privos-init:
+        condition: service_completed_successfully
+    environment:
+      MCP_BROKER_ROOT: /var/lib/docker/volumes/${PRIVOS_PROJECT:-privos}-mcp-broker/_data
+    volumes: !override
+      - type: volume
+        source: app-cluster-state
+        target: /var/lib/privos-app-cluster
+        volume: {nocopy: true}
+      - type: volume
+        source: mcp-broker
+        target: /var/lib/docker/volumes/${PRIVOS_PROJECT:-privos}-mcp-broker/_data
+        volume: {nocopy: true}
+      - /var/run/docker.sock:/var/run/docker.sock

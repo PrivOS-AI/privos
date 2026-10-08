@@ -168,6 +168,32 @@ if [[ -f "$DEV_KEY" ]] && command -v minisign >/dev/null 2>&1; then
   assert_status 1 "$rc" "verify_bundle_integrity: aborts when NOTICE is swapped after signing"
   assert_contains "$out" "sha256 mismatch" "verify_bundle_integrity: names the mismatch for a swapped NOTICE"
   printf 'PrivOS — NOTICE test fixture text\n' > "$WORK/NOTICE"
+
+  # Docker Desktop: compose.desktop.yml must be both signed and hash-pinned in
+  # the signed versions.json; Linux ignores it.
+  cp "$SELF_DIR/../compose.desktop.yml" "$WORK/compose.desktop.yml"
+  jq --arg ov "$(real_sha "$WORK/compose.desktop.yml")" '.files["compose.desktop.yml"] = {sha256: $ov}' \
+    "$WORK/versions.json" > "$WORK/versions.tmp" && mv "$WORK/versions.tmp" "$WORK/versions.json"
+  minisign -S -s "$DEV_KEY" -m "$WORK/versions.json" -t "test" >/dev/null 2>&1
+  minisign -S -s "$DEV_KEY" -m "$WORK/compose.desktop.yml" -t "test" >/dev/null 2>&1
+  HOST_OS=darwin
+  ( verify_bundle_integrity "$WORK" ) >/dev/null 2>&1
+  assert_status 0 "$?" "verify_bundle_integrity (Desktop): accepts a signed, hash-pinned compose.desktop.yml"
+
+  printf '\n# PWNED: privileged service appended after signing\n' >> "$WORK/compose.desktop.yml"
+  ( verify_bundle_integrity "$WORK" ) >/dev/null 2>&1
+  assert_status 1 "$?" "verify_bundle_integrity (Desktop): aborts when compose.desktop.yml is swapped after signing"
+  cp "$SELF_DIR/../compose.desktop.yml" "$WORK/compose.desktop.yml"
+
+  rm -f "$WORK/compose.desktop.yml.minisig"
+  ( verify_bundle_integrity "$WORK" ) >/dev/null 2>&1
+  assert_status 1 "$?" "verify_bundle_integrity (Desktop): aborts when the overlay signature is missing"
+
+# shellcheck disable=SC2034 # read by host_is_desktop() in the sourced install.sh
+  HOST_OS=linux
+  printf '\n# not used on Linux\n' >> "$WORK/compose.desktop.yml"
+  ( verify_bundle_integrity "$WORK" ) >/dev/null 2>&1
+  assert_status 0 "$?" "verify_bundle_integrity (Linux): the Desktop overlay is not consulted"
 else
   echo "# SKIP: DEV scaffold keypair or minisign not available for the end-to-end check"
 fi

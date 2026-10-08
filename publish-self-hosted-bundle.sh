@@ -38,23 +38,34 @@ IMAGE_REFS=(
   "sandboxVm|ghcr.io/privos-ai/privos-sandbox-vm|__SANDBOX_VM_DIGEST__"
   "mongo|mongo:7.0.14|__MONGO_DIGEST__"
   "redis|redis:7.2-alpine|__REDIS_DIGEST__"
-  # sha256:8d8bfa61f3a20cdcf644562bb8c3a314ca03c66a9827f6056f741e787bf0c804 (D6): linux/amd64 child digest, resolved by hand on
-  # ctl-01 and patched into both lines below before a real publish run — the
-  # two entries share the sentinel text on purpose (neither has a real digest
-  # yet); resolve_all_digests's sed step is per-entry so once BOTH are patched
-  # with distinct real digests, publishing proceeds normally.
+  # rustfs / rustfsRc: the third field is the digest text compose.yml carries in
+  # the source tree; resolve_digest replaces it with the tag's multi-arch INDEX
+  # digest at publish time, so amd64 and arm64 hosts pull the same pin.
   "rustfs|ghcr.io/rustfs/rustfs:1.0.0-rc.6|8d8bfa61f3a20cdcf644562bb8c3a314ca03c66a9827f6056f741e787bf0c804"
   "rustfsRc|docker.io/rustfs/rc:v0.1.35|6558b9777a1e75fc92e040a7bae67af93334703b4b4ab3a28cf45ecc08ee2404"
   # Digest-pinned: cr.weaviate.io enforces a strict unauthenticated pull rate
   # limit that blocks digest resolution from developer machines. Pin explicitly
-  # (resolved on the fleet build host) and bump alongside the tag.
-  "weaviate|cr.weaviate.io/semitechnologies/weaviate:1.38.2@sha256:9969db903c76cbaf17f40b7b33d3432e111c494713d1065ee050d742aeeaebfe|__WEAVIATE_DIGEST__"
+  # (the multi-arch INDEX digest, never a single-platform child) and bump
+  # alongside the tag.
+  "weaviate|cr.weaviate.io/semitechnologies/weaviate:1.38.2@sha256:107e8faae40ead5477fa6e2e86cc3da5a2d578d32d4586b4e23861d90eb3601c|__WEAVIATE_DIGEST__"
   "appCluster|ghcr.io/privos-ai/privos-app-cluster|__APP_CLUSTER_DIGEST__"
   "publisher|ghcr.io/privos-ai/privos-publisher|__PUBLISHER_DIGEST__"
+  # Docker Desktop only (compose.desktop.yml): privos-netguard + privos-init.
+  "netguard|ghcr.io/privos-ai/privos-netguard|__NETGUARD_DIGEST__"
 )
 
-SIGNED_FILES=(compose.yml versions.json)
-HASHED_FILES=(compose.yml install.sh rustfs-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md)
+# Images built by PrivOS (ghcr.io/privos-ai/*) must carry both platforms: amd64
+# from the fleet build, arm64 from the GitHub Actions arm64 workflows. The macOS
+# installer runs arm64 images natively and never under Rosetta.
+# --allow-amd64-only publishes a Linux/Windows-only release before arm64 exists;
+# install.sh then refuses arm64 hosts from the platforms recorded below.
+REQUIRED_PLATFORMS=(linux/amd64 linux/arm64)
+ALLOW_AMD64_ONLY="false"
+
+SIGNED_FILES=(compose.yml compose.desktop.yml versions.json)
+HASHED_FILES=(compose.yml compose.desktop.yml install.sh install.ps1 rustfs-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md)
+# Files whose image placeholders are replaced with resolved digests.
+DIGEST_FILES=(compose.yml compose.desktop.yml)
 
 # OPEN-SOURCE-NOTICES ships with two release-time template tokens that must
 # never reach a published bundle unresolved (see fill_open_source_notices_tokens
@@ -79,6 +90,8 @@ publish-self-hosted-bundle.sh — resolve digests, sign, publish the bundle.
                              placeholder digests remain, files{}.sha256 matches disk, no
                              unresolved OPEN-SOURCE-NOTICES template tokens. No key
                              needed; exits non-zero on the first failure.
+  --allow-amd64-only        Publish even when a PrivOS image lacks linux/arm64 (a
+                             Linux/Windows-only release; macOS installs are refused)
   --skip-sbom               Publish without a syft-generated SBOM license inventory —
                              OPEN-SOURCE-NOTICES gets an explicit "not generated" note
                              instead. Without this flag, publishing requires syft.
@@ -111,6 +124,7 @@ parse_args() {
       --yes) DRY_RUN="false"; shift ;;
       --check) CHECK_ONLY="true"; shift ;;
       --skip-sbom) SKIP_SBOM="true"; shift ;;
+      --allow-amd64-only) ALLOW_AMD64_ONLY="true"; shift ;;
       -h|--help) usage; exit 0 ;;
       *) die "unknown flag: $1 (see --help)" ;;
     esac
@@ -139,9 +153,11 @@ run_check() {
 
   for entry in "${IMAGE_REFS[@]}"; do
     IFS='|' read -r name ref placeholder <<<"$entry"
-    grep -q "$placeholder" compose.yml && die "compose.yml still has an unresolved placeholder for ${name} (${placeholder})"
+    for f in "${DIGEST_FILES[@]}"; do
+      grep -q "$placeholder" "$f" && die "${f} still has an unresolved placeholder for ${name} (${placeholder})"
+    done
   done
-  log "OK: no unresolved digest placeholders in compose.yml"
+  log "OK: no unresolved digest placeholders in ${DIGEST_FILES[*]}"
 
   require_cmd jq
   for entry in "${IMAGE_REFS[@]}"; do
@@ -149,6 +165,8 @@ run_check() {
     digest_field="$(jq -r ".images.${name}.digest // empty" versions.json)"
     [[ -n "$digest_field" ]] || die "versions.json is missing images.${name}.digest"
     [[ "$digest_field" == sha256:* ]] || die "versions.json images.${name}.digest is not a sha256 digest: ${digest_field}"
+    jq -e ".images.${name}.platforms | index(\"linux/amd64\")" versions.json >/dev/null \
+      || die "versions.json images.${name}.platforms does not list linux/amd64"
   done
   log "OK: versions.json carries a resolved sha256 digest for every image"
 
@@ -197,7 +215,7 @@ resolve_digest() {
 resolve_all_digests() {
   [[ -n "$STACK_VERSION" ]] || die "--stack-version is required"
   local entry name ref_template placeholder ref digest
-  declare -gA RESOLVED_DIGEST=()
+  declare -gA RESOLVED_DIGEST=() RESOLVED_PLATFORMS=()
   for entry in "${IMAGE_REFS[@]}"; do
     IFS='|' read -r name ref_template placeholder <<<"$entry"
     # Entries with no tag baked into ref_template (hub/sandbox-*, appCluster)
@@ -208,7 +226,37 @@ resolve_all_digests() {
     log "Resolving digest for ${name} (${ref})…"
     digest="$(resolve_digest "$ref")"
     RESOLVED_DIGEST["$name"]="$digest"
-    log "  -> ${digest}"
+    RESOLVED_PLATFORMS["$name"]="$(resolve_platforms "${ref%@*}@${digest}")"
+    log "  -> ${digest} (${RESOLVED_PLATFORMS[$name]})"
+    if [[ "$ref_template" == ghcr.io/privos-ai/* ]]; then
+      require_platforms "$name" "${RESOLVED_PLATFORMS[$name]}"
+    fi
+  done
+}
+
+# Comma-separated os/arch list of a pinned ref: the children of an index, or
+# the single platform of a plain manifest. Attestation manifests are skipped.
+resolve_platforms() {
+  local ref="$1" raw
+  require_cmd docker
+  raw="$(docker buildx imagetools inspect "$ref" --raw 2>/dev/null)" || die "could not read the manifest of ${ref}"
+  if jq -e '.manifests' >/dev/null 2>&1 <<<"$raw"; then
+    jq -r '[.manifests[] | select(.platform.os != "unknown") | "\(.platform.os)/\(.platform.architecture)"] | unique | join(",")' <<<"$raw"
+  else
+    docker buildx imagetools inspect "$ref" --format '{{.Image.OS}}/{{.Image.Architecture}}' 2>/dev/null \
+      || die "could not read the platform of ${ref}"
+  fi
+}
+
+require_platforms() {
+  local name="$1" have="$2" p
+  for p in "${REQUIRED_PLATFORMS[@]}"; do
+    [[ ",${have}," == *",${p},"* ]] && continue
+    if [[ "$p" == linux/arm64 && "$ALLOW_AMD64_ONLY" == "true" ]]; then
+      log "WARNING: ${name} has no ${p} image — publishing without macOS/arm64 support (--allow-amd64-only)"
+      continue
+    fi
+    die "${name} has no ${p} image (${have:-none}). Run the arm64 workflows and merge the tag first (docs: self-hosted-release-runbook.md), or pass --allow-amd64-only for a Linux/Windows-only release."
   done
 }
 
@@ -323,8 +371,9 @@ apply_digests_and_sign() {
   local work="$1" entry name ref_template placeholder digest json f sha
 
   cp "$BUNDLE_DIR/compose.yml" "$work/compose.yml"
+  cp "$BUNDLE_DIR/compose.desktop.yml" "$work/compose.desktop.yml"
   cp "$BUNDLE_DIR/versions.json" "$work/versions.json"
-  for f in install.sh rustfs-init.sh docker-user-rules.sh env.template SIGNING.md \
+  for f in install.sh install.ps1 rustfs-init.sh docker-user-rules.sh env.template SIGNING.md \
     LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md; do
     cp "$BUNDLE_DIR/$f" "$work/$f"
   done
@@ -339,12 +388,18 @@ apply_digests_and_sign() {
   rm -f "$work/install.sh.bak"
   grep -q "BUNDLE_RELEASE_TAG=\"${release_tag}\"" "$work/install.sh" \
     || die "failed to bake BUNDLE_RELEASE_TAG into install.sh — placeholder line format changed?"
+  sed -i.bak "s|^\$script:BundleReleaseTag = 'unreleased'|\$script:BundleReleaseTag = '${release_tag}'|" "$work/install.ps1"
+  rm -f "$work/install.ps1.bak"
+  grep -qF "\$script:BundleReleaseTag = '${release_tag}'" "$work/install.ps1" \
+    || die "failed to bake the release tag into install.ps1 — placeholder line format changed?"
 
   for entry in "${IMAGE_REFS[@]}"; do
     IFS='|' read -r name _ placeholder <<<"$entry"
     digest="${RESOLVED_DIGEST[$name]}"
-    sed -i.bak "s|${placeholder}|${digest#sha256:}|g" "$work/compose.yml"
-    rm -f "$work/compose.yml.bak"
+    for f in "${DIGEST_FILES[@]}"; do
+      sed -i.bak "s|${placeholder}|${digest#sha256:}|g" "$work/$f"
+      rm -f "$work/$f.bak"
+    done
   done
 
   # OPEN-SOURCE-NOTICES token fill happens in this publish-dir copy only,
@@ -360,7 +415,9 @@ apply_digests_and_sign() {
     IFS='|' read -r name _ _ <<<"$entry"
     digest="${RESOLVED_DIGEST[$name]}"
     json="$(jq --arg name "$name" --arg digest "$digest" --arg tag "$STACK_VERSION" \
-      '.images[$name].digest = $digest | .images[$name].tag = (if .images[$name].tag == "PLACEHOLDER_STACK_VERSION" then $tag else .images[$name].tag end)' \
+      --arg platforms "${RESOLVED_PLATFORMS[$name]}" \
+      '.images[$name].digest = $digest | .images[$name].tag = (if .images[$name].tag == "PLACEHOLDER_STACK_VERSION" then $tag else .images[$name].tag end)
+       | .images[$name].platforms = ($platforms | split(","))' \
       <<<"$json")"
   done
   for f in "${HASHED_FILES[@]}"; do
@@ -407,7 +464,9 @@ publish() {
 
   local -a assets=(
     "$work/install.sh"
+    "$work/install.ps1"
     "$work/compose.yml" "$work/compose.yml.minisig"
+    "$work/compose.desktop.yml" "$work/compose.desktop.yml.minisig"
     "$work/versions.json" "$work/versions.json.minisig"
     "$work/rustfs-init.sh"
     "$work/docker-user-rules.sh"
