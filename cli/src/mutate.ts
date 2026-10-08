@@ -128,6 +128,8 @@ export function hubHeaders(userId: string, authToken: string, botKey = ""): Head
     headers.set("authorization", `Bearer ${botKey}`);
     return headers;
   }
+  // Egress sends no credentials of its own: the proxy attaches the bot key.
+  if (userId === "" && authToken === "") return headers;
   headers.set("X-User-Id", userId);
   headers.set("X-Auth-Token", authToken);
   return headers;

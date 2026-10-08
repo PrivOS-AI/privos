@@ -27,6 +27,11 @@ Commands:
   hub rooms create
   hub rooms update
   hub rooms delete
+  hub rooms members
+  hub rooms invite
+  hub rooms kick
+  hub rooms archive
+  hub dm reply             Ask the hub to answer an owner DM in the owner's name (agent VM only)
   hub messages list
   hub messages send
   hub messages update
@@ -369,10 +374,11 @@ const hubHelp = `Usage:
 
 Commands:
   get --route ROUTE [--param k=v]
-  rooms list|create|update|delete
+  rooms list|members|create|update|delete|invite|kick|archive
   messages list|send|update|delete
   lists list|get|create|update|delete
   items list|get|search|find|create|update|delete|move|reorder
+  dm reply --room DM_ROOM_ID --text TEXT
   inbox --since TIME
 
 Environment (flags override):
@@ -390,6 +396,22 @@ log in and does not read passwords.
 
 Writes print the request and send nothing unless --confirm is set.
 Global flags: --format json|table, --raw, --timeout SECONDS, --confirm, --dry-run.
+
+Bot mode (an agent bot, not a person):
+  --bot-key or PRIVOS_BOT_KEY runs the command as that agent bot. Bot keys cannot use the
+  public lists.*, items.* and stages.* routes, so "lists" and "items" call the room routes
+  /api/v1/internal/rooms/ROOM_ID/... instead. --room is required there; PRIVOS_ROOM_ID is the
+  default. See "privos hub lists --help" and "privos hub items --help" for what the room routes
+  leave out. Personal-token mode is unchanged.
+
+Sandbox egress (inside an agent VM):
+  An agent VM holds no bot key. With PRIVOS_SANDBOX_MODE=true, PROXY_URL and PROXY_TOKEN set and
+  no credential of your own, the commands "hub rooms", "hub lists", "hub items", "hub dm" and
+  "agents a2a" send every PrivOS Hub request through POST $PROXY_URL/egress, and the proxy
+  attaches the bot key. The hub is --url, else PRIVOS_HUB_URL, else https://$PRIVOS_HUB_HOST.
+  The proxy decides what an agent may call: a refusal prints its code first, for example
+  "no-binding: no catalog entry for this domain". "hub get", "subscribe" and
+  "sandbox tasks answer" never use the egress; they need their own connection.
 `;
 
 const hubRoomsHelp = `Usage:
@@ -397,11 +419,18 @@ const hubRoomsHelp = `Usage:
 
 Commands:
   list [--updated-since RFC3339]
+  members --room ID [--kind channel|group]
   create --name NAME [--kind channel|group] [--member USER] [--read-only] [--exclude-self]
   update --room ID [--kind channel|group] [--name NEW] [--topic TEXT]
   delete --room ID [--kind channel|group]
+  invite --room ID --member USER_ID [--member USER_ID ...] [--kind channel|group]
+  kick --room ID --member USER_ID [--member USER_ID ...] [--kind channel|group]
+  archive --room ID [--kind channel|group]
 
 Writes require --confirm. Direct messages (--kind direct) are not a write target.
+In bot mode (an agent bot over the sandbox egress) the rooms an agent manages are
+create, invite, kick, archive and rename ("update --name"), plus list and members;
+"update --topic" and "delete" are not available there.
 `;
 
 const hubRoomsListHelp = `Usage:
@@ -443,6 +472,64 @@ const hubRoomsDeleteHelp = `Usage:
 POST /api/v1/channels.delete or groups.delete with {"roomId"}.
 --kind defaults to channel. Dry run unless --confirm.
 There is no direct-message delete command in this CLI.
+`;
+
+const hubRoomsMembersHelp = `Usage:
+  privos hub rooms members --room ID [--kind channel|group]
+
+GET /api/v1/channels.members?roomId=ID (kind channel, the default) or
+groups.members. Prints the members with their user ids; invite and kick take
+those ids. The table view prints the "members" array.
+`;
+
+const hubRoomsInviteHelp = `Usage:
+  privos hub rooms invite --room ID --member USER_ID [--member USER_ID ...] [--kind channel|group]
+
+POST /api/v1/channels.invite (kind channel, the default) or groups.invite with
+{"roomId","userIds"}. --member here is a user id, not a username (unlike
+"rooms create"). Dry run unless --confirm.
+`;
+
+const hubRoomsKickHelp = `Usage:
+  privos hub rooms kick --room ID --member USER_ID [--member USER_ID ...] [--kind channel|group]
+
+POST /api/v1/channels.kick or groups.kick with {"roomId","userId"}, one request
+per --member (a user id). --kind defaults to channel. Dry run unless --confirm.
+`;
+
+const hubRoomsArchiveHelp = `Usage:
+  privos hub rooms archive --room ID [--kind channel|group]
+
+POST /api/v1/channels.archive or groups.archive with {"roomId"}. --kind defaults
+to channel. Dry run unless --confirm.
+`;
+
+const hubDmHelp = `Usage:
+  privos hub dm <command>
+
+Commands:
+  reply --room DM_ROOM_ID --text TEXT
+
+Run privos hub dm reply --help.
+`;
+
+const hubDmReplyHelp = `Usage:
+  privos hub dm reply --room DM_ROOM_ID --text TEXT [--url URL]
+
+POST /api/v1/agents.superAgent.dmReply with {"roomId","text"}: a super agent asks
+the PrivOS Hub to answer one of its owner's one-to-one DMs in the owner's name.
+The hub posts the message as the owner, with a "sent by <agent>" badge, in one of
+two ways that the owner chose and the agent cannot change:
+  status drafted  A draft card appears in the agent room. Nothing reaches the DM
+                  until the owner presses Send there.
+  status sent     The owner allowed replies on their behalf; the message is
+                  posted at once, and the agent room gets a one-line note.
+A second reply for the same DM replaces the pending draft.
+
+This works only inside an agent VM, over the sandbox egress: the hub accepts the
+call only from the agent room session. A personal token or a bare --bot-key is
+refused here before any request. Dry run unless --confirm. Errors print the hub's
+code first, for example error-not-owner-dm or error-super-agent-inactive.
 `;
 
 const hubMessagesHelp = `Usage:
@@ -513,9 +600,18 @@ Commands:
 
 Reads are GET /api/v1/lists.list, lists.listByRoomId, and lists.info.
 Writes are POST /api/v1/lists.create, lists.update, and lists.delete, and
-they stay a dry run unless --confirm. Auth is X-User-Id and X-Auth-Token.
+they stay a dry run unless --confirm. Auth is X-User-Id and X-Auth-Token, or an
+agent bot key (--bot-key, PRIVOS_BOT_KEY) or the sandbox egress of an agent VM.
 Field CRUD (lists.addField, lists.fields.*) is not a CLI command.
 See docs/api/hub.md.
+
+Bot mode (bot key or egress): the commands call the room routes
+GET|POST /api/v1/internal/rooms/ROOM_ID/lists and GET|PUT|DELETE
+/api/v1/internal/rooms/ROOM_ID/lists/LIST_ID. --room names the room and is
+required (default PRIVOS_ROOM_ID); "update --room" does not move a list there.
+"create" needs --name. --isolated is refused. "get" prints list, stages and
+itemCount like personal-token mode. Structure changes still need the room's
+owner, admin or leader role.
 `;
 
 const hubGetHelp = `Usage:
@@ -586,6 +682,14 @@ Commands:
 Reads are GET /api/v1/items.*. Writes are POST and stay a dry run unless
 --confirm. stages.* and items.bulkUpdateOrder are not CLI commands.
 See docs/api/hub.md.
+
+Bot mode (bot key or egress): list, get, create, update, delete and move call
+/api/v1/internal/rooms/ROOM_ID/items... instead. --room names the room and is
+required (default PRIVOS_ROOM_ID). "create" needs --name. The room routes have
+no search, find or reorder (those commands are refused) and no --parent,
+--sort, --after, --include-sub-items, --archived, --order or
+--show-archived-sub-items (refused rather than ignored). "list" takes exactly
+one of --list (with --count, --offset) or --stage (whole stage, up to 100).
 `;
 
 const hubItemsListHelp = `Usage:
@@ -704,6 +808,8 @@ reads the room as you). Read one chain on demand with agents a2a chain.
 
 A refusal prints the hub's error code first, for example
 "a2a-owner-mismatch: ...". Sends are a dry run unless --confirm is set.
+Inside an agent VM with no bot key of its own, the requests go through the
+sandbox egress (see privos hub --help).
 Global flags: --format json|table, --raw, --timeout SECONDS, --confirm, --dry-run.
 `;
 
@@ -883,6 +989,12 @@ const HELP: Record<string, string> = {
   "hub rooms create": hubRoomsCreateHelp,
   "hub rooms update": hubRoomsUpdateHelp,
   "hub rooms delete": hubRoomsDeleteHelp,
+  "hub rooms members": hubRoomsMembersHelp,
+  "hub rooms invite": hubRoomsInviteHelp,
+  "hub rooms kick": hubRoomsKickHelp,
+  "hub rooms archive": hubRoomsArchiveHelp,
+  "hub dm": hubDmHelp,
+  "hub dm reply": hubDmReplyHelp,
   "hub messages": hubMessagesHelp,
   "hub messages list": hubMessagesListHelp,
   "hub messages send": hubMessagesSendHelp,
