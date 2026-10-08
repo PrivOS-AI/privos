@@ -22,6 +22,7 @@ Commands:
   sandbox tasks question
   sandbox tasks answer
   sandbox models list
+  hub get                  Read any hub GET route with your own token
   hub rooms list
   hub rooms create
   hub rooms update
@@ -79,14 +80,28 @@ Environment (flags override):
   PRIVOS_SANDBOX_API_KEY      API key (preferred)
   API_ACCESS_KEY              Same key; the name the board process uses
   SANDBOX_API_KEY             Same key; the name install.sh writes
+  PRIVOS_REQUESTER_ID         Who is asking (--requester)
+  PRIVOS_REQUESTER_NAME       Display name (--requester-name)
+  PRIVOS_REQUESTER_KIND       human or agent, default human (--requester-kind)
 
 The key is sent as the x-api-key header. A default self-hosted board
 listens on http://127.0.0.1:8556.
+
+Requester claim: with --requester (or PRIVOS_REQUESTER_ID) every board
+request also carries x-privos-requester-id, -name and -kind, and the answer
+socket sends auth.requester, so the board records who started or answered an
+attempt. Id and name are up to 64 printable ASCII characters. Flags win over
+the environment. --requester-name and --requester-kind need --requester.
+The claim is self-declared unless the board binds the key to an identity.
+Dry runs print the claim headers and never the key.
 
 Writes (create, update, delete, start) print the request and send nothing
 unless --confirm is set.
 
 Global flags:
+  --requester ID              Requester claim id (see above)
+  --requester-name NAME       Requester display name
+  --requester-kind KIND       human (default) or agent
   --format json|table         Default json. Table is for list reads.
   --raw                       Print the response body unchanged
   --timeout SECONDS           HTTP timeout, 1-300 (default 30)
@@ -272,7 +287,8 @@ const sandboxTasksAttemptsHelp = `Usage:
   privos sandbox tasks attempts --id ID
 
 List a task's attempts from GET /api/tasks/{id}/attempts. This read has no
-side effects. --format table shows ID, STATUS, MODEL, PROVIDER and CREATED.
+side effects. --format table shows ID, STATUS, MODEL, PROVIDER, CREATED and
+REQUESTER (the requester id; JSON has the full requester record).
 Effort is not stored on attempts, so JSON shows "effort": null.
 `;
 
@@ -352,6 +368,7 @@ const hubHelp = `Usage:
   privos hub [--url URL] [--user-id ID] [--auth-token TOKEN] <command>
 
 Commands:
+  get --route ROUTE [--param k=v]
   rooms list|create|update|delete
   messages list|send|update|delete
   lists list|get|create|update|delete
@@ -499,6 +516,17 @@ Writes are POST /api/v1/lists.create, lists.update, and lists.delete, and
 they stay a dry run unless --confirm. Auth is X-User-Id and X-Auth-Token.
 Field CRUD (lists.addField, lists.fields.*) is not a CLI command.
 See docs/api/hub.md.
+`;
+
+const hubGetHelp = `Usage:
+  privos hub get --route ROUTE [--param key=value ...]
+
+GET /api/v1/ROUTE?key=value with your X-User-Id and X-Auth-Token. Prints the
+JSON body (--format table is not supported). ROUTE is a hub route such as
+channels.members; a leading /api/v1/ is dropped. --param repeats.
+Bot keys are refused: --bot-key and PRIVOS_BOT_KEY do not apply. The hub
+applies your own permissions and answers 4xx when the route is not yours.
+Example: privos hub get --route channels.members --param roomId=GENERAL
 `;
 
 const hubListsListHelp = `Usage:
@@ -849,6 +877,7 @@ const HELP: Record<string, string> = {
   "sandbox models": sandboxModelsHelp,
   "sandbox models list": sandboxModelsListHelp,
   hub: hubHelp,
+  "hub get": hubGetHelp,
   "hub rooms": hubRoomsHelp,
   "hub rooms list": hubRoomsListHelp,
   "hub rooms create": hubRoomsCreateHelp,

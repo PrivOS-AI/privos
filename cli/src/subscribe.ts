@@ -44,6 +44,7 @@ import {
   writePrivate,
   type SubscribeState,
 } from "./subscribe-state.js";
+import { resolveRequester } from "./requester.js";
 import { usage } from "./usage.js";
 
 export interface SubscribeDeps {
@@ -299,8 +300,10 @@ class Subscriber {
     // One capture for hub and boards: requests run one at a time, so the last 429 is the one that failed.
     this.hubRetry = retryAfterCapture(deps.fetch);
     this.hubClient = new Client(o.hub.baseURL, hubHeaders(o.hub.userId, o.hub.authToken), o.timeoutMs, this.hubRetry.fetch);
+    // Board reads carry the env claim too (subscribe has no --requester flag).
+    const envRequester = resolveRequester();
     for (const b of o.boards) {
-      this.boardClients.set(b.alias, new Client(b.baseURL, sandboxHeaders(b.apiKey), o.timeoutMs, this.hubRetry.fetch));
+      this.boardClients.set(b.alias, new Client(b.baseURL, sandboxHeaders(b.apiKey, envRequester), o.timeoutMs, this.hubRetry.fetch));
     }
     this.webhookRetry = retryAfterCapture(deps.fetch);
     if (o.webhook && o.sink === "post") {

@@ -1,4 +1,5 @@
 import { resolveSandbox } from "./config.js";
+import { REQUESTER_FLAGS, resolveRequester } from "./requester.js";
 import { helpFor } from "./help.js";
 import { Client } from "./http.js";
 import { mutate, sandboxHeaders, type PlannedRequest } from "./mutate.js";
@@ -33,12 +34,12 @@ const taskColumns: Column[] = [
 ];
 
 export async function sandboxProjectsList(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
-  forbidUnknown(p, "sandbox projects list", ["url", "api-key"]);
+  forbidUnknown(p, "sandbox projects list", ["url", "api-key", ...REQUESTER_FLAGS]);
   await sandboxGet(p, stdout, fetchImpl, "/api/projects", undefined, "", projectColumns);
 }
 
 export async function sandboxTasksList(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
-  forbidUnknown(p, "sandbox tasks list", ["url", "api-key", "project", "status", "limit", "after"]);
+  forbidUnknown(p, "sandbox tasks list", ["url", "api-key", ...REQUESTER_FLAGS, "project", "status", "limit", "after"]);
   const limit = optionalNonNegative("--limit", p.limit);
   const query = new URLSearchParams();
   if (p.projects.length > 0) query.set("projectIds", p.projects.join(","));
@@ -54,6 +55,7 @@ const attemptColumns: Column[] = [
   { header: "MODEL", path: ["model"] },
   { header: "PROVIDER", path: ["provider"] },
   { header: "CREATED", path: ["createdAt"] },
+  { header: "REQUESTER", path: ["requester", "id"] },
 ];
 
 const modelColumns: Column[] = [
@@ -65,14 +67,14 @@ const modelColumns: Column[] = [
 ];
 
 export async function sandboxTasksAttempts(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
-  forbidUnknown(p, "sandbox tasks attempts", ["url", "api-key", "id"]);
+  forbidUnknown(p, "sandbox tasks attempts", ["url", "api-key", ...REQUESTER_FLAGS, "id"]);
   requireFlag(p, "id", p.id, helpFor(["sandbox", "tasks", "attempts"]));
   const id = pathSegment("id", p.id);
   await sandboxGet(p, stdout, fetchImpl, `/api/tasks/${id}/attempts`, undefined, "attempts", attemptColumns);
 }
 
 export async function sandboxTasksConversation(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
-  forbidUnknown(p, "sandbox tasks conversation", ["url", "api-key", "id", "limit", "before"]);
+  forbidUnknown(p, "sandbox tasks conversation", ["url", "api-key", ...REQUESTER_FLAGS, "id", "limit", "before"]);
   requireFlag(p, "id", p.id, helpFor(["sandbox", "tasks", "conversation"]));
   const id = pathSegment("id", p.id);
   jsonOnly(p, "sandbox tasks conversation");
@@ -85,7 +87,7 @@ export async function sandboxTasksConversation(p: Parsed, stdout: Out, fetchImpl
 }
 
 export async function sandboxTasksRunning(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
-  forbidUnknown(p, "sandbox tasks running", ["url", "api-key", "id"]);
+  forbidUnknown(p, "sandbox tasks running", ["url", "api-key", ...REQUESTER_FLAGS, "id"]);
   requireFlag(p, "id", p.id, helpFor(["sandbox", "tasks", "running"]));
   const id = pathSegment("id", p.id);
   jsonOnly(p, "sandbox tasks running");
@@ -93,7 +95,7 @@ export async function sandboxTasksRunning(p: Parsed, stdout: Out, fetchImpl: typ
 }
 
 export async function sandboxTasksQuestion(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
-  forbidUnknown(p, "sandbox tasks question", ["url", "api-key", "id"]);
+  forbidUnknown(p, "sandbox tasks question", ["url", "api-key", ...REQUESTER_FLAGS, "id"]);
   requireFlag(p, "id", p.id, helpFor(["sandbox", "tasks", "question"]));
   const id = pathSegment("id", p.id);
   jsonOnly(p, "sandbox tasks question");
@@ -101,7 +103,7 @@ export async function sandboxTasksQuestion(p: Parsed, stdout: Out, fetchImpl: ty
 }
 
 export async function sandboxModelsList(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
-  forbidUnknown(p, "sandbox models list", ["url", "api-key"]);
+  forbidUnknown(p, "sandbox models list", ["url", "api-key", ...REQUESTER_FLAGS]);
   await sandboxGet(p, stdout, fetchImpl, "/api/models", undefined, "models", modelColumns);
 }
 
@@ -119,7 +121,7 @@ async function sandboxGet(
   cols: Column[],
 ): Promise<void> {
   const cfg = resolveSandbox(p.url, p.apiKey);
-  const client = new Client(cfg.baseURL, sandboxHeaders(cfg.apiKey), timeoutSeconds(p) * 1000, fetchImpl);
+  const client = new Client(cfg.baseURL, sandboxHeaders(cfg.apiKey, resolveRequester(p)), timeoutSeconds(p) * 1000, fetchImpl);
   const body = await client.get(path, query);
   render(stdout, body, p.format, p.raw, unwrap, cols);
 }
@@ -132,7 +134,7 @@ export async function sandboxProjectsCreate(
 ): Promise<void> {
   forbidUnknown(p, "sandbox projects create", [
     "url",
-    "api-key",
+    "api-key", ...REQUESTER_FLAGS,
     "confirm",
     "dry-run",
     "name",
@@ -184,7 +186,7 @@ export async function sandboxProjectsUpdate(
 ): Promise<void> {
   forbidUnknown(p, "sandbox projects update", [
     "url",
-    "api-key",
+    "api-key", ...REQUESTER_FLAGS,
     "confirm",
     "dry-run",
     "id",
@@ -215,7 +217,7 @@ export async function sandboxProjectsDelete(
   stderr: Out,
   fetchImpl: typeof fetch,
 ): Promise<void> {
-  forbidUnknown(p, "sandbox projects delete", ["url", "api-key", "confirm", "dry-run", "id"]);
+  forbidUnknown(p, "sandbox projects delete", ["url", "api-key", ...REQUESTER_FLAGS, "confirm", "dry-run", "id"]);
   requireFlag(p, "id", p.id, helpFor(["sandbox", "projects", "delete"]));
   await sendSandbox(
     p,
@@ -232,7 +234,7 @@ export async function sandboxProjectsStart(
   stderr: Out,
   fetchImpl: typeof fetch,
 ): Promise<void> {
-  forbidUnknown(p, "sandbox projects start", ["url", "api-key", "confirm", "dry-run", "id"]);
+  forbidUnknown(p, "sandbox projects start", ["url", "api-key", ...REQUESTER_FLAGS, "confirm", "dry-run", "id"]);
   requireFlag(p, "id", p.id, helpFor(["sandbox", "projects", "start"]));
   await sendSandbox(
     p,
@@ -251,7 +253,7 @@ export async function sandboxTasksCreate(
 ): Promise<void> {
   forbidUnknown(p, "sandbox tasks create", [
     "url",
-    "api-key",
+    "api-key", ...REQUESTER_FLAGS,
     "confirm",
     "dry-run",
     "project",
@@ -333,7 +335,7 @@ export async function sandboxTasksUpdate(
 ): Promise<void> {
   forbidUnknown(p, "sandbox tasks update", [
     "url",
-    "api-key",
+    "api-key", ...REQUESTER_FLAGS,
     "confirm",
     "dry-run",
     "id",
@@ -378,7 +380,7 @@ export async function sandboxTasksDelete(
   stderr: Out,
   fetchImpl: typeof fetch,
 ): Promise<void> {
-  forbidUnknown(p, "sandbox tasks delete", ["url", "api-key", "confirm", "dry-run", "id"]);
+  forbidUnknown(p, "sandbox tasks delete", ["url", "api-key", ...REQUESTER_FLAGS, "confirm", "dry-run", "id"]);
   requireFlag(p, "id", p.id, helpFor(["sandbox", "tasks", "delete"]));
   await sendSandbox(
     p,
@@ -399,7 +401,7 @@ export async function sandboxTasksStart(
 ): Promise<void> {
   forbidUnknown(p, "sandbox tasks start", [
     "url",
-    "api-key",
+    "api-key", ...REQUESTER_FLAGS,
     "confirm",
     "dry-run",
     "id",
@@ -419,7 +421,7 @@ export async function sandboxTasksStart(
   const selection = attemptSelection(p);
   // Both reads are pure GETs, so they run in a dry run too (Client.send blocks every write).
   const cfg = resolveSandbox(p.url, p.apiKey);
-  const client = new Client(cfg.baseURL, sandboxHeaders(cfg.apiKey), timeoutSeconds(p) * 1000, fetchImpl);
+  const client = new Client(cfg.baseURL, sandboxHeaders(cfg.apiKey, resolveRequester(p)), timeoutSeconds(p) * 1000, fetchImpl);
   const task = JSON.parse((await client.get(`/api/tasks/${id}`)).toString("utf8")) as unknown;
   const attempts = (JSON.parse((await client.get(`/api/tasks/${id}/attempts`)).toString("utf8")) as {
     attempts?: unknown;
@@ -515,7 +517,7 @@ async function sendSandbox(
     p,
     plans,
     cfg.baseURL,
-    sandboxHeaders(cfg.apiKey),
+    sandboxHeaders(cfg.apiKey, resolveRequester(p)),
     ["x-api-key"],
     stdout,
     stderr,

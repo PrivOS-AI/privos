@@ -2,6 +2,7 @@ import type { Parsed } from "./parse.js";
 import { mutationMode } from "./parse.js";
 import { Client, userAgent } from "./http.js";
 import { render, type Out } from "./render.js";
+import { requesterHeaders, type Requester } from "./requester.js";
 import { usage } from "./usage.js";
 
 export interface PlannedRequest {
@@ -34,7 +35,7 @@ export async function mutate(
   if (plans.length === 0) throw usage("internal error: empty write plan");
   const mode = mutationMode(p);
   if (mode === "dry") {
-    const requests = plans.map((plan) => preview(baseURL, plan, omittedHeaderNames));
+    const requests = plans.map((plan) => preview(baseURL, plan, omittedHeaderNames, authHeaders));
     stdout.write(`${JSON.stringify({ dryRun: true, requests }, null, 2)}\n`);
     stderr.write(DRY_RUN_NOTE);
     return;
@@ -90,8 +91,12 @@ function parseBody(body: Buffer): unknown {
   }
 }
 
-function preview(baseURL: string, plan: PlannedRequest, omittedHeaderNames: string[]) {
+function preview(baseURL: string, plan: PlannedRequest, omittedHeaderNames: string[], authHeaders: Headers) {
   const headers: Record<string, string> = {};
+  // The requester claim is not a secret; show it so a dry run proves who the board will see.
+  authHeaders.forEach((value, key) => {
+    if (key.startsWith("x-privos-requester-")) headers[key] = value;
+  });
   if (plan.body !== undefined) headers["content-type"] = "application/json";
   for (const [key, value] of Object.entries(plan.extraHeaders ?? {})) {
     headers[key.toLowerCase()] = value;
@@ -106,11 +111,12 @@ function preview(baseURL: string, plan: PlannedRequest, omittedHeaderNames: stri
   };
 }
 
-export function sandboxHeaders(apiKey: string): Headers {
+export function sandboxHeaders(apiKey: string, requester: Requester | null = null): Headers {
   const headers = new Headers();
   headers.set("accept", "application/json");
   headers.set("user-agent", userAgent());
   headers.set("x-api-key", apiKey);
+  for (const [key, value] of Object.entries(requesterHeaders(requester))) headers.set(key, value);
   return headers;
 }
 

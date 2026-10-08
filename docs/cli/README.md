@@ -68,7 +68,7 @@ process list. Do not put credentials in the URL.
 | Hub base URL | `--url` | `PRIVOS_HUB_URL`, then `PRIVOS_ROOT_URL` | request URL |
 | Hub user id | `--user-id` | `PRIVOS_HUB_USER_ID`, then `PRIVOS_USER_ID` | `X-User-Id` |
 | Hub auth token | `--auth-token` | `PRIVOS_HUB_AUTH_TOKEN`, then `PRIVOS_PAT` | `X-Auth-Token` |
-| Hub bot key | `--bot-key` | `PRIVOS_BOT_KEY` | `Authorization: Bearer` (replaces the two rows above; `hub` and `agents` commands only) |
+| Hub bot key | `--bot-key` | `PRIVOS_BOT_KEY` | `Authorization: Bearer` (replaces the two rows above; `hub` and `agents` commands only, never `hub get`) |
 
 `API_ACCESS_KEY` is the name the board container uses. `SANDBOX_API_KEY` is
 the name `install.sh` writes into the stack `.env`. `PRIVOS_ROOT_URL` is the
@@ -119,6 +119,8 @@ privos sandbox tasks question --id ID
 privos sandbox tasks answer --id ID --answer TEXT [--answer TEXT ...]
 
 privos sandbox models list
+
+privos hub get --route ROUTE [--param key=value ...]
 
 privos hub rooms list [--updated-since RFC3339]
 privos hub rooms create --name NAME [--kind channel|group] [--member USER] [--read-only] [--exclude-self]
