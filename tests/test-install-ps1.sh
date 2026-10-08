@@ -115,7 +115,7 @@ done
 
 # Constants that must agree between the two installers.
 {
-  for v in DEFAULT_HUB_PORT DEFAULT_BOARD_PORT DEFAULT_PROXY_PORT DEFAULT_RUSTFS_PORT DEFAULT_VM_PORT_RANGE MIN_RAM_MB \
+  for v in DEFAULT_HUB_PORT DEFAULT_BOARD_PORT DEFAULT_PROXY_PORT DEFAULT_RUSTFS_PORT DEFAULT_VM_PORT_RANGE DESKTOP_MIN_RAM_MB DESKTOP_RECOMMENDED_RAM_MB APP_CLUSTER_APPS_NETWORK \
            STACK_READY_TIMEOUT_SEC NETWORK_NAME AGENT_NETWORK_NAME AGENT_NETWORK_BRIDGE_IFACE PROJECT_NAME LICENSE_VERSION \
            MAX_PORT_RANGE_SPAN LICENSE_MARKER_FILE MINISIGN_PUBLIC_KEY MINISIGN_PUBLIC_KEY_IS_DEV_ONLY; do
     printf '%s=%s\n' "$v" "${!v}"
@@ -150,6 +150,16 @@ fi
 FAKE="$WORK/fakebin"; mkdir -p "$FAKE"
 cat > "$FAKE/docker" <<'EOF'
 #!/bin/sh
+# FAKE_DOCKER_MODE=uninstall: log every call and answer the few reads Remove-Install makes.
+if [ "${FAKE_DOCKER_MODE:-}" = uninstall ]; then
+  echo "$@" >> "$FAKE_DOCKER_LOG"
+  case "$1 ${2:-}" in
+    "info "*) echo "29.0.0" ;;
+    "ps "*) echo "app-or-agent-1" ;;
+    "volume ls") echo "app-volume-1" ;;
+  esac
+  exit 0
+fi
 # `docker run ...` (the docker-socket group probe): record the call, answer from the environment.
 if [ "$1" = run ]; then
   echo "$@" >> "$FAKE_DOCKER_LOG"

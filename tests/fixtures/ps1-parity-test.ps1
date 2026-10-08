@@ -103,7 +103,8 @@ foreach ($fn in 'Invoke-Preflight', 'Confirm-LicenseAcceptance', 'Get-Bundle', '
 if ($ShConstsFile -and (Test-Path -LiteralPath $ShConstsFile)) {
     $map = @{
         DEFAULT_HUB_PORT = 'DefaultHubPort'; DEFAULT_BOARD_PORT = 'DefaultBoardPort'; DEFAULT_PROXY_PORT = 'DefaultProxyPort'
-        DEFAULT_RUSTFS_PORT = 'DefaultRustfsPort'; DEFAULT_VM_PORT_RANGE = 'DefaultVmPortRange'; MIN_RAM_MB = 'MinRamMb'
+        DEFAULT_RUSTFS_PORT = 'DefaultRustfsPort'; DEFAULT_VM_PORT_RANGE = 'DefaultVmPortRange'; DESKTOP_MIN_RAM_MB = 'MinRamMb'
+        DESKTOP_RECOMMENDED_RAM_MB = 'RecommendedRamMb'; APP_CLUSTER_APPS_NETWORK = 'AppClusterAppsNetwork'
         STACK_READY_TIMEOUT_SEC = 'StackReadyTimeoutSec'; NETWORK_NAME = 'NetworkName'; AGENT_NETWORK_NAME = 'AgentNetworkName'
         AGENT_NETWORK_BRIDGE_IFACE = 'AgentNetworkBridgeIface'; PROJECT_NAME = 'ProjectName'; LICENSE_VERSION = 'LicenseVersion'
         MAX_PORT_RANGE_SPAN = 'MaxPortRangeSpan'; LICENSE_MARKER_FILE = 'LicenseMarkerFile'; MINISIGN_PUBLIC_KEY = 'MinisignPublicKey'
@@ -527,6 +528,47 @@ if ($FakeBinDir) {
     Resolve-DockerSocketGid -Dir $dir
     Assert-True (-not (Test-EnvSet 'PRIVOS_DOCKER_SOCKET_GID')) 'Resolve-DockerSocketGid: nothing to resolve without the App Cluster'
     Assert-True (-not (Test-Path -LiteralPath $dlog)) 'no docker run happened for a preset value or without the App Cluster'
+}
+
+# --- Docker Desktop memory floor (6 GB refuse, 8 GB recommend) -----------------------------------
+
+Initialize-State @{}
+$script:PxState.Dir = [IO.Path]::GetTempPath()
+$script:PxState.Docker = [pscustomobject]@{ MemTotal = [int64]5368709120 }
+Assert-Throws { Test-Resources } 'at least 6 GB' 'Test-Resources refuses a 5 GB Desktop VM'
+$script:PxState.Docker = [pscustomobject]@{ MemTotal = [int64]6291456000 }
+$out = (Test-Resources 6>&1 | Out-String)
+Assert-True ($out -match '8 GB is recommended') 'Test-Resources warns below 8 GB'
+$script:PxState.Docker = [pscustomobject]@{ MemTotal = [int64]8589934592 }
+$out = (Test-Resources 6>&1 | Out-String)
+Assert-True ($out -notmatch '8 GB is recommended') 'Test-Resources is quiet at 8 GB'
+
+# --- -Uninstall -Purge removes app-marketplace resources too (fake docker logs every call) -------
+
+if ($FakeBinDir) {
+    $ulog = Join-Path $WorkDir 'docker-uninstall.log'
+    $env:FAKE_DOCKER_LOG = $ulog
+    $env:FAKE_DOCKER_MODE = 'uninstall'
+    $udir = Join-Path $WorkDir 'uninstall'
+    New-Item -ItemType Directory -Force -Path $udir | Out-Null
+    [IO.File]::WriteAllText((Join-Path $udir 'compose.yml'), "services: {}`n")
+    [IO.File]::WriteAllText((Join-Path $udir '.env'), "PRIVOS_PROJECT='privos'`n")
+    [IO.File]::WriteAllText((Join-Path $udir 'versions.json'), '{"images":{"netguard":{"repository":"ghcr.io/privos-ai/privos-netguard","tag":"7.15.42","digest":"sha256:' + ('cd' * 32) + '"}}}')
+    Initialize-State @{}
+    $script:PxState.Dir = $udir
+    $script:PxState.Purge = $true
+    Assert-NoThrow { Remove-Install } 'Remove-Install -Purge runs against a fake docker'
+    $calls = [IO.File]::ReadAllText($ulog)
+    Assert-True ($calls -match 'down --remove-orphans --volumes') 'purge: compose down removes the project volumes'
+    Assert-True ($calls -match 'ps -aq --filter label=mcp-app=true') 'purge: marketplace app containers are listed by label'
+    Assert-True ($calls -match 'rm -f app-or-agent-1') 'purge: agent and app containers are removed'
+    Assert-True ($calls -match 'volume ls -q --filter label=mcp-app=true') 'purge: marketplace app volumes are listed by label'
+    Assert-True ($calls -match 'volume rm -f app-volume-1') 'purge: marketplace app volumes are removed'
+    Assert-True ($calls -match 'network rm mcp-apps-network') 'purge: the App Cluster app network is removed'
+    Assert-True ($calls -match '--clear') 'purge: netguard rules are cleared'
+    Assert-True ($calls -notmatch 'rmi') 'purge: images are kept'
+    Assert-True (-not (Test-Path -LiteralPath $udir)) 'purge: the install dir is removed'
+    Remove-Item Env:\FAKE_DOCKER_MODE
 }
 
 Write-Output ''

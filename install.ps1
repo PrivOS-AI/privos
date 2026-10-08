@@ -112,7 +112,11 @@ $script:PxConst = [ordered]@{
     DefaultRustfsPort            = 9000
     DefaultPublisherPort         = 8558
     DefaultVmPortRange           = '30000-30999'
-    MinRamMb                     = 3800
+    # Docker Desktop VM memory, as docker info reports it: the settings "6 GB" (refuse
+    # below) and "8 GB" (warn below). Same values as install.sh DESKTOP_*_RAM_MB.
+    MinRamMb                     = 5800
+    RecommendedRamMb             = 7600
+    AppClusterAppsNetwork        = 'mcp-apps-network'
     MinDiskGb                    = 20
     MinDockerMajor               = 24
     MinComposeVersion            = '2.27.0'
@@ -1213,7 +1217,10 @@ function Test-Resources {
     $c = $script:PxConst
     $memMb = [int]([int64]$script:PxState.Docker.MemTotal / 1MB)
     if ($memMb -lt $c.MinRamMb) {
-        Stop-Install ("at least ~4 GB RAM is required inside the Docker Desktop VM (found $memMb MB). Give WSL 2 more memory: create or edit %UserProfile%\.wslconfig with`n[wsl2]`nmemory=6GB`nthen run 'wsl --shutdown', restart Docker Desktop and re-run.")
+        Stop-Install ("the Docker Desktop VM has $memMb MB of memory; PrivOS needs at least 6 GB there (8 GB recommended). Give WSL 2 more memory: create or edit %UserProfile%\.wslconfig with`n[wsl2]`nmemory=8GB`nthen run 'wsl --shutdown', restart Docker Desktop and re-run.")
+    }
+    if ($memMb -lt $c.RecommendedRamMb) {
+        Write-InstallLog "WARNING: the Docker Desktop VM has $memMb MB of memory; 8 GB is recommended once agents and marketplace apps run (set memory=8GB in %UserProfile%\.wslconfig, then 'wsl --shutdown')."
     }
     $roots = @([IO.Path]::GetPathRoot($script:PxState.Dir))
     if ($env:LOCALAPPDATA) { $roots += [IO.Path]::GetPathRoot($env:LOCALAPPDATA) }
@@ -1875,9 +1882,15 @@ function Remove-Install {
     $r = Invoke-Compose -ComposeArgs $down -Stream
     if ($r.Code -ne 0) { Write-InstallLog "WARNING: docker compose down exited $($r.Code); continuing." }
     if ($s.Purge) {
-        # Agent VM containers are started by sandbox-proxy outside compose.
+        # Started outside compose: agent VM containers (sandbox-proxy) and the marketplace
+        # apps the App Cluster runs (containers and volumes labelled mcp-app=true, plus
+        # their network). Images stay: they are a cache, not data.
         $agents = (Invoke-Native -File 'docker' -ArgList @('ps', '-aq', '--filter', "network=$(Get-EnvValue 'PRIVOS_AGENT_NETWORK')") -StdoutOnly).Lines
-        foreach ($c in @($agents | Where-Object { $_ })) { [void](Invoke-Native -File 'docker' -ArgList @('rm', '-f', $c)) }
+        $apps = (Invoke-Native -File 'docker' -ArgList @('ps', '-aq', '--filter', 'label=mcp-app=true') -StdoutOnly).Lines
+        foreach ($c in @(@($agents) + @($apps) | Where-Object { $_ } | Select-Object -Unique)) { [void](Invoke-Native -File 'docker' -ArgList @('rm', '-f', $c)) }
+        $appVols = (Invoke-Native -File 'docker' -ArgList @('volume', 'ls', '-q', '--filter', 'label=mcp-app=true') -StdoutOnly).Lines
+        foreach ($v in @($appVols | Where-Object { $_ })) { [void](Invoke-Native -File 'docker' -ArgList @('volume', 'rm', '-f', $v)) }
+        [void](Invoke-Native -File 'docker' -ArgList @('network', 'rm', $script:PxConst.AppClusterAppsNetwork))
         # privos-netguard leaves its DOCKER-USER rules in place when it stops
         # (agents may outlive the stack); remove them inside the Desktop VM now.
         $ng = Get-NetguardImageRef -Dir $s.Dir

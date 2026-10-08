@@ -387,8 +387,15 @@ assert_eq "7000" "$(export STUB_MEM=7340032000; desktop_vm_memory_mb)" "desktop_
 ( export STUB_MEM=2147483648; PRIVOS_DIR="$DESK_DIR"; check_resources ) >"$TMP/mem.out" 2>&1
 assert_status 1 "$?" "a 2 GB Desktop VM is refused"
 assert_contains "$(cat "$TMP/mem.out")" "Settings → Resources → Memory" "low-memory refusal names the Desktop setting"
+( export STUB_MEM=5368709120; PRIVOS_DIR="$DESK_DIR"; check_resources ) >"$TMP/mem5.out" 2>&1
+assert_status 1 "$?" "a 5 GB Desktop VM is refused (6 GB minimum)"
+assert_contains "$(cat "$TMP/mem5.out")" "at least 6 GB" "the refusal names the 6 GB minimum"
+( export STUB_MEM=6291456000; PRIVOS_DIR="$DESK_DIR"; check_resources ) >"$TMP/mem6.out" 2>&1
+assert_status 0 "$?" "a 6 GB Desktop VM passes"
+assert_contains "$(cat "$TMP/mem6.out")" "8 GB is recommended" "a 6 GB Desktop VM gets the 8 GB recommendation"
 ( export STUB_MEM=8589934592; PRIVOS_DIR="$DESK_DIR"; check_resources ) >"$TMP/mem2.out" 2>&1
 assert_status 0 "$?" "an 8 GB Desktop VM passes"
+assert_not_contains "$(cat "$TMP/mem2.out")" "8 GB is recommended" "an 8 GB Desktop VM gets no memory warning"
 assert_contains "$(cat "$TMP/mem2.out")" "Virtual disk limit" "resource check mentions the Desktop disk limit"
 
 HOST_OS=linux
@@ -464,6 +471,10 @@ assert_contains "$dlog" "volume rm privos-sandbox-pool" "purge: leftover volume 
 assert_contains "$dlog" "rm -f agent-vm-1" "purge: agent VM containers on the agent network removed"
 assert_contains "$dlog" "network rm privos-sandbox-net" "purge: data-plane network removed"
 assert_contains "$dlog" "network rm privos-agent-net" "purge: agent network removed"
+assert_contains "$dlog" "ps -aq --filter label=mcp-app=true" "purge: marketplace app containers are listed by the App Cluster label"
+assert_contains "$dlog" "volume ls -q --filter label=mcp-app=true" "purge: marketplace app volumes are listed by the App Cluster label"
+assert_contains "$dlog" "network rm mcp-apps-network" "purge: the App Cluster's app network removed"
+assert_not_contains "$dlog" "rmi" "purge: images are kept (cache, not data)"
 assert_eq "false" "$([[ -e "$DESK_DIR" ]] && echo true || echo false)" "purge: install dir removed"
 assert_eq "" "$(cat "$STUB_DIR/rootcmds.log" 2>/dev/null)" "purge: no sudo/systemctl/iptables/rm of /usr/local/sbin"
 
