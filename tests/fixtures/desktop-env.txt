@@ -1,0 +1,28 @@
+# Dummy values for rendering compose.yml + compose.desktop.yml with
+# `docker compose config` (tests/test-desktop-overlay.sh). Not secrets.
+PRIVOS_DIR=/Users/tester/.privos
+PRIVOS_PROJECT=privos
+PRIVOS_STACK_VERSION=ci-dummy
+PRIVOS_ROOT_URL=http://localhost:3000
+PRIVOS_DEPLOYMENT_ID=00000000-0000-4000-8000-000000000000
+MONGO_ROOT_USER=privos
+MONGO_ROOT_PASSWORD=dummy
+MONGO_URL=mongodb://privos:dummy@mongo:27017/privos?replicaSet=rs0&authSource=admin&w=1
+MONGO_OPLOG_URL=mongodb://privos:dummy@mongo:27017/local?replicaSet=rs0&authSource=admin&w=1
+MONGODB_URL=mongodb://privos:dummy@mongo:27017/?replicaSet=rs0&authSource=admin&w=1
+RUSTFS_ROOT_USER=privos-root
+RUSTFS_ROOT_PASSWORD=dummy
+RUSTFS_ACCESS_KEY=dummy
+RUSTFS_SECRET_KEY=dummy
+ADMIN_PASS=dummy
+ADMIN_EMAIL=admin@localhost
+REG_TOKEN=dummy
+VAPID_SUBJECT=mailto:admin@localhost
+VAPID_PUBLIC_KEY=dummy
+VAPID_PRIVATE_KEY=dummy
+SANDBOX_API_KEY=dummy
+CATALOG_SECRET_KEY=dummy
+PRIVOS_DOCKER_SOCKET_GID=0
+PRIVOS_APP_CLUSTER_BOOTSTRAP_TOKEN=dummy
+PRIVOS_SECRET_STORE_KEY=dummy
+PRIVOS_EGRESS_ALLOWLIST=10.20.0.0/16

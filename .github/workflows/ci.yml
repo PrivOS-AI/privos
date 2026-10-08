@@ -73,6 +73,7 @@ jobs:
           } >> ci-dummy.env
           docker compose -f compose.yml --env-file ci-dummy.env config >/dev/null
           docker compose -f compose.yml --env-file ci-dummy.env --profile knowledge-vector --profile app-cluster config >/dev/null
+          docker compose -f compose.yml -f compose.desktop.yml --env-file ci-dummy.env --profile knowledge-vector --profile app-cluster config >/dev/null
           rm -f ci-dummy.env
 
   # Digest-pinned images are not resolvable until publish-self-hosted-bundle.sh
