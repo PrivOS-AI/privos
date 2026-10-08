@@ -27,6 +27,8 @@ export interface Parsed {
   data: string;
   messageId: string;
   fileIds: string[];
+  route: string;
+  params: string[];
   requester: string;
   requesterName: string;
   requesterKind: string;
@@ -130,6 +132,8 @@ const VALUE_FLAGS = new Set([
   "data",
   "message-id",
   "file-id",
+  "route",
+  "param",
   "requester",
   "requester-name",
   "requester-kind",
@@ -187,7 +191,7 @@ const VALUE_FLAGS = new Set([
   "webhook-header",
 ]);
 
-const REPEATABLE = new Set(["project", "member", "answer", "file-id"]);
+const REPEATABLE = new Set(["project", "member", "answer", "file-id", "param"]);
 
 export function commandOf(p: Parsed): string {
   return p.positionals.join(" ");
@@ -297,6 +301,8 @@ function emptyParsed(): Parsed {
     data: "",
     messageId: "",
     fileIds: [],
+    route: "",
+    params: [],
     requester: "",
     requesterName: "",
     requesterKind: "",
@@ -527,6 +533,12 @@ function assignValue(p: Parsed, name: string, value: string): void {
       break;
     case "file-id":
       p.fileIds.push(trimmed);
+      break;
+    case "route":
+      p.route = trimmed;
+      break;
+    case "param":
+      p.params.push(trimmed);
       break;
     case "requester":
       p.requester = trimmed;
