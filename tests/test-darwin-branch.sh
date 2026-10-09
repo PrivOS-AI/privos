@@ -318,6 +318,16 @@ reset_stubs
 ( HOST_OS=linux; STUB_ARCH=x86_64; export STUB_ARCH; check_image_platforms "$DESK_DIR" ) >/dev/null 2>&1
 assert_status 0 "$?" "Linux amd64 engine ignores the platforms list"
 
+# Linux arm64 (e.g. Ampere / Graviton servers): same arm64 gate, no macOS wording.
+reset_stubs
+( HOST_OS=linux; STUB_ARCH=aarch64; STUB_PLATFORMS=amd64; export STUB_ARCH STUB_PLATFORMS; fetch_bundle "$TMP/la"; check_image_platforms "$TMP/la" ) >"$TMP/la.out" 2>&1
+assert_status 1 "$?" "Linux arm64 engine + amd64-only release: refused"
+assert_contains "$(cat "$TMP/la.out")" "does not publish linux/arm64 images" "Linux arm64 refusal names the missing platform"
+assert_not_contains "$(cat "$TMP/la.out")" "macOS" "Linux arm64 refusal does not talk about macOS"
+reset_stubs
+( HOST_OS=linux; STUB_ARCH=aarch64; STUB_PLATFORMS=both; export STUB_ARCH STUB_PLATFORMS; fetch_bundle "$TMP/lb"; check_image_platforms "$TMP/lb" ) >/dev/null 2>&1
+assert_status 0 "$?" "Linux arm64 engine + multi-arch release: accepted"
+
 reset_stubs
 STUB_PLATFORMS=both run_main --yes --upgrade
 assert_status 0 "$RC" "Intel Mac + release with linux/arm64 everywhere: accepted"

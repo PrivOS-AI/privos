@@ -466,7 +466,7 @@ check_image_platforms() {
     die "this release is not published for macOS yet (no linux/arm64 images for: ${missing}). macOS installs need a release whose images all carry linux/arm64 — see https://github.com/${GITHUB_RELEASES_OWNER_REPO}/releases."
   fi
   case "$arch" in aarch64|arm64) ;; *) return 0 ;; esac
-  [[ -z "${missing// /}" ]] || die "this Docker engine is arm64 (Apple Silicon) but the selected release does not publish linux/arm64 images for: ${missing}— there is no emulated fallback. Install a newer release (https://github.com/${GITHUB_RELEASES_OWNER_REPO}/releases), or use an x86_64 machine."
+  [[ -z "${missing// /}" ]] || die "this Docker engine is arm64 but the selected release does not publish linux/arm64 images for: ${missing}— there is no emulated fallback. Install a newer release (https://github.com/${GITHUB_RELEASES_OWNER_REPO}/releases), or use an x86_64 machine."
   log "Docker engine is arm64 — every image in this release publishes linux/arm64."
 }
 

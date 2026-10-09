@@ -102,7 +102,7 @@ curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.
 curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh | bash
 ```
 
-**Windows** (PowerShell; Docker Desktop with the WSL 2 backend must be installed):
+**Windows** (x64 or ARM64; PowerShell; Docker Desktop with the WSL 2 backend must be installed):
 
 ```powershell
 irm https://github.com/PrivOS-AI/privos/releases/latest/download/install.ps1 | iex
@@ -110,11 +110,20 @@ irm https://github.com/PrivOS-AI/privos/releases/latest/download/install.ps1 | i
 # with `irm | iex`, set overrides as $env:PRIVOS_* variables first (same names as install.sh)
 ```
 
-| Platform | Container runtime | Images | Data lives in |
-|---|---|---|---|
-| Linux x86_64 (arm64 pulls arm64 images, not yet verified) | Docker Engine ≥ 24 with compose v2 (or `--install-docker`) | linux/amd64 | `/opt/privos/data` |
-| macOS 13+, Apple Silicon or Intel | Docker Desktop ≥ 4.30, memory ≥ 6 GB (8 GB recommended) | linux/arm64 natively on Apple Silicon (no Rosetta), linux/amd64 on Intel | Docker named volumes `privos-*` inside Docker Desktop; install dir `~/.privos` |
-| Windows 10 22H2 / 11, x64 | Docker Desktop ≥ 4.30, WSL 2 backend (Hyper-V backend not supported), memory ≥ 6 GB (8 GB recommended) | linux/amd64 | Docker named volumes `privos-*`; install dir `%LOCALAPPDATA%\PrivOS` |
+| Platform | CPU | Status | Container runtime | Images | Data lives in |
+|---|---|---|---|---|---|
+| Linux (Ubuntu, Debian, RHEL family) | x86_64 | Beta | Docker Engine ≥ 24 with compose v2 (or `--install-docker`) | linux/amd64 | `/opt/privos/data` |
+| Linux (Ubuntu, Debian, RHEL family) | arm64 (e.g. Ampere, Graviton) | **Alpha** | Docker Engine ≥ 24 with compose v2 (or `--install-docker`) | linux/arm64, native | `/opt/privos/data` |
+| macOS 13+ | Apple Silicon and Intel | **Alpha** | Docker Desktop ≥ 4.30, memory ≥ 6 GB (8 GB recommended) | linux/arm64 natively on Apple Silicon (no Rosetta), linux/amd64 on Intel | Docker named volumes `privos-*` inside Docker Desktop; install dir `~/.privos` |
+| Windows 10 22H2 / 11 (x64), Windows 11 (ARM64) | x64 and ARM64 (e.g. Snapdragon) | **Alpha** | Docker Desktop ≥ 4.30, WSL 2 backend (Hyper-V backend not supported), memory ≥ 6 GB (8 GB recommended) | linux/amd64 on x64, linux/arm64 natively on ARM64 | Docker named volumes `privos-*`; install dir `%LOCALAPPDATA%\PrivOS` |
+
+> **Alpha platforms.** Linux on x86_64 is the platform the hosted PrivOS fleet runs and the one we
+> test every release on. Linux on arm64, macOS and Windows are **alpha versions**: they install the
+> same release, but they have had far less testing, so expect bugs and rough edges, and do not use them
+> for data you cannot afford to lose. Please report problems you hit on them.
+
+Every PrivOS image is published for both linux/amd64 and linux/arm64 under one tag; the installer
+picks the right one automatically and refuses a release that lacks the architecture it needs.
 
 On macOS and Windows the installer adds `compose.desktop.yml` (signed like `compose.yml`): data
 moves into named volumes, and a small `privos-netguard` container applies the same loopback and
@@ -122,7 +131,8 @@ agent-egress firewall rules inside the Docker Desktop VM that `docker-user-rules
 Linux host. The hub is published on all interfaces (`0.0.0.0:3000`) on every platform; Windows asks
 once to allow Docker Desktop through the firewall. Enable Docker Desktop's "Start Docker Desktop when
 you sign in" so PrivOS comes back after a reboot. macOS ships with the first release whose images all
-carry `linux/arm64`; until then the macOS installer stops with a clear message.
+carry `linux/arm64`; until then the installer stops with a clear message on macOS and on any arm64
+machine.
 
 `--uninstall --purge` (`-Uninstall -Purge` on Windows) deletes everything the install created: the
 stack's containers and data (`/opt/privos`, or the `privos-*` volumes on Desktop), agent containers,

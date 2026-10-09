@@ -33,7 +33,7 @@
      3  uninstall                                       S  no elevation needed (3/4 root guard is L); compose down, -Purge adds
                                                            --volumes, leftover project volumes, both networks, the dir [Remove-Install]
      5  warn_if_dev_signing_key                         S  [Test-DevSigningKey]
-     6  detect_platform                                 D  Windows 10 22H2+/11, x64 only [Test-PlatformSupported]
+     6  detect_platform                                 D  Windows 10 22H2+/11 x64, Windows 11 ARM64 [Test-PlatformSupported]
      7  require_host_tools                              D  curl/jq/openssl are replaced by the .NET runtime; the pinned
                                                            minisign.exe is installed after license acceptance [Install-Minisign]
      8  check_network_environment (IPv6 sysctl)         L
@@ -54,7 +54,7 @@
     20  creating directories                            D  secrets + bin only: data lives in named volumes
     21  fetching and verifying the bundle               S  + compose.desktop.yml, signed [Get-Bundle, Test-BundleIntegrity];
                                                            then PRIVOS_DOCKER_SOCKET_GID [Resolve-DockerSocketGid]
-    21b arm64 daemon image-platform check               -  not applicable: Windows on ARM is refused at stage 6
+    21b arm64 daemon image-platform check               S  every image must list linux/arm64 [Test-ImagePlatforms]
     22  generating secrets, mongo keyfile, .env         S  [New-Secrets, Write-MongoKeyfile, Write-EnvFile]
     23  ensure_network / ensure_agent_network           S  [Initialize-Networks]
     24  chown data dirs, install_docker_user_rules      L  (privos-init / privos-netguard in compose.desktop.yml)
@@ -122,6 +122,7 @@ $script:PxConst = [ordered]@{
     MinComposeVersion            = '2.27.0'
     MinApiVersion                = '1.45'
     MinWindowsBuild              = 19045
+    MinWindowsArmBuild           = 22000
     ProjectName                  = 'privos'
     NetworkName                  = 'privos-sandbox-net'
     AgentNetworkName             = 'privos-agent-net'
@@ -1092,7 +1093,7 @@ function Test-RegistryReachability {
 function Test-PlatformSupported {
     if (-not (Test-IsWindows)) { Stop-Install "this installer supports Windows only (use install.sh on Linux and macOS)." }
     $arch = Resolve-HostArch -Arch (Get-EnvVar 'PROCESSOR_ARCHITECTURE') -Wow64Arch (Get-EnvVar 'PROCESSOR_ARCHITEW6432')
-    if ($arch -ne 'x64') { Stop-Install "unsupported architecture: $arch - the self-hosted installer supports Windows on x64 (Intel/AMD) only; Windows on ARM is not supported." }
+    if ($arch -ne 'x64' -and $arch -ne 'arm64') { Stop-Install "unsupported architecture: $arch - the self-hosted installer supports Windows on x64 (Intel/AMD) and on ARM64." }
     $build = 0
     $caption = 'Windows'
     try {
@@ -1103,6 +1104,10 @@ function Test-PlatformSupported {
     catch { $build = [Environment]::OSVersion.Version.Build }
     if (-not (Test-WindowsBuildSupported $build)) {
         Stop-Install "Windows build $build is too old - Docker Desktop with WSL2 needs Windows 10 22H2 (build $($script:PxConst.MinWindowsBuild)) or Windows 11."
+    }
+    # Docker Desktop for Windows on ARM runs on Windows 11 only.
+    if ($arch -eq 'arm64' -and $build -lt $script:PxConst.MinWindowsArmBuild) {
+        Stop-Install "Windows build $build is too old for Windows on ARM - Docker Desktop on ARM64 needs Windows 11 (build $($script:PxConst.MinWindowsArmBuild) or newer)."
     }
     Write-InstallLog "Platform: $caption (build $build) - $arch - PowerShell $($PSVersionTable.PSVersion)"
     try {
@@ -1160,7 +1165,9 @@ function ConvertFrom-DockerInfoLine {
     [void][int64]::TryParse($parts[2], [ref]$mem)
     $cpu = 0
     [void][int]::TryParse($parts[3], [ref]$cpu)
-    return [pscustomobject]@{ OSType = $parts[0]; OperatingSystem = $parts[1]; MemTotal = $mem; NCPU = $cpu }
+    $arch = ''
+    if ($parts.Count -ge 5) { $arch = $parts[4].Trim() }
+    return [pscustomobject]@{ OSType = $parts[0]; OperatingSystem = $parts[1]; MemTotal = $mem; NCPU = $cpu; Architecture = $arch }
 }
 
 function Confirm-DockerDesktop {
@@ -1193,7 +1200,7 @@ function Confirm-DockerDesktop {
     if (-not (Test-VersionAtLeast $compose $c.MinComposeVersion)) { Stop-Install "Docker Compose >= $($c.MinComposeVersion) is required (found: $compose) - update Docker Desktop to 4.30 or newer." }
     if (-not (Test-VersionAtLeast $api $c.MinApiVersion)) { Stop-Install "Docker Engine API >= $($c.MinApiVersion) is required (found: $api) - update Docker Desktop to 4.30 or newer." }
 
-    $line = (Invoke-Native -File 'docker' -ArgList @('info', '--format', '{{.OSType}}|{{.OperatingSystem}}|{{.MemTotal}}|{{.NCPU}}') -StdoutOnly).Text
+    $line = (Invoke-Native -File 'docker' -ArgList @('info', '--format', '{{.OSType}}|{{.OperatingSystem}}|{{.MemTotal}}|{{.NCPU}}|{{.Architecture}}') -StdoutOnly).Text
     $facts = ConvertFrom-DockerInfoLine $line
     if ($null -eq $facts) { Stop-Install "could not read 'docker info' (got: $line)." }
     if ($facts.OSType -ne 'linux') { Stop-Install "Docker Desktop is in Windows-containers mode. Right-click the Docker tray icon and choose 'Switch to Linux containers', then re-run." }
@@ -1566,6 +1573,24 @@ print(JSON.stringify(bound));
 
 # repository:tag@sha256:digest of the netguard image in the VERIFIED versions.json, or $null when
 # the bundle carries no usable reference (unpublished placeholders).
+# install.sh check_image_platforms parity: an arm64 Docker engine (Windows on ARM) needs every
+# image in the verified versions.json to publish linux/arm64; there is no emulated fallback.
+function Test-ImagePlatforms {
+    param([string]$Dir)
+    $arch = [string]$script:PxState.Docker.Architecture
+    if ($arch -notin @('aarch64', 'arm64')) { return }
+    $versions = Get-Content -LiteralPath (Join-Path $Dir 'versions.json') -Raw | ConvertFrom-Json
+    $missing = @()
+    foreach ($img in $versions.images.PSObject.Properties) {
+        $p = $img.Value.PSObject.Properties['platforms']
+        if ($null -eq $p -or @($p.Value) -notcontains 'linux/arm64') { $missing += $img.Name }
+    }
+    if ($missing.Count -gt 0) {
+        Stop-Install "this Docker engine is arm64 (Windows on ARM) but the selected release does not publish linux/arm64 images for: $($missing -join ' ') - there is no emulated fallback. Install a newer release, or use an x64 machine."
+    }
+    Write-InstallLog 'Docker engine is arm64 - every image in this release publishes linux/arm64.'
+}
+
 function Get-NetguardImageRef {
     param([string]$Dir)
     $versions = Get-Content -LiteralPath (Join-Path $Dir 'versions.json') -Raw | ConvertFrom-Json
@@ -1997,6 +2022,7 @@ function Invoke-Install {
     Set-Stage 'fetching and verifying the bundle'
     Get-Bundle -DestDir $s.Dir
     Test-BundleIntegrity -Dir $s.Dir
+    Test-ImagePlatforms -Dir $s.Dir
     Update-StackVersionFromBundle -Dir $s.Dir
     Resolve-DockerSocketGid -Dir $s.Dir
 
