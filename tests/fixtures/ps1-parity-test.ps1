@@ -571,6 +571,32 @@ if ($FakeBinDir) {
     Remove-Item Env:\FAKE_DOCKER_MODE
 }
 
+# --- Windows on ARM: engine architecture and image platforms ------------------------------
+
+$info5 = ConvertFrom-DockerInfoLine 'linux|Docker Desktop|8228864000|8|aarch64'
+Assert-Equal 'aarch64' $info5.Architecture 'docker info line with Architecture parsed'
+$info4 = ConvertFrom-DockerInfoLine 'linux|Docker Desktop|8228864000|8'
+Assert-Equal '' $info4.Architecture 'docker info line without Architecture still parses'
+Assert-Equal 'arm64' (Resolve-HostArch -Arch 'ARM64') 'Resolve-HostArch maps ARM64'
+
+$pdir = Join-Path ([IO.Path]::GetTempPath()) ("ps1-plat-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Force -Path $pdir | Out-Null
+$both = '{"images":{"hub":{"platforms":["linux/amd64","linux/arm64"]},"mongo":{"platforms":["linux/amd64","linux/arm64"]}}}'
+$amdOnly = '{"images":{"hub":{"platforms":["linux/amd64"]},"mongo":{"platforms":["linux/amd64","linux/arm64"]}}}'
+$noField = '{"images":{"hub":{}}}'
+Initialize-State @{}
+$script:PxState.Docker = [pscustomobject]@{ Architecture = 'aarch64' }
+[IO.File]::WriteAllText((Join-Path $pdir 'versions.json'), $both)
+Assert-NoThrow { Test-ImagePlatforms -Dir $pdir } 'arm64 engine + every image lists linux/arm64: accepted'
+[IO.File]::WriteAllText((Join-Path $pdir 'versions.json'), $amdOnly)
+Assert-Throws { Test-ImagePlatforms -Dir $pdir } 'does not publish linux/arm64 images for: hub' 'arm64 engine + an amd64-only image: refused, naming it'
+[IO.File]::WriteAllText((Join-Path $pdir 'versions.json'), $noField)
+Assert-Throws { Test-ImagePlatforms -Dir $pdir } 'linux/arm64' 'arm64 engine + image without a platforms field: counted as amd64-only'
+$script:PxState.Docker = [pscustomobject]@{ Architecture = 'x86_64' }
+[IO.File]::WriteAllText((Join-Path $pdir 'versions.json'), $amdOnly)
+Assert-NoThrow { Test-ImagePlatforms -Dir $pdir } 'x64 engine ignores the platforms list'
+Remove-Item -LiteralPath $pdir -Recurse -Force
+
 Write-Output ''
 Write-Output "# $script:Run run, $($script:Run - $script:Failed) passed, $script:Failed failed - ps1-parity-test.ps1"
 if ($script:Failed -gt 0) { exit 1 }
