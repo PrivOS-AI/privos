@@ -110,11 +110,17 @@ irm https://github.com/PrivOS-AI/privos/releases/latest/download/install.ps1 | i
 # with `irm | iex`, set overrides as $env:PRIVOS_* variables first (same names as install.sh)
 ```
 
-| Platform | CPU | Container runtime | Images | Data lives in |
-|---|---|---|---|---|
-| Linux (Ubuntu, Debian, RHEL family) | x86_64 and arm64 (e.g. Ampere, Graviton) | Docker Engine ≥ 24 with compose v2 (or `--install-docker`) | linux/amd64 or linux/arm64, native | `/opt/privos/data` |
-| macOS 13+ | Apple Silicon and Intel | Docker Desktop ≥ 4.30, memory ≥ 6 GB (8 GB recommended) | linux/arm64 natively on Apple Silicon (no Rosetta), linux/amd64 on Intel | Docker named volumes `privos-*` inside Docker Desktop; install dir `~/.privos` |
-| Windows 10 22H2 / 11 (x64), Windows 11 (ARM64) | x64 and ARM64 (e.g. Snapdragon) | Docker Desktop ≥ 4.30, WSL 2 backend (Hyper-V backend not supported), memory ≥ 6 GB (8 GB recommended) | linux/amd64 on x64, linux/arm64 natively on ARM64 | Docker named volumes `privos-*`; install dir `%LOCALAPPDATA%\PrivOS` |
+| Platform | CPU | Status | Container runtime | Images | Data lives in |
+|---|---|---|---|---|---|
+| Linux (Ubuntu, Debian, RHEL family) | x86_64 | Beta | Docker Engine ≥ 24 with compose v2 (or `--install-docker`) | linux/amd64 | `/opt/privos/data` |
+| Linux (Ubuntu, Debian, RHEL family) | arm64 (e.g. Ampere, Graviton) | **Alpha** | Docker Engine ≥ 24 with compose v2 (or `--install-docker`) | linux/arm64, native | `/opt/privos/data` |
+| macOS 13+ | Apple Silicon and Intel | **Alpha** | Docker Desktop ≥ 4.30, memory ≥ 6 GB (8 GB recommended) | linux/arm64 natively on Apple Silicon (no Rosetta), linux/amd64 on Intel | Docker named volumes `privos-*` inside Docker Desktop; install dir `~/.privos` |
+| Windows 10 22H2 / 11 (x64), Windows 11 (ARM64) | x64 and ARM64 (e.g. Snapdragon) | **Alpha** | Docker Desktop ≥ 4.30, WSL 2 backend (Hyper-V backend not supported), memory ≥ 6 GB (8 GB recommended) | linux/amd64 on x64, linux/arm64 natively on ARM64 | Docker named volumes `privos-*`; install dir `%LOCALAPPDATA%\PrivOS` |
+
+> **Alpha platforms.** Linux on x86_64 is the platform the hosted PrivOS fleet runs and the one we
+> test every release on. Linux on arm64, macOS and Windows are **alpha versions**: they install the
+> same release, but they have had far less testing, so expect bugs and rough edges, and do not use them
+> for data you cannot afford to lose. Please report problems you hit on them.
 
 Every PrivOS image is published for both linux/amd64 and linux/arm64 under one tag; the installer
 picks the right one automatically and refuses a release that lacks the architecture it needs.
