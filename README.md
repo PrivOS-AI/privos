@@ -132,9 +132,9 @@ moves into named volumes, and a small `privos-netguard` container applies the sa
 agent-egress firewall rules inside the Docker Desktop VM that `docker-user-rules.sh` applies on a
 Linux host. The hub is published on all interfaces (`0.0.0.0:3000`) on every platform; Windows asks
 once to allow Docker Desktop through the firewall. Enable Docker Desktop's "Start Docker Desktop when
-you sign in" so PrivOS comes back after a reboot. macOS ships with the first release whose images all
-carry `linux/arm64`; until then the installer stops with a clear message on macOS and on any arm64
-machine.
+you sign in" so PrivOS comes back after a reboot. Every image in `self-hosted-v7.15.42-tenant.295`
+and later publishes `linux/arm64`; with an older release that lacks it, the installer stops with a
+clear message on macOS and on any arm64 machine.
 
 `--uninstall --purge` (`-Uninstall -Purge` on Windows) deletes everything the install created: the
 stack's containers and data (`/opt/privos`, or the `privos-*` volumes on Desktop), agent containers,
@@ -269,12 +269,11 @@ Release bundles are signed with the production minisign key (key ID `344D3F64248
 key `RWQVDoIkZD9NNKyCJhKYcl7tGiAAys+Pp+PvLH1DJ5Ai1Ze7nTzm3cK2`), which `install.sh` embeds with
 `MINISIGN_PUBLIC_KEY_IS_DEV_ONLY="false"`. `install.sh` itself is not minisign-signed: it is
 fetched over TLS from GitHub, so for a stronger check, verify its sha256 out-of-band and run a
-local copy. Starting with the first release whose hub image includes hub commit `8b1bb7e1` (a
-release after `self-hosted-v7.15.42-tenant.289`), the hub no longer sends the Rocket.Chat usage
-report (`collector.rocket.chat`) or the version check (`releases.rocket.chat`) inherited from
-upstream; `.289` and earlier still send them, so upgrade once that release is out. Found a
-vulnerability? Please email `security@privos.ai` rather than opening a
-public issue.
+local copy. Starting with `self-hosted-v7.15.42-tenant.295` (its hub image includes hub commit
+`8b1bb7e1`), the hub no longer sends the Rocket.Chat usage report (`collector.rocket.chat`) or the
+version check (`releases.rocket.chat`) inherited from upstream; `.289` and earlier still send them,
+so upgrade to `.295` or later. Found a vulnerability? Please email `security@privos.ai` rather than
+opening a public issue.
 
 ## Roadmap: open source
 
