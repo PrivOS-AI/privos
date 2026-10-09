@@ -27,8 +27,11 @@ Success responses include `"success": true`. Errors look like:
 
 The documented default rate limit is 120 requests per minute per user.
 
-This CLI's hub auth is the user token above. It does not use the bot API
-(`Authorization: Bearer`) or MCP OAuth.
+This CLI's hub auth is the user token above, with one exception: an agent bot
+authenticates with its bot key (`Authorization: Bearer`, `--bot-key` or
+`PRIVOS_BOT_KEY`), or, inside an agent VM, through the sandbox proxy. See
+[Bot mode](#bot-mode-agent-bots) and [Sandbox egress](#sandbox-egress). The CLI
+does not use MCP OAuth.
 
 Room and message writes use the method names in that overview and in the
 Rocket.Chat REST API the hub is derived from (Rocket.Chat 7.9.1). They are
@@ -98,6 +101,21 @@ privos hub rooms delete --room ROOM_ID --kind group --confirm
 There is no direct-message delete command. `im.close` was not confirmed as
 the method to expose.
 
+### Members, invite, kick, archive
+
+Commands for an agent bot (see [Bot mode](#bot-mode-agent-bots)); they also work
+with a personal token. `--kind` picks `channels.*` or `groups.*`.
+
+| CLI | Method | Body or query |
+|---|---|---|
+| `hub rooms members --room ROOM_ID` | `GET /api/v1/channels.members` or `groups.members` | `roomId` |
+| `hub rooms invite --room ROOM_ID --member USER_ID...` | `POST /api/v1/channels.invite` or `groups.invite` | `{"roomId","userIds"}` |
+| `hub rooms kick --room ROOM_ID --member USER_ID...` | `POST /api/v1/channels.kick` or `groups.kick` | `{"roomId","userId"}`, one request per member |
+| `hub rooms archive --room ROOM_ID` | `POST /api/v1/channels.archive` or `groups.archive` | `{"roomId"}` |
+
+`--member` is a user id here (`rooms create` takes usernames). `rooms update --name` is the
+rename.
+
 ## Messages
 
 ### List
@@ -159,9 +177,9 @@ User-token method names below come from PrivOS-AI/privos-hub:
 Every call uses `X-User-Id` and `X-Auth-Token` and base path `/api/v1/`.
 Writes are `POST` and stay a dry run until `--confirm`.
 
-This CLI does **not** call bot routes (`/api/v1/bot/lists/...`,
-`Authorization: Bearer`) or MCP tool names (`privos.lists.*`). Those are a
-different auth mode. The bot routes are documented in the
+The calls below use a user token. This CLI does **not** call the `/api/v1/bot/lists/...`
+routes or MCP tool names (`privos.lists.*`); those are a different auth mode. An agent bot
+uses the room routes in [Bot mode](#bot-mode-agent-bots) instead. The bot routes are documented in the
 [bot workflow guide](https://docs.privos.ai/guide/how-to/create-bot-workflow.html).
 The MCP tools are documented in
 [MCP Apps](https://docs.privos.ai/guide/developer/apps-development.html).
@@ -249,6 +267,83 @@ privos hub items move --id ITEM_ID --stage STAGE_ID --confirm
 privos hub items reorder --id ITEM_ID --order 10 --confirm
 privos hub items delete --id ITEM_ID --confirm
 ```
+
+## Bot mode (agent bots)
+
+With `--bot-key` or `PRIVOS_BOT_KEY`, or through the [egress](#sandbox-egress), the
+CLI runs as an agent bot. Bot keys cannot use the public `lists.*`, `items.*` and
+`stages.*` routes, so `hub lists` and `hub items` call the room routes below
+instead. `--room` is required (default `PRIVOS_ROOM_ID`) and is validated as one
+path segment; `--name` is required on `lists create` and `items create`. Writes stay
+a dry run until `--confirm`. `--raw` prints the hub's bytes unchanged.
+
+| CLI | Method and route (base `/api/v1/internal/rooms/ROOM_ID`) |
+|---|---|
+| `hub lists list` | `GET .../lists` |
+| `hub lists get --id L` | `GET .../lists/L` (prints `list`, `stages`, `itemCount`) |
+| `hub lists create --name N` | `POST .../lists` |
+| `hub lists update --id L` | `PUT .../lists/L` |
+| `hub lists delete --id L` | `DELETE .../lists/L` |
+| `hub items list --list L` or `--stage S` | `GET .../items?listId=L` or `?stageId=S` |
+| `hub items get --id I` | `GET .../items/I` (prints `item` and `children`) |
+| `hub items create --list L --stage S --name N` | `POST .../items` |
+| `hub items update --id I` | `PUT .../items/I` |
+| `hub items delete --id I` | `DELETE .../items/I` |
+| `hub items move --id I --stage S` | `POST .../items/I/move` |
+
+The room routes leave some options out, so these are refused with a usage error before
+any request: `--isolated`; on `items update` `--archived`, `--order` and
+`--show-archived-sub-items`; on `items list` `--parent`, `--sort`, `--after`,
+`--include-sub-items`, `--list` together with `--stage`, and `--count` or `--offset`
+with `--stage`; and the commands `items search`, `items find` and `items reorder`.
+
+On a list owned by an MCP app, item writes (not list or stage changes) succeed only for
+a bot that an admin marked as a super agent and only in rooms where its owner holds
+owner, admin or leader. Otherwise the hub answers with the app-owned error.
+
+### DM reply
+
+`privos hub dm reply --room DM_ROOM_ID --text TEXT` calls
+`POST /api/v1/agents.superAgent.dmReply` with `{"roomId","text"}`. A super agent uses
+it to answer one of its owner's one-to-one DMs in the owner's name, with a "sent by
+agent" badge. It works only over the egress, because the hub accepts it only from the
+agent room session; a personal token or a bare bot key is refused before any request.
+It is a dry run unless `--confirm`.
+
+The owner's setting decides the outcome and the agent cannot change it:
+
+| `status` | Meaning |
+|---|---|
+| `drafted` | A draft card with Send and Discard appeared in the agent room. Nothing is posted until the owner presses Send. The response carries `draftId`, `cardMessageId`, `expiresAt` |
+| `sent` | The owner allowed replies on their behalf; the message is posted and the response carries `messageId` |
+
+The JSON goes to stdout and a one-line explanation to stderr. A second reply for the same
+DM replaces the pending draft. Errors print the hub's code first, for example
+`error-not-owner-dm` or `error-super-agent-inactive`.
+
+## Sandbox egress
+
+An agent VM holds no bot key. With `PRIVOS_SANDBOX_MODE=true`, `PROXY_URL` and
+`PROXY_TOKEN` set, and no credential of your own (no flag and none of `PRIVOS_BOT_KEY`,
+`PRIVOS_HUB_USER_ID`, `PRIVOS_USER_ID`, `PRIVOS_HUB_AUTH_TOKEN`, `PRIVOS_PAT`), the
+commands `hub rooms|lists|items|dm` and `agents a2a` send each request through the sandbox
+proxy:
+
+```text
+POST $PROXY_URL/egress
+x-proxy-token: ...
+{"url": "https://HUB/api/v1/...", "method": "POST", "headers": {...}, "body": "<string>"}
+```
+
+The proxy matches the URL against the agent's catalog and attaches the bot key; the CLI
+sends no `Authorization`, `X-User-Id` or `X-Auth-Token`. The hub URL is `--url`, else
+`PRIVOS_HUB_URL`, else `https://$PRIVOS_HUB_HOST`. The proxy decides what the agent may call, and a
+refusal prints its code first, for example `HTTP 403: no-binding: ...`.
+
+Over the egress `hub rooms update --topic` and `hub rooms delete` are refused: the catalog
+does not open `setTopic` or `delete`. `hub get`, `subscribe` and `sandbox tasks answer`
+never use the egress and fail with a clear message in a VM that gives them no connection
+of their own.
 
 ## Read-route catalog
 

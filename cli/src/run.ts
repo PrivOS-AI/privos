@@ -1,11 +1,13 @@
 import { sandboxTasksAnswer } from "./answer.js";
-import { VERSION } from "./config.js";
+import { resolveHub, resolveSandbox, VERSION } from "./config.js";
+import { refuseEgress, transportFor } from "./egress.js";
 import { helpFor, rootHelp } from "./help.js";
 import {
   hubA2aChain,
   hubA2aMembers,
   hubA2aSend,
   hubA2aStop,
+  hubDmReply,
   hubGet,
   hubItemsCreate,
   hubItemsDelete,
@@ -25,9 +27,13 @@ import {
   hubMessagesList,
   hubMessagesSend,
   hubMessagesUpdate,
+  hubRoomsArchive,
   hubRoomsCreate,
   hubRoomsDelete,
+  hubRoomsInvite,
+  hubRoomsKick,
   hubRoomsList,
+  hubRoomsMembers,
   hubRoomsUpdate,
 } from "./hub.js";
 import {
@@ -75,7 +81,6 @@ export async function run(
 }
 
 async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps): Promise<void> {
-  const fetchImpl = deps.fetch;
   if (p.positionals.length === 0) {
     if (p.help) {
       stdout.write(rootHelp);
@@ -106,6 +111,8 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
   }
 
   const cmd = commandOf(p);
+  // Bot commands inside an agent VM go through the proxy egress; every other command keeps the plain fetch.
+  const fetchImpl = transportFor(p, cmd, deps.fetch);
   switch (cmd) {
     case "version":
       forbidUnknown(p, "privos version", []);
@@ -120,10 +127,14 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
     case "hub messages":
     case "hub lists":
     case "hub items":
+    case "hub dm":
     case "agents":
     case "agents a2a":
       throw usage(`${text.trimEnd()}\nRun privos ${cmd} --help`);
     case "subscribe":
+      refuseEgress(cmd, "it needs a direct hub connection (--url with a user id and token)", () =>
+        resolveHub(p.url, "", ""),
+      );
       await subscribe(p, stdout, stderr, deps);
       return;
     case "subscribe status":
@@ -187,16 +198,26 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
       await sandboxTasksQuestion(p, stdout, fetchImpl);
       return;
     case "sandbox tasks answer":
+      refuseEgress(cmd, "it talks to the sandbox board over a direct socket (--url and --api-key)", () =>
+        resolveSandbox(p.url, p.apiKey),
+      );
       await sandboxTasksAnswer(p, stdout, stderr, fetchImpl);
       return;
     case "sandbox models list":
       await sandboxModelsList(p, stdout, fetchImpl);
       return;
     case "hub get":
+      // hub get never sends a bot key; the proxy would attach one, so it needs its own user credentials.
+      refuseEgress(cmd, "it never sends a bot key and needs a direct hub connection (--url, --user-id, --auth-token)", () =>
+        resolveHub(p.url, p.userId, p.authToken),
+      );
       await hubGet(p, stdout, fetchImpl);
       return;
     case "hub rooms list":
       await hubRoomsList(p, stdout, fetchImpl);
+      return;
+    case "hub rooms members":
+      await hubRoomsMembers(p, stdout, fetchImpl);
       return;
     case "hub rooms create":
       await hubRoomsCreate(p, stdout, stderr, fetchImpl);
@@ -206,6 +227,18 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
       return;
     case "hub rooms delete":
       await hubRoomsDelete(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub rooms invite":
+      await hubRoomsInvite(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub rooms kick":
+      await hubRoomsKick(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub rooms archive":
+      await hubRoomsArchive(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub dm reply":
+      await hubDmReply(p, stdout, stderr, fetchImpl);
       return;
     case "hub messages list":
       await hubMessagesList(p, stdout, fetchImpl);

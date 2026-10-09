@@ -1,0 +1,7 @@
+COMMAND     PID    USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+rapportd    612 roxane    8u  IPv4 0x4f8c1d2f3a4b5c01      0t0  TCP *:49152 (LISTEN)
+ControlCe   600 roxane    7u  IPv4 0x4f8c1d2f3a4b5c02      0t0  TCP *:7000 (LISTEN)
+com.docke  1234 roxane  122u  IPv6 0x4f8c1d2f3a4b5c03      0t0  TCP *:3000 (LISTEN)
+com.docke  1234 roxane  125u  IPv4 0x4f8c1d2f3a4b5c04      0t0  TCP 127.0.0.1:8556 (LISTEN)
+com.docker.backend 1234 roxane  130u  IPv4 0x4f8c1d2f3a4b5c05      0t0  TCP 127.0.0.1:8557 (LISTEN)
+vpnkit-br  1301 roxane   14u  IPv6 0x4f8c1d2f3a4b5c06      0t0  TCP [::1]:9000 (LISTEN)
