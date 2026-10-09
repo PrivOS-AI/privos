@@ -1,7 +1,7 @@
 # Signing the self-hosted bundle
 
-`versions.json` and `compose.yml` are the two files an install host trusts
-without re-deriving them itself — `install.sh` verifies both with
+`versions.json` and `compose.yml` (plus `compose.desktop.yml` on macOS and Windows) are the files
+an install host trusts without re-deriving them itself — `install.sh` (`install.ps1` on Windows) verifies them with
 [minisign](https://jedisct1.github.io/minisign/) **before** it writes any
 state or pulls any image. The R2/GitHub Release bucket that serves them is
 treated as untrusted transport; the signature is the actual trust boundary.
@@ -51,8 +51,8 @@ minisign -G -p privos-self-hosted.pub -s privos-self-hosted.key
   straight out of `install.sh` at run time
   (`resolve_public_key_from_install_sh`), both for its `--check` verification
   and as a post-sign sanity check that the `--minisign-key` it was just given
-  actually produces a signature `install.sh` would trust. There are exactly
-  two places to update on rotation: `install.sh` and the docs.
+  actually produces a signature `install.sh` would trust. On rotation, update
+  `install.sh`, `install.ps1` (`MinisignPublicKey`, which the publish script does not read) and the docs.
 - `privos-self-hosted.key` — never touches a fleet node or this repository.
   Only `publish-self-hosted-bundle.sh`, run by a human with the password, may
   use it (see that script's `--check` mode for a dry run that never touches
