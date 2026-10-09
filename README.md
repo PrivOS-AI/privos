@@ -34,7 +34,7 @@ infrastructure you control.
   and messages. Install them from the Marketplace, or build your own as an MCP server with
   the PrivOS app SDK. Every app call is checked against the scopes an admin granted.
 - **Agents that act.** PrivOS agents don't stop at answering. They run tools, edit code
-  with Git, update lists, and finish tasks, each one inside an isolated VM. Use the
+  with Git, update lists, and finish tasks, each one inside a sandboxed container. Use the
   agent backend you prefer: Claude Code CLI, Codex CLI, the Skawld SDK, or any Anthropic- or
   OpenAI-compatible model endpoint. A headless REST + SSE API and the `privos` CLI let
   your own systems drive them.
@@ -83,8 +83,10 @@ command is `privos`. Writes are a dry run unless you pass `--confirm`. See
 PrivOS is in a state of heavy development. The self-hosted path in this repository is
 new and still has rough edges — we know, and we're working on it. For now, consider this
 an **early access** release: expect breaking changes between versions, read the release
-notes before `--upgrade`, and keep backups of `/opt/privos` (the installer never deletes
-data unless you pass `--uninstall --purge`).
+notes before `--upgrade`, and keep backups of `/opt/privos` on Linux, or of the `privos-*` Docker
+volumes and the install directory on macOS and Windows (see **Backups** under
+[Intended usage](#intended-usage-once-released); the installer never deletes data unless you pass
+`--uninstall --purge`).
 
 ## Intended usage (once released)
 
@@ -130,9 +132,9 @@ moves into named volumes, and a small `privos-netguard` container applies the sa
 agent-egress firewall rules inside the Docker Desktop VM that `docker-user-rules.sh` applies on a
 Linux host. The hub is published on all interfaces (`0.0.0.0:3000`) on every platform; Windows asks
 once to allow Docker Desktop through the firewall. Enable Docker Desktop's "Start Docker Desktop when
-you sign in" so PrivOS comes back after a reboot. macOS ships with the first release whose images all
-carry `linux/arm64`; until then the installer stops with a clear message on macOS and on any arm64
-machine.
+you sign in" so PrivOS comes back after a reboot. Every image in `self-hosted-v7.15.42-tenant.295`
+and later publishes `linux/arm64`; with an older release that lacks it, the installer stops with a
+clear message on macOS and on any arm64 machine.
 
 `--uninstall --purge` (`-Uninstall -Purge` on Windows) deletes everything the install created: the
 stack's containers and data (`/opt/privos`, or the `privos-*` volumes on Desktop), agent containers,
@@ -195,9 +197,9 @@ exactly once on upgrade — the same request-code flow above, run a single time.
 key (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`), if it pointed at a **publicly reachable** endpoint,
 reappears afterwards as a regular custom provider, and — if no default provider was chosen yet
 — becomes the default, so the agent keeps answering with your own key. A BYO key pointing at a
-**private/LAN address** needs a sandbox image with the LAN-LLM-provider change (see
-`env.template`) to keep answering the same way; without one, activation silently moves it to
-Roxane at $0 credit. Roxane stays listed either way, and you can switch to it after a top-up.
+**private/LAN address** keeps answering the same way once that endpoint's IPv4 address/CIDR is
+listed in `PRIVOS_EGRESS_ALLOWLIST` in `.env` (see "LAN / private LLM endpoints" in
+`env.template`). Roxane stays listed either way, and you can switch to it after a top-up.
 
 **Licence expiry or reinstalling.** A licence that lapses past its grace period, fails
 validation, or no longer matches this host's identity re-arms the gate. Re-registering with
@@ -233,8 +235,8 @@ internet access on the PrivOS host:
 
 A fully offline host still needs an LLM to talk to: point it at a private/LAN Anthropic-/
 OpenAI-compatible endpoint using the same `PRIVOS_EGRESS_ALLOWLIST` + BYO-provider path
-described under "LAN / private LLM endpoints" in `env.template`, which requires a sandbox
-image with the LAN-LLM-provider change. Nothing beyond exactly that path — an explicitly
+described under "LAN / private LLM endpoints" in `env.template`.
+Nothing beyond exactly that path — an explicitly
 allowlisted and configured private endpoint — is promised for an air-gapped install.
 
 ## Contents
@@ -263,9 +265,15 @@ The installer verifies a **minisign** signature over `versions.json` + `compose.
 every other bundle file against the sha256 hashes carried in the signed `versions.json`, and
 pulls images by immutable `@sha256` digest. Only the hub port is published on `0.0.0.0`;
 board, proxy, RustFS and the VM pool bind `127.0.0.1`. See `SIGNING.md` for the public key.
-The current published key is **DEV-only**; production releases are re-signed with a securely
-held key. Found a vulnerability? Please email `security@privos.ai` rather than opening a
-public issue.
+Release bundles are signed with the production minisign key (key ID `344D3F6424820E15`, public
+key `RWQVDoIkZD9NNKyCJhKYcl7tGiAAys+Pp+PvLH1DJ5Ai1Ze7nTzm3cK2`), which `install.sh` embeds with
+`MINISIGN_PUBLIC_KEY_IS_DEV_ONLY="false"`. `install.sh` itself is not minisign-signed: it is
+fetched over TLS from GitHub, so for a stronger check, verify its sha256 out-of-band and run a
+local copy. Starting with `self-hosted-v7.15.42-tenant.295` (its hub image includes hub commit
+`8b1bb7e1`), the hub no longer sends the Rocket.Chat usage report (`collector.rocket.chat`) or the
+version check (`releases.rocket.chat`) inherited from upstream; `.289` and earlier still send them,
+so upgrade to `.295` or later. Found a vulnerability? Please email `security@privos.ai` rather than
+opening a public issue.
 
 ## Roadmap: open source
 
