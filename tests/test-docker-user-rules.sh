@@ -344,4 +344,46 @@ assert_not_contains "$(printf '%s\n' "${IPTABLES_CALLS[@]}")" "-j DROP -j DROP" 
 insert_calls="$(printf '%s\n' "${IPTABLES_CALLS[@]}" | grep -c -- '^-I DOCKER-USER')"
 assert_eq "0" "$insert_calls" "main --clear: never inserts a rule, only removes"
 
+# --- rules_present / --loop: the Docker Desktop netguard form -------------
+
+IP_BRIDGE_PRESENT=1
+IPTABLES_STUB_OUTPUT=""
+rules_present; assert_status 1 $? "rules_present: empty chain is not present"
+
+IPTABLES_STUB_OUTPUT="-A DOCKER-USER -p tcp -m comment --comment ${SANDBOX_PLANE_TAG} -j DROP"
+rules_present; assert_status 1 $? "rules_present: sandbox-plane rules alone are not enough once the agent bridge exists"
+
+IP_BRIDGE_PRESENT=0
+rules_present; assert_status 0 $? "rules_present: sandbox-plane rules suffice while the agent bridge does not exist yet"
+
+IP_BRIDGE_PRESENT=1
+IPTABLES_STUB_OUTPUT="$(printf '%s\n' \
+  "-A DOCKER-USER -p tcp -m comment --comment ${SANDBOX_PLANE_TAG} -j DROP" \
+  "-A DOCKER-USER -i privos-agent0 -m comment --comment ${VM_EGRESS_TAG} -j RETURN")"
+rules_present; assert_status 0 $? "rules_present: both tags present"
+
+PRIVOS_IPTABLES="iptables-legacy"
+select_iptables_backend
+assert_eq "iptables-legacy" "$PRIVOS_IPTABLES" "select_iptables_backend: an explicit PRIVOS_IPTABLES is kept"
+unset PRIVOS_IPTABLES
+
+# One loop iteration: missing rules get applied; SIGTERM stops without clearing them.
+# --loop runs only inside the privos-netguard image (bash 5); $BASHPID needs bash 4.
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo "SKIP - --loop iteration test needs bash 4+ (netguard image runs bash 5)"
+else
+  out="$(
+    IPTABLES_STUB_OUTPUT=""
+    export PRIVOS_IPTABLES="stub" PRIVOS_NETGUARD_INTERVAL=30
+    # shellcheck disable=SC2329 # invoked indirectly via the sourced script
+    run_iptables() { echo "IPT $*"; return 0; }
+    self=$BASHPID; ( sleep 1; kill -TERM "$self" ) &
+    main --loop "8556,8557" "" 2>&1
+  )"
+  assert_contains "$out" "netguard: rules applied" "--loop: applies the rules when they are missing"
+  assert_contains "$out" "IPT -I DOCKER-USER 1 -p tcp -m conntrack --ctstate NEW -m conntrack --ctstate DNAT --ctorigdstport 8556" "--loop: sandbox-plane DROP inserted"
+  assert_contains "$out" "netguard: stopping, rules left in place" "--loop: SIGTERM leaves the rules (agents may outlive the stack)"
+  assert_not_contains "$out" "IPT -D DOCKER-USER" "--loop: SIGTERM deletes no rule"
+fi
+
 report_and_exit

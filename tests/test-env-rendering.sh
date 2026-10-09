@@ -212,4 +212,18 @@ VERSION_FLAG=""
 
 assert_not_contains "$(resolve_bundle_base_url)" "privos.io" "resolve_bundle_base_url: never resolves to the dropped apex domain"
 
+# --- Rendered key list, exported for tests/test-install-ps1.sh ---------------
+# install.ps1 must write the same .env keys, in the same order, as write_env_file
+# above; the PowerShell test compares its own rendering with this file. Run the
+# whole suite (tests/run-tests.sh) so this file is refreshed first.
+
+write_env_file "$WORK/keys.env"
+sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$WORK/keys.env" > "$WORK/env-keys.txt"
+assert_eq "${#ENV_KEYS[@]}" "$(wc -l < "$WORK/env-keys.txt" | tr -d ' ')" "write_env_file: renders exactly one line per ENV_KEYS entry"
+if cp "$WORK/env-keys.txt" "$SELF_DIR/fixtures/env-keys.txt" 2>/dev/null; then
+  echo "ok - exported the rendered .env key list to tests/fixtures/env-keys.txt"
+else
+  echo "# NOTE: tests/fixtures is read-only; env-keys.txt not refreshed"
+fi
+
 report_and_exit

@@ -88,13 +88,61 @@ data unless you pass `--uninstall --purge`).
 
 ## Intended usage (once released)
 
+**Linux** (as root):
+
 ```bash
 curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh | sudo bash
 # overrides: --hub-port N  --vm-port-range A-B  --dir /opt/privos  --yes (implies license acceptance)
 #            --with-knowledge-vector  --without-app-cluster  --upgrade  --uninstall [--purge]
 ```
 
-Host prerequisites: Linux x86_64 (arm64 is not supported yet), Docker ≥ 24 with compose v2 (or pass `--install-docker`), and `curl`, `jq`, `minisign`, `openssl` on PATH (Debian/Ubuntu: `apt-get install -y jq minisign`). The installer stops before touching anything if one is missing.
+**macOS** (as your normal user, no `sudo`; Docker Desktop must be installed):
+
+```bash
+curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh | bash
+```
+
+**Windows** (PowerShell; Docker Desktop with the WSL 2 backend must be installed):
+
+```powershell
+irm https://github.com/PrivOS-AI/privos/releases/latest/download/install.ps1 | iex
+# flags with the file form: powershell -ExecutionPolicy Bypass -File install.ps1 -HubPort 3001 -Upgrade ...
+# with `irm | iex`, set overrides as $env:PRIVOS_* variables first (same names as install.sh)
+```
+
+| Platform | Container runtime | Images | Data lives in |
+|---|---|---|---|
+| Linux x86_64 (arm64 pulls arm64 images, not yet verified) | Docker Engine ≥ 24 with compose v2 (or `--install-docker`) | linux/amd64 | `/opt/privos/data` |
+| macOS 13+, Apple Silicon or Intel | Docker Desktop ≥ 4.30, memory ≥ 6 GB (8 GB recommended) | linux/arm64 natively on Apple Silicon (no Rosetta), linux/amd64 on Intel | Docker named volumes `privos-*` inside Docker Desktop; install dir `~/.privos` |
+| Windows 10 22H2 / 11, x64 | Docker Desktop ≥ 4.30, WSL 2 backend (Hyper-V backend not supported), memory ≥ 6 GB (8 GB recommended) | linux/amd64 | Docker named volumes `privos-*`; install dir `%LOCALAPPDATA%\PrivOS` |
+
+On macOS and Windows the installer adds `compose.desktop.yml` (signed like `compose.yml`): data
+moves into named volumes, and a small `privos-netguard` container applies the same loopback and
+agent-egress firewall rules inside the Docker Desktop VM that `docker-user-rules.sh` applies on a
+Linux host. The hub is published on all interfaces (`0.0.0.0:3000`) on every platform; Windows asks
+once to allow Docker Desktop through the firewall. Enable Docker Desktop's "Start Docker Desktop when
+you sign in" so PrivOS comes back after a reboot. macOS ships with the first release whose images all
+carry `linux/arm64`; until then the macOS installer stops with a clear message.
+
+`--uninstall --purge` (`-Uninstall -Purge` on Windows) deletes everything the install created: the
+stack's containers and data (`/opt/privos`, or the `privos-*` volumes on Desktop), agent containers,
+the marketplace apps the App Cluster runs (containers and volumes labelled `mcp-app=true`, network
+`mcp-apps-network`), both networks, the firewall rules and the install directory. Downloaded images
+are kept; remove them with `docker image prune -a` if you want the disk space back.
+
+Host prerequisites on Linux: `curl`, `jq`, `minisign`, `openssl` on PATH (Debian/Ubuntu:
+`apt-get install -y jq minisign`). On macOS the installer uses Homebrew when present and otherwise
+downloads pinned, checksum-verified `jq` and `minisign` into `~/.privos/bin`; on Windows it downloads
+a pinned, checksum-verified `minisign.exe`. Every installer stops before touching anything if a
+prerequisite is missing.
+
+Docker Desktop requires a paid subscription for organisations above 250 employees or USD 10 million
+annual revenue (Docker's terms); Linux with Docker Engine has no such licence.
+
+**Backups.** Linux: stop the stack and archive `/opt/privos`. macOS / Windows: stop the stack and
+archive each volume, for example
+`docker run --rm -v privos-mongo:/v -v "$PWD":/b alpine tar -czf /b/privos-mongo.tgz -C /v .`
+(repeat for every `privos-*` volume listed by `docker volume ls`), plus the install directory.
 
 ## Activation
 
@@ -184,10 +232,13 @@ allowlisted and configured private endpoint — is promised for an air-gapped in
 | File | Purpose |
 |---|---|
 | `install.sh` | Preflight, port checks, license acceptance, secret gen, RustFS init, DOCKER-USER rules, **minisign verify**, digest-pinned pull, wait + print activation request code |
+| `install.ps1` | Windows port of `install.sh` (PowerShell 5.1+, Docker Desktop) — same stages, flags and `.env` |
 | `compose.yml` | Fleet-renderer-matched stack; only the hub port public, sandbox plane on loopback; `knowledge-vector` / `local-runtime` opt-in profiles |
+| `compose.desktop.yml` | Docker Desktop overlay (macOS, Windows): named volumes, `privos-init` ownership step, `privos-netguard` firewall helper |
+| `netguard/Dockerfile` | The `privos-netguard` image: `docker-user-rules.sh --loop` inside the Docker Desktop VM |
 | `env.template` | Documented knobs; secrets generated locally by the installer |
 | `rustfs-init.sh` | Bucket + scoped service account (mirrors the fleet provisioner) |
-| `docker-user-rules.sh` | Firewall rules so a later `ports:` edit can't expose the sandbox plane |
+| `docker-user-rules.sh` | Firewall rules so a later `ports:` edit can't expose the sandbox plane; `--loop` re-applies them on Docker Desktop |
 | `versions.json` | Bundle version + `@sha256` image digests + file hashes (resolved at publish) |
 | `publish-self-hosted-bundle.sh` | Resolve digests, sign with minisign, publish a GitHub Release |
 | `SIGNING.md` | How the bundle is signed; the embedded public key |

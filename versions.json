@@ -60,11 +60,19 @@
       "repository": "ghcr.io/privos-ai/privos-publisher",
       "tag": "PLACEHOLDER_STACK_VERSION",
       "digest": "__PUBLISHER_DIGEST__"
+    },
+    "netguard": {
+      "repository": "ghcr.io/privos-ai/privos-netguard",
+      "tag": "PLACEHOLDER_STACK_VERSION",
+      "digest": "__NETGUARD_DIGEST__",
+      "desktopOnly": true
     }
   },
   "files": {
     "compose.yml": { "sha256": null },
+    "compose.desktop.yml": { "sha256": null },
     "install.sh": { "sha256": null },
+    "install.ps1": { "sha256": null },
     "rustfs-init.sh": { "sha256": null },
     "docker-user-rules.sh": { "sha256": null },
     "LICENSE": { "sha256": null },

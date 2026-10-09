@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # PrivOS self-hosted installer.
 #
-#   curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh | sudo bash
+#   curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh | sudo bash   # Linux
+#   curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh | bash        # macOS (no sudo)
 #
 # Installs hub + sandbox (mongo, redis, rustfs, board, proxy, VM pool) as a
 # single-host Docker Compose stack. Idempotent: safe to re-run. See
 # docs/self-hosted-install.md for the full model this implements.
+#
+# Linux installs host-bound data directories under /opt/privos and hardens the
+# host with iptables; macOS (13+, Apple Silicon and Intel) runs the same stack
+# on Docker Desktop with named volumes and the compose.desktop.yml overlay, as a
+# normal user, with the stock bash 3.2 — so this whole file stays bash 3.2
+# compatible (no associative arrays, mapfile, ${var,,}; tests/test-bash32-compat.sh).
 #
 # Flags: --version <tag> --dir <path> --url <root-url> --hub-port <port>
 #        --vm-port-range <lo-hi> --yes --accept-license --upgrade --uninstall
@@ -77,6 +84,15 @@ DEFAULT_PROXY_PORT=8557
 DEFAULT_RUSTFS_PORT=9000
 DEFAULT_VM_PORT_RANGE="30000-30999"
 MIN_RAM_MB=3800
+# Docker Desktop: the whole stack shares one VM (container limits add up to about
+# 5.4 GB with the App Cluster, agent containers are unbounded, and the VM itself
+# needs headroom). docker info reports a little less than the configured limit,
+# so these match the Desktop settings "6 GB" (refuse below) and "8 GB" (warn below).
+DESKTOP_MIN_RAM_MB=5800
+DESKTOP_RECOMMENDED_RAM_MB=7600
+# Network the App Cluster creates for marketplace apps (privos-cluster
+# DOCKER_NETWORK default; the bundle does not override it).
+APP_CLUSTER_APPS_NETWORK="mcp-apps-network"
 MIN_DISK_KB=$(( 20 * 1024 * 1024 ))
 MIN_DOCKER_MAJOR=24
 PROJECT_NAME="privos"
@@ -92,6 +108,9 @@ STACK_READY_TIMEOUT_SEC=600
 
 BUNDLE_FILES=(compose.yml versions.json rustfs-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md)
 SIGNED_FILES=(compose.yml versions.json)
+# Docker Desktop (macOS) only: the volume/netguard overlay is fetched with the
+# bundle, minisig-verified like compose.yml and ALSO hash-pinned in versions.json.
+DESKTOP_OVERLAY_FILE="compose.desktop.yml"
 # Not directly minisig-signed, but versions.json's files{} block (itself
 # covered by the versions.json signature) carries a sha256 for each of
 # these — verify_bundle_integrity() checks both before either file is
@@ -106,7 +125,23 @@ UNSIGNED_HASHED_FILES=(rustfs-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-S
 LICENSE_MARKER_FILE=".license-accepted"
 LICENSE_VERSION="PCL-1.0"
 MAX_PORT_RANGE_SPAN=5000
-DANGEROUS_DIRS=(/ /root /home /usr /usr/local /etc /bin /sbin /lib /lib64 /var /boot /dev /proc /sys /opt /tmp /srv /mnt /media /run)
+DANGEROUS_DIRS=(/ /root /home /usr /usr/local /etc /bin /sbin /lib /lib64 /var /boot /dev /proc /sys /opt /tmp /srv /mnt /media /run /Users /Library /System /Applications /Volumes /private)
+# Docker Desktop (macOS): minimum engine pieces the overlay needs (`!override`
+# merge tag = Compose 2.24.4+, volume `subpath` = Compose 2.27 / API 1.45), the
+# time to wait for a not-yet-running Desktop, and the pinned tools downloaded
+# when Homebrew is absent. Hashes are the sha256 of the release asset itself
+# (jq: matches the project's sha256sum.txt; minisign: the upstream-signed zip).
+MIN_DESKTOP_COMPOSE="2.27.0"
+MIN_DESKTOP_API="1.45"
+DESKTOP_START_TIMEOUT_SEC=120
+JQ_PINNED_VERSION="1.8.2"
+JQ_MACOS_ARM64_SHA256="2d75340ba57a4b4b4c8708a21c2dc8e958a48aaa8bba13b27f77f6e4c0eca07e"
+JQ_MACOS_AMD64_SHA256="e94b266e3c26690550006abe63152b782280f4e14374accdf04cbde844f00bc0"
+MINISIGN_PINNED_VERSION="0.11"
+MINISIGN_MACOS_ZIP_SHA256="e7c410ae8b8960d7087392472b040bda9b2f307c76df0384ac37f9ad103fc893"
+# Multi-arch index digest of docker.io/alpine/openssl (amd64 + arm64), used only
+# as a fallback to generate the VAPID keypair when the host openssl is unusable.
+OPENSSL_FALLBACK_IMAGE="docker.io/alpine/openssl@sha256:59c5cb51e536d40587667229468b007a2a6cae1705397e59e5f7774c08b74029"
 
 # .env keys, in the order they are written — must match env.template.
 ENV_KEYS=(
@@ -158,6 +193,355 @@ url_hostname() {
 }
 
 # ---------------------------------------------------------------------------
+# Host OS + Docker Desktop (macOS) support
+#
+# Linux keeps host-bound data under /opt/privos plus iptables/systemd hardening.
+# macOS runs the same stack on Docker Desktop: as the signed-in user (no sudo),
+# every data directory a named volume, and the Linux hardening reproduced inside
+# the Desktop VM by compose.desktop.yml (privos-init chowns the volumes,
+# privos-netguard applies docker-user-rules.sh). Every Linux-only step in main()
+# is behind host_is_linux, every Desktop-only step behind host_is_desktop.
+#
+# main() stages — L = Linux only, D = Docker Desktop only, S = shared. The
+# PowerShell port (install.ps1) mirrors this list; keep them in step.
+#
+#   1  parse_args                                              S
+#   2  resolving --dir     default /opt/privos (L) or ~/.privos (D)   S
+#   3  uninstall           require_root (L) / refuse root (D); do_uninstall:
+#                          compose down; --purge: L = hub-lib volume, DOCKER-USER
+#                          rules, systemd unit, rm -rf; D = down --volumes, leftover
+#                          project volumes, agent containers, networks, rm -rf
+#   4  root guard                                              L / D
+#   5  warn_if_dev_signing_key                                 S
+#   6  detect_platform     HOST_OS + arch (arm64 accepted)      S
+#   7  require_host_tools  L = package manager; D = curl+openssl present, jq +
+#                          minisign via Homebrew or pinned download (after the
+#                          licence stage, install_desktop_tools)       L / D
+#   8  check_network_environment (IPv6 sysctl offer)           L
+#   9  check_registry_reachability                             S
+#  10  check_clock_skew                                        S
+#  11  check_selinux                                           L
+#  12  ensure_docker       L = start daemon / --install-docker; D = Docker Desktop
+#                          running (launched if installed), context, compose >= 2.27,
+#                          API >= 1.45                                  L / D
+#  13  check_resources     L = /proc/meminfo; D = Desktop VM memory; disk df   L / D
+#  14  resolve_bundle_source, load_existing_env                S
+#  15  resolve_config, prompt_sidecars, finalize_sidecar_config
+#                          (D: socket gid is probed in stage 19)  S
+#  16  publisher url check, port conflict check (lsof on macOS) S
+#  17  license acceptance                                      S
+#  18  creating directories  L = data/* + /run/privos/mcp-broker; D = secrets only  L / D
+#  19  fetching and verifying the bundle (D also compose.desktop.yml); then, on an
+#      arm64 Docker engine, every image must list linux/arm64; on Desktop the
+#      docker socket's gid is probed from the daemon side      S
+#  20  generating secrets   write_mongo_keyfile (L chown 999; D user-owned 0600)    S
+#  21  network + firewall setup  ensure_network/ensure_agent_network (S);
+#                          L = chown data dirs + install_docker_user_rules;
+#                          D = firewall-prompt note + autostart hint            L / D
+#  22  bringing up the stack  check_stale_stack, compose pull/up (D adds the overlay)  S
+#  23  waiting for hub + sandbox-proxy, activation              S
+# ---------------------------------------------------------------------------
+
+HOST_OS="linux"
+
+host_is_linux()   { [[ "$HOST_OS" == "linux" ]]; }
+host_is_desktop() { [[ "$HOST_OS" == "darwin" ]]; }
+
+# PRIVOS_HOST_OS=linux|darwin is a test seam: tests and CI drive the Docker
+# Desktop flow on a Linux host against a docker-in-docker daemon.
+detect_host_os() {
+  if [[ -n "${PRIVOS_HOST_OS:-}" ]]; then
+    case "$PRIVOS_HOST_OS" in
+      linux|darwin) HOST_OS="$PRIVOS_HOST_OS" ;;
+      *) die "PRIVOS_HOST_OS must be 'linux' or 'darwin' (got: ${PRIVOS_HOST_OS})." ;;
+    esac
+    return 0
+  fi
+  case "$(uname -s)" in
+    Linux)  HOST_OS="linux" ;;
+    Darwin) HOST_OS="darwin" ;;
+    *) die "this installer supports Linux and macOS (found: $(uname -s)). On Windows use install.ps1." ;;
+  esac
+}
+
+default_privos_dir() {
+  if host_is_desktop; then
+    [[ -n "${HOME:-}" ]] || die "HOME is not set — pass --dir <absolute path>."
+    printf '%s/.privos' "$HOME"
+  else
+    printf '%s' "$DEFAULT_DIR"
+  fi
+}
+
+# bash 3.2 has no ${var,,}.
+to_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# version_ge <actual> <minimum>: dotted numeric versions, a leading "v" and any
+# "-suffix"/"+build" ignored ("v2.29.1-desktop.1" >= "2.27.0"). Empty actual fails.
+version_ge() {
+  local a="${1#v}" b="${2#v}" i x y
+  [[ -n "$a" ]] || return 1
+  a="${a%%[-+]*}"; b="${b%%[-+]*}"
+  local -a pa pb
+  IFS=. read -r -a pa <<<"$a"
+  IFS=. read -r -a pb <<<"$b"
+  for i in 0 1 2; do
+    x="${pa[$i]:-0}"; y="${pb[$i]:-0}"
+    [[ "$x" =~ ^[0-9]+$ && "$y" =~ ^[0-9]+$ ]] || return 1
+    (( 10#$x > 10#$y )) && return 0
+    (( 10#$x < 10#$y )) && return 1
+  done
+  return 0
+}
+
+# Docker Desktop's socket belongs to the signed-in user, so macOS refuses root;
+# Linux needs it for /opt, iptables and chown.
+require_host_privilege() {
+  if host_is_desktop; then
+    [[ "$(id -u)" -ne 0 ]] || die "do not run this installer as root or with sudo on macOS — Docker Desktop's socket belongs to your user. Re-run as yourself: curl -fsSL https://github.com/${GITHUB_RELEASES_OWNER_REPO}/releases/latest/download/install.sh | bash"
+  else
+    require_root
+  fi
+}
+
+desktop_overlay_path() { printf '%s/%s' "${COMPOSE_FILE%/*}" "$DESKTOP_OVERLAY_FILE"; }
+
+# Human-readable "docker compose -f …" prefix for the hints printed on failure.
+compose_cli_hint() {
+  if host_is_desktop; then
+    printf 'docker compose -f %s -f %s' "$COMPOSE_FILE" "$(desktop_overlay_path)"
+  else
+    printf 'docker compose -f %s' "$COMPOSE_FILE"
+  fi
+}
+
+# PATH for the Desktop flow: tools this installer downloaded earlier, and the
+# docker CLI when Desktop keeps it inside its app bundle / ~/.docker/bin rather
+# than in /usr/local/bin.
+desktop_prepare_path() {
+  local d
+  if [[ -n "${PRIVOS_DIR:-}" && -d "$PRIVOS_DIR/bin" ]]; then
+    case ":$PATH:" in *":$PRIVOS_DIR/bin:"*) ;; *) PATH="$PRIVOS_DIR/bin:$PATH" ;; esac
+  fi
+  if ! command -v docker >/dev/null 2>&1; then
+    for d in "${PRIVOS_DOCKER_DESKTOP_APP:-/Applications/Docker.app}/Contents/Resources/bin" "${HOME:-/nonexistent}/.docker/bin"; do
+      [[ -x "$d/docker" ]] && { PATH="$PATH:$d"; break; }
+    done
+  fi
+  export PATH
+}
+
+desktop_cpu_arch() {  # arm64 | amd64 — the HARDWARE, so a Rosetta terminal still gets the arm64 tools
+  if [[ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" == "1" ]]; then echo arm64; return; fi
+  case "$(uname -m)" in aarch64|arm64) echo arm64 ;; *) echo amd64 ;; esac
+}
+
+docker_daemon_arch() { docker info -f '{{.Architecture}}' 2>/dev/null || true; }
+
+# macOS preflight. jq and minisign are installed later (install_desktop_tools),
+# after the licence is accepted, so a declined licence leaves nothing behind.
+require_host_tools_desktop() {
+  local c
+  for c in curl openssl; do
+    command -v "$c" >/dev/null 2>&1 || die "required command not found: ${c} (macOS ships /usr/bin/${c} — is PATH broken?)"
+  done
+  for c in jq minisign; do
+    command -v "$c" >/dev/null 2>&1 || log "${c} not found — it will be installed after the licence step (Homebrew if present, otherwise a pinned, checksum-verified download into ${PRIVOS_DIR}/bin)."
+  done
+}
+
+desktop_brew_path() {
+  local p
+  p="$(command -v brew 2>/dev/null || true)"
+  [[ -n "$p" ]] && { printf '%s' "$p"; return 0; }
+  for p in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+    [[ -x "$p" ]] && { printf '%s' "$p"; return 0; }
+  done
+  return 0
+}
+
+# download_pinned_tool jq|minisign: fetch the pinned release asset, refuse
+# anything whose sha256 differs from the baked value, install into $PRIVOS_DIR/bin.
+download_pinned_tool() {
+  local tool="$1" arch bin="$PRIVOS_DIR/bin" tmp url want got
+  arch="$(desktop_cpu_arch)"
+  case "$tool" in
+    jq)
+      url="https://github.com/jqlang/jq/releases/download/jq-${JQ_PINNED_VERSION}/jq-macos-${arch}"
+      if [[ "$arch" == "arm64" ]]; then want="$JQ_MACOS_ARM64_SHA256"; else want="$JQ_MACOS_AMD64_SHA256"; fi ;;
+    minisign)
+      url="https://github.com/jedisct1/minisign/releases/download/${MINISIGN_PINNED_VERSION}/minisign-${MINISIGN_PINNED_VERSION}-macos.zip"
+      want="$MINISIGN_MACOS_ZIP_SHA256"
+      command -v unzip >/dev/null 2>&1 || die "unzip is required to install minisign (macOS ships /usr/bin/unzip)." ;;
+    *) die "no pinned download for ${tool}" ;;
+  esac
+  mkdir -p "$bin"
+  tmp="$(mktemp -d)"
+  log "Downloading ${tool} (pinned ${url##*/})…"
+  curl -fsSL --connect-timeout 20 --retry 3 --retry-delay 2 "$url" -o "$tmp/asset" \
+    || { rm -rf "$tmp"; die "failed to download ${url}"; }
+  got="$(sha256_file "$tmp/asset")"
+  [[ "$got" == "$want" ]] || { rm -rf "$tmp"; die "sha256 mismatch for ${url} (expected ${want}, got ${got}) — refusing to install it."; }
+  if [[ "$tool" == "minisign" ]]; then
+    unzip -qo "$tmp/asset" minisign -d "$tmp/x" || { rm -rf "$tmp"; die "could not unpack the minisign archive."; }
+    install -m 0755 "$tmp/x/minisign" "$bin/minisign"
+  else
+    install -m 0755 "$tmp/asset" "$bin/jq"
+  fi
+  rm -rf "$tmp"
+  desktop_prepare_path
+  command -v "$tool" >/dev/null 2>&1 || die "${tool} was installed to ${bin} but cannot be found on PATH."
+}
+
+# Runs after the licence stage (see main). Homebrew first, pinned download for
+# whatever is still missing.
+install_desktop_tools() {
+  local t brew_bin need=0
+  for t in jq minisign; do command -v "$t" >/dev/null 2>&1 || need=1; done
+  (( need == 0 )) && return 0
+  brew_bin="$(desktop_brew_path)"
+  if [[ -n "$brew_bin" ]]; then
+    log "Installing missing host tools with Homebrew (jq, minisign as needed)…"
+    for t in jq minisign; do
+      command -v "$t" >/dev/null 2>&1 && continue
+      HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ENV_HINTS=1 "$brew_bin" install "$t" >&2 \
+        || log "brew install ${t} failed — falling back to the pinned download."
+      PATH="$(dirname "$brew_bin"):$PATH"; export PATH
+    done
+  fi
+  for t in jq minisign; do
+    command -v "$t" >/dev/null 2>&1 || download_pinned_tool "$t"
+  done
+}
+
+# Docker Desktop must be answering `docker info`. If it is installed but not
+# running, start it and wait; if it is absent, say where to get it (it is never
+# installed for the user).
+ensure_docker_desktop() {
+  local app="" candidate waited=0 ctx cver api
+  [[ "$INSTALL_DOCKER" == "true" ]] && log "--install-docker is ignored on macOS — Docker Desktop is installed by you."
+  if ! docker_daemon_up; then
+    for candidate in "${PRIVOS_DOCKER_DESKTOP_APP:-/Applications/Docker.app}" "${HOME:-/nonexistent}/Applications/Docker.app"; do
+      [[ -d "$candidate" ]] && { app="$candidate"; break; }
+    done
+    [[ -n "$app" ]] || die "Docker Desktop is required but is not installed or not running. Install it from https://www.docker.com/products/docker-desktop/ (macOS 13+; pick the Apple Silicon or Intel build to match this Mac), start it once, then re-run."
+    log "Docker Desktop is installed but not running — starting it (waiting up to ${DESKTOP_START_TIMEOUT_SEC}s)…"
+    open -a "$app" >/dev/null 2>&1 || open -a Docker >/dev/null 2>&1 || true
+    desktop_prepare_path
+    until docker_daemon_up || (( waited >= DESKTOP_START_TIMEOUT_SEC )); do sleep 2; waited=$(( waited + 2 )); done
+    docker_daemon_up || die "Docker Desktop did not become ready within ${DESKTOP_START_TIMEOUT_SEC}s. Open Docker Desktop, accept any first-run prompts (licence, privileged helper), wait until it says the engine is running, then re-run."
+  fi
+  ctx="$(docker context show 2>/dev/null || true)"
+  case "$ctx" in
+    desktop-linux|default|"") ;;
+    *) log "WARNING: the active Docker context is '${ctx}', not Docker Desktop's 'desktop-linux'. PrivOS is verified on Docker Desktop only — to switch: docker context use desktop-linux" ;;
+  esac
+  [[ -z "${DOCKER_HOST:-}" ]] || log "WARNING: DOCKER_HOST is set (${DOCKER_HOST}); it overrides the Docker context. PrivOS is verified on Docker Desktop only."
+  check_docker_version || die "Docker Engine >= ${MIN_DOCKER_MAJOR} is required — update Docker Desktop to 4.30 or newer."
+  check_compose_v2 || die "the Docker Compose v2 plugin ('docker compose') is missing — update Docker Desktop to 4.30 or newer."
+  cver="$(docker compose version --short 2>/dev/null || true)"
+  version_ge "$cver" "$MIN_DESKTOP_COMPOSE" || die "Docker Compose >= ${MIN_DESKTOP_COMPOSE} is required (found: ${cver:-unknown}) — update Docker Desktop to 4.30 or newer."
+  api="$(docker version -f '{{.Server.APIVersion}}' 2>/dev/null || true)"
+  version_ge "$api" "$MIN_DESKTOP_API" || die "Docker Engine API >= ${MIN_DESKTOP_API} is required (found: ${api:-unknown}) — update Docker Desktop to 4.30 or newer."
+}
+
+# Memory is the Desktop VM's, not the Mac's.
+desktop_vm_memory_mb() {
+  local bytes
+  bytes="$(docker info -f '{{.MemTotal}}' 2>/dev/null || true)"
+  [[ "$bytes" =~ ^[0-9]+$ ]] || die "could not read the Docker Desktop VM's memory (docker info)."
+  printf '%s' "$(( bytes / 1024 / 1024 ))"
+}
+
+# On an arm64 engine (Apple Silicon) every image the bundle names must publish
+# linux/arm64 — Rosetta is never used. Runs after versions.json is verified.
+# An image without a `platforms` list counts as amd64-only.
+check_image_platforms() {
+  local dir="$1" arch missing
+  arch="$(docker_daemon_arch)"
+  missing="$(jq -r '.images | to_entries[] | select(((.value.platforms // []) | index("linux/arm64")) | not) | .key' "$dir/versions.json" | tr '\n' ' ')"
+  # macOS ships only with releases whose images all carry linux/arm64, Intel
+  # Macs included, so every Mac runs a release verified for macOS.
+  if host_is_desktop && [[ -n "${missing// /}" ]]; then
+    die "this release is not published for macOS yet (no linux/arm64 images for: ${missing}). macOS installs need a release whose images all carry linux/arm64 — see https://github.com/${GITHUB_RELEASES_OWNER_REPO}/releases."
+  fi
+  case "$arch" in aarch64|arm64) ;; *) return 0 ;; esac
+  [[ -z "${missing// /}" ]] || die "this Docker engine is arm64 (Apple Silicon) but the selected release does not publish linux/arm64 images for: ${missing}— there is no emulated fallback. Install a newer release (https://github.com/${GITHUB_RELEASES_OWNER_REPO}/releases), or use an x86_64 machine."
+  log "Docker engine is arm64 — every image in this release publishes linux/arm64."
+}
+
+# The App Cluster runs as uid 1000 with the docker socket's group added, so the
+# gid must be the one the socket has INSIDE the Desktop VM — not known in
+# advance and not visible from the Mac. Ask the daemon: bind the socket into a
+# throwaway container and stat it. Uses the verified netguard image (already
+# pinned and about to be pulled anyway), else the pinned openssl image; falls
+# back to the existing/0 value with a warning when the probe fails.
+# repository:tag@digest of privos-netguard from a verified versions.json, or empty.
+netguard_image_ref() {
+  jq -r '.images.netguard // empty | select(.digest != null and (.digest | startswith("sha256:"))) | "\(.repository):\(.tag)@\(.digest)"' "$1/versions.json" 2>/dev/null || true
+}
+
+probe_desktop_socket_gid() {
+  local dir="$1" image="" gid=""
+  [[ "$PRIVOS_WITH_APP_CLUSTER" == "true" ]] || return 0
+  image="$(netguard_image_ref "$dir")"
+  [[ -n "$image" ]] || image="$OPENSSL_FALLBACK_IMAGE"
+  gid="$(docker run --rm --network none --entrypoint stat -v /var/run/docker.sock:/s "$image" -c %g /s 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ "$gid" =~ ^[0-9]+$ ]]; then
+    PRIVOS_DOCKER_SOCKET_GID="$gid"
+    log "Docker socket group inside the Desktop VM: ${gid}."
+  else
+    : "${PRIVOS_DOCKER_SOCKET_GID:=0}"
+    log "WARNING: could not read the docker socket's group inside the Desktop VM — using ${PRIVOS_DOCKER_SOCKET_GID}. If the App Cluster logs 'connect EACCES /var/run/docker.sock', set PRIVOS_DOCKER_SOCKET_GID in ${PRIVOS_DIR}/.env and re-run."
+  fi
+}
+
+desktop_autostart_hint() {
+  local base="${HOME:-/nonexistent}/Library/Group Containers/group.com.docker" f val=""
+  for f in "$base/settings-store.json" "$base/settings.json"; do
+    [[ -r "$f" ]] || continue
+    val="$(jq -r 'if has("AutoStart") then .AutoStart elif has("autoStart") then .autoStart else empty end | tostring' "$f" 2>/dev/null || true)"
+    [[ -n "$val" ]] && break
+  done
+  case "$val" in
+    true)  log "Docker Desktop starts when you sign in, so the stack comes back after a reboot (containers use restart: unless-stopped)." ;;
+    false) log "WARNING: Docker Desktop is NOT set to start when you sign in, so PrivOS stays down after a reboot until you open it. Turn it on: Docker Desktop → Settings → General → Start Docker Desktop when you sign in." ;;
+    *)     log "To keep PrivOS running after a reboot, make sure Docker Desktop → Settings → General → Start Docker Desktop when you sign in is ON (the current setting could not be read)." ;;
+  esac
+}
+
+desktop_firewall_note() {
+  log "The hub is published on all interfaces (0.0.0.0:${PRIVOS_HUB_PORT}), the same as on Linux. macOS may now ask whether com.docker.backend may accept incoming connections: Allow lets other devices on your network reach it, Deny keeps it to this Mac. Either way http://localhost:${PRIVOS_HUB_PORT} keeps working."
+}
+
+# Desktop --uninstall --purge: everything the compose project and the agent VMs
+# created. Named volumes are the data, so this is the point of no return.
+# --purge on every platform: what the stack started outside compose. Agent VM
+# containers (sandbox-proxy, on the agent network) and the marketplace apps the
+# App Cluster runs (containers and volumes labelled mcp-app=true, plus their
+# network). Images stay: they are a cache, not data.
+purge_app_resources() {
+  local item
+  while IFS= read -r item; do
+    if [[ -n "$item" ]]; then docker rm -f "$item" >/dev/null 2>&1 || true; fi
+  done < <({ docker ps -aq --filter "network=${PRIVOS_AGENT_NETWORK}"; docker ps -aq --filter "label=mcp-app=true"; } 2>/dev/null | sort -u || true)
+  while IFS= read -r item; do
+    [[ -n "$item" ]] || continue
+    docker volume rm "$item" >/dev/null 2>&1 || log "could not remove app volume ${item} — remove it with: docker volume rm ${item}"
+  done < <(docker volume ls -q --filter "label=mcp-app=true" 2>/dev/null || true)
+  docker network rm "$APP_CLUSTER_APPS_NETWORK" >/dev/null 2>&1 || true
+}
+
+purge_desktop_resources() {
+  local item
+  purge_app_resources
+  while IFS= read -r item; do
+    [[ -n "$item" ]] || continue
+    docker volume rm "$item" >/dev/null 2>&1 || log "could not remove volume ${item} (still in use?) — remove it with: docker volume rm ${item}"
+  done < <(docker volume ls -q --filter "label=com.docker.compose.project=${PRIVOS_PROJECT}" 2>/dev/null || true)
+}
+
+# ---------------------------------------------------------------------------
 # Failure reporting — nothing here rolls back partial state (a mid-`compose
 # pull` network blip should not delete secrets that took real work to
 # generate); every stage is safe to retry, so on a failure the trap just
@@ -194,7 +578,8 @@ write_diagnostics_bundle() {
   dir="$(mktemp -d 2>/dev/null)" || return 0
   {
     echo "stage=${CURRENT_STAGE} exit=${rc} time=${ts}"
-    echo "uname: $(uname -a)"; cat /etc/os-release 2>/dev/null
+    echo "uname: $(uname -a)"; cat /etc/os-release 2>/dev/null; sw_vers 2>/dev/null
+    echo "host_os=${HOST_OS:-?} docker_arch=$(docker info -f '{{.Architecture}} mem={{.MemTotal}}' 2>/dev/null || echo n/a)"
     echo "virt=$(systemd-detect-virt 2>/dev/null || echo n/a) systemd=${HAS_SYSTEMD:-?} wsl=${IS_WSL:-?} pkg=${HOST_PKG_MGR:-?}"
     echo "--- mem ---"; free -h 2>/dev/null
     echo "--- disk ---"; df -h "${PRIVOS_DIR:-/}" 2>/dev/null
@@ -220,11 +605,12 @@ usage() {
   cat <<'USAGE'
 PrivOS self-hosted installer
 
-  curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh | sudo bash
+  curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh | sudo bash   # Linux
+  curl -fsSL https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh | bash        # macOS 13+ with Docker Desktop (no sudo)
 
 Flags:
   --version <tag>          Bundle/stack version to install (default: latest published)
-  --dir <path>              Install directory (default: /opt/privos)
+  --dir <path>              Install directory (default: /opt/privos; macOS: ~/.privos)
   --url <root-url>          Public URL the hub is reachable at (rewrites ROOT_URL on re-run)
   --hub-port <port>         Host port for the hub (default: 3000)
   --vm-port-range <lo-hi>   Loopback host-port range for the sandbox VM pool (default: 30000-30999)
@@ -241,11 +627,13 @@ Flags:
   --upgrade                 Pull latest images for the current install and recreate containers
   --uninstall               Stop and remove the stack (add --purge to also delete data)
   --purge                   With --uninstall: also delete data, volumes, network, firewall rules
+                            (macOS: the Docker volumes and networks too)
   --with-knowledge-vector    Enable the Weaviate knowledge-vector sidecar
   --without-app-cluster      Opt out of the App Cluster (marketplace MCP-app
                             runtime; needs Docker socket access). ON by
                             default — see docs/self-hosted-install.md.
-  --install-docker          Install Docker + compose v2 automatically if missing
+  --install-docker          Install Docker + compose v2 automatically if missing (Linux only;
+                            on macOS install Docker Desktop yourself)
   --allow-dev-signing-key   Local testing only: proceed despite a DEV-ONLY minisign key
   -h, --help                Show this help
 
@@ -354,17 +742,26 @@ HOST_PKG_MGR=""
 IS_WSL="false"
 
 detect_platform() {
-  local os arch distro virt
+  local os arch distro virt macos_ver
+  detect_host_os
   os="$(uname -s)"
   arch="$(uname -m)"
-  [[ "$os" == "Linux" ]] || die "this installer supports Linux only (found: ${os})."
-  # The published images are linux/amd64 only. Saying so up front beats a
-  # cryptic "no matching manifest" from docker pull minutes later.
+  # amd64 and arm64 both pass here; whether the selected release actually
+  # publishes arm64 images is checked against the verified versions.json
+  # (check_image_platforms), where it can be answered for sure.
   case "$arch" in
-    x86_64) ;;
-    aarch64|arm64) die "unsupported architecture: ${arch} — the self-hosted images are currently published for x86_64 (amd64) only. arm64 is not available yet." ;;
-    *) die "unsupported architecture: ${arch} (supported: x86_64)." ;;
+    x86_64|amd64|aarch64|arm64) ;;
+    *) die "unsupported architecture: ${arch} (supported: x86_64, arm64)." ;;
   esac
+
+  if host_is_desktop; then
+    macos_ver="$(sw_vers -productVersion 2>/dev/null || true)"
+    if [[ -n "$macos_ver" ]] && ! version_ge "$macos_ver" 13; then
+      die "macOS 13 or newer is required (found ${macos_ver})."
+    fi
+    log "Platform: macOS ${macos_ver:-?} ${arch} · Docker Desktop"
+    return 0
+  fi
 
   # shellcheck disable=SC1091  # /etc/os-release is absent at lint time; guarded by 2>/dev/null
   distro="$(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-${ID:-unknown}}")"
@@ -394,6 +791,7 @@ detect_platform() {
 # image ships neither jq nor minisign, and a missing binary would otherwise
 # surface as "signature verification FAILED" after the license was accepted.
 require_host_tools() {
+  if host_is_desktop; then require_host_tools_desktop; return 0; fi
   local missing=() c
   for c in curl jq minisign openssl; do
     command -v "$c" >/dev/null 2>&1 || missing+=("$c")
@@ -496,8 +894,12 @@ check_registry_reachability() {
   [[ "$code" =~ ^(200|301|302)$ ]] || die "cannot reach github.com (HTTP ${code}) — the bundle is downloaded from GitHub Releases. Check DNS / firewall / proxy."
   if [[ -n "${HTTP_PROXY:-}${HTTPS_PROXY:-}${http_proxy:-}${https_proxy:-}" ]]; then
     log "NOTE: a proxy is set in this shell. The Docker daemon does NOT inherit shell"
-    log "proxy env — image pulls need it in the daemon config (systemd drop-in"
-    log "docker.service.d/http-proxy.conf, or \"proxies\" in /etc/docker/daemon.json)."
+    if host_is_desktop; then
+      log "proxy env — image pulls need it in Docker Desktop → Settings → Resources → Proxies."
+    else
+      log "proxy env — image pulls need it in the daemon config (systemd drop-in"
+      log "docker.service.d/http-proxy.conf, or \"proxies\" in /etc/docker/daemon.json)."
+    fi
   fi
 }
 
@@ -506,11 +908,18 @@ check_clock_skew() {
   local hdr remote now skew
   hdr="$(curl -sS -m 10 -I https://github.com 2>/dev/null | awk 'tolower($1)=="date:"{sub(/^[Dd]ate: /,""); print; exit}' | tr -d '\r')"
   [[ -n "$hdr" ]] || return 0
-  remote="$(date -d "$hdr" +%s 2>/dev/null || true)"; [[ -n "$remote" ]] || return 0
+  remote="$(date -d "$hdr" +%s 2>/dev/null || true)"
+  # BSD date (macOS) has no -d; the header is always "Thu, 08 Oct 2026 11:00:00 GMT".
+  [[ -n "$remote" ]] || remote="$(TZ=UTC date -j -f '%a, %d %b %Y %H:%M:%S GMT' "$hdr" +%s 2>/dev/null || true)"
+  [[ -n "$remote" ]] || return 0
   now="$(date +%s)"; skew=$(( now - remote )); (( skew < 0 )) && skew=$(( -skew ))
   if (( skew > 300 )); then
     log "WARNING: system clock is off by ~${skew}s vs github.com — TLS and signature"
-    log "checks can fail. Fix: timedatectl set-ntp true  (or chrony/ntpdate), then re-run."
+    if host_is_desktop; then
+      log "checks can fail. Fix: System Settings → General → Date & Time → set time automatically, then re-run."
+    else
+      log "checks can fail. Fix: timedatectl set-ntp true  (or chrony/ntpdate), then re-run."
+    fi
   fi
 }
 
@@ -528,8 +937,9 @@ check_selinux() {
 # container_name and make `compose up` fail with a name conflict (compose only
 # adopts containers carrying ITS project label). Offer to remove them.
 check_stale_stack() {
-  local n label stale=()
-  for n in mongo redis rustfs rustfs-init hub sandbox-board sandbox-proxy weaviate app-cluster; do
+  local n label stale=() names="mongo redis rustfs rustfs-init hub sandbox-board sandbox-proxy weaviate app-cluster"
+  host_is_desktop && names="$names init netguard"
+  for n in $names; do
     n="${PRIVOS_PROJECT}-${n}"
     docker inspect "$n" >/dev/null 2>&1 || continue
     label="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$n" 2>/dev/null)"
@@ -570,6 +980,7 @@ check_compose_v2() {
 docker_daemon_up() { docker info >/dev/null 2>&1; }
 
 ensure_docker() {
+  if host_is_desktop; then ensure_docker_desktop; return 0; fi
   if command -v docker >/dev/null 2>&1 && ! docker_daemon_up; then
     log "Docker is installed but the daemon is not running — starting it…"
     if [[ "$HAS_SYSTEMD" == "true" ]]; then systemctl start docker >/dev/null 2>&1 || true
@@ -595,13 +1006,22 @@ ensure_docker() {
 
 check_resources() {
   local mem_kb mem_mb check_dir avail_kb
-  mem_kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo)"
-  mem_mb=$(( mem_kb / 1024 ))
-  (( mem_mb >= MIN_RAM_MB )) || die "at least ~4 GB RAM is required (found ${mem_mb} MB)."
+  if host_is_desktop; then
+    mem_mb="$(desktop_vm_memory_mb)"
+    (( mem_mb >= DESKTOP_MIN_RAM_MB )) || die "the Docker Desktop VM has ${mem_mb} MB of memory; PrivOS needs at least 6 GB there (8 GB recommended, more with the knowledge-vector sidecar). Raise it at Docker Desktop → Settings → Resources → Memory limit, then Apply & restart and re-run."
+    (( mem_mb >= DESKTOP_RECOMMENDED_RAM_MB )) || log "WARNING: the Docker Desktop VM has ${mem_mb} MB of memory; 8 GB is recommended once agents and marketplace apps run (Docker Desktop → Settings → Resources → Memory limit)."
+  else
+    mem_kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo)"
+    mem_mb=$(( mem_kb / 1024 ))
+    (( mem_mb >= MIN_RAM_MB )) || die "at least ~4 GB RAM is required (found ${mem_mb} MB)."
+  fi
   check_dir="$PRIVOS_DIR"
   while [[ ! -d "$check_dir" && "$check_dir" != "/" ]]; do check_dir="$(dirname "$check_dir")"; done
   avail_kb="$(df -Pk "$check_dir" | awk 'NR==2{print $4}')"
   (( avail_kb >= MIN_DISK_KB )) || die "at least 20 GB free disk is required at ${PRIVOS_DIR} (found $(( avail_kb / 1024 / 1024 )) GB free)."
+  if host_is_desktop; then
+    log "Images and data live in Docker Desktop's own disk image, whose size limit is Docker Desktop → Settings → Resources → Virtual disk limit — keep at least 20 GB free there."
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -733,6 +1153,11 @@ fetch_bundle() {
   for name in "${SIGNED_FILES[@]}"; do
     fetch_bundle_file "${name}.minisig" "$dest_dir/${name}.minisig"
   done
+  if host_is_desktop; then
+    fetch_bundle_file "$DESKTOP_OVERLAY_FILE" "$dest_dir/$DESKTOP_OVERLAY_FILE"
+    fetch_bundle_file "${DESKTOP_OVERLAY_FILE}.minisig" "$dest_dir/${DESKTOP_OVERLAY_FILE}.minisig"
+    [[ -f "$dest_dir/$DESKTOP_OVERLAY_FILE" ]] || die "bundle is missing ${DESKTOP_OVERLAY_FILE} after fetch — this release has no Docker Desktop support."
+  fi
   for name in "${BUNDLE_FILES[@]}"; do
     [[ -f "$dest_dir/$name" ]] || die "bundle is missing ${name} after fetch"
   done
@@ -779,16 +1204,23 @@ verify_bundle_file_hash() {
 # hash-verify every remaining bundle file against the (now-trusted)
 # versions.json. Must run to completion before anything in $dir is used.
 verify_bundle_integrity() {
-  local dir="$1" f
+  local dir="$1" f hashed="${#UNSIGNED_HASHED_FILES[@]}"
   for f in "${SIGNED_FILES[@]}"; do
     verify_signature "$dir/$f"
   done
+  # The Docker Desktop overlay is signed like compose.yml AND hash-pinned in
+  # the signed versions.json, so a swapped overlay fails either check.
+  if host_is_desktop; then
+    verify_signature "$dir/$DESKTOP_OVERLAY_FILE"
+    verify_bundle_file_hash "$DESKTOP_OVERLAY_FILE" "$dir" "$dir/versions.json"
+    hashed=$(( hashed + 1 ))
+  fi
   for f in "${UNSIGNED_HASHED_FILES[@]}"; do
     verify_bundle_file_hash "$f" "$dir" "$dir/versions.json"
   done
   # One summary line instead of a per-file "sha256 OK:" for every hashed file
   # (a mismatch still fails loudly via die above).
-  log "Bundle integrity verified (${#UNSIGNED_HASHED_FILES[@]} file hashes)."
+  log "Bundle integrity verified (${hashed} file hashes)."
 }
 
 # ---------------------------------------------------------------------------
@@ -808,8 +1240,10 @@ docker_port_lookup() { docker inspect -f '{{json .NetworkSettings.Ports}}' "$1" 
 have_ss()   { command -v ss >/dev/null 2>&1; }
 have_lsof() { command -v lsof >/dev/null 2>&1; }
 
-declare -gA LISTEN_PID=()
-declare -gA LISTEN_CMD=()
+# Indexed arrays keyed by port number — NOT associative arrays: macOS's
+# /bin/bash 3.2 has no `declare -A`/`-g`, and a port is a valid array index.
+LISTEN_PID=()
+LISTEN_CMD=()
 
 parse_ss_output() {
   # Reads ss -ltnHp lines on stdin; populates LISTEN_PID[port]/LISTEN_CMD[port].
@@ -854,6 +1288,14 @@ collect_listeners() {
   fi
 }
 
+# Docker Desktop publishes container ports from its own host process. lsof
+# truncates command names to 9 characters ("com.docke"), so match the prefix.
+# A port whose publisher is OUR container is accepted by port_already_ours;
+# this only improves the message for someone else's container.
+is_docker_desktop_listener() {
+  case "$1" in com.docke*|vpnkit*|Docker*) return 0 ;; *) return 1 ;; esac
+}
+
 port_already_ours() {
   local port="$1" name json
   for name in hub sandbox-board sandbox-proxy rustfs publisher; do
@@ -894,7 +1336,7 @@ pick_free_port() {  # $1 start; $2.. ports to also avoid (claimed this run)
   local p="$1"; shift; local -a avoid=("$@"); local a clash
   while (( p <= 65535 )); do
     if port_is_free "$p"; then
-      clash=0; for a in "${avoid[@]}"; do [[ "$a" == "$p" ]] && { clash=1; break; }; done
+      clash=0; for a in ${avoid[@]+"${avoid[@]}"}; do [[ "$a" == "$p" ]] && { clash=1; break; }; done
       (( clash == 0 )) && { printf '%s' "$p"; return 0; }
     fi
     (( p++ ))
@@ -959,6 +1401,13 @@ check_ports() {
       for port in "${conflicts[@]}"; do
         printf '%-8s %-10s %s\n' "$port" "${LISTEN_PID[$port]}" "${LISTEN_CMD[$port]}"
       done
+      for port in "${conflicts[@]}"; do
+        if is_docker_desktop_listener "${LISTEN_CMD[$port]}"; then
+          echo ""
+          echo "Port ${port} is published by a Docker container (Docker Desktop's backend holds the socket)."
+          echo "Find it with: docker ps --filter publish=${port}  — stop that container or pick another port."
+        fi
+      done
       echo ""
       echo "Override with --hub-port / --vm-port-range, or stop the owning process, then re-run."
     } >&2
@@ -994,19 +1443,51 @@ mongo_keyfile_content() {
 # Web Push VAPID keypair: a raw P-256 (prime256v1) keypair, base64url encoded
 # (RFC 8292 §2 — public key is the 65-byte uncompressed point, private key is
 # the raw 32-byte scalar). No node/npm dependency: pure openssl + sed.
-generate_vapid_keypair() {
-  local key_pem priv_hex pub_hex
-  key_pem="$(mktemp)"
-  openssl ecparam -name prime256v1 -genkey -noout -out "$key_pem" 2>/dev/null
-  priv_hex="$(openssl ec -in "$key_pem" -noout -text 2>/dev/null \
-    | sed -n '/^priv:/,/^pub:/p' | sed '1d;$d' | tr -d ' \n:')"
-  pub_hex="$(openssl ec -in "$key_pem" -noout -text 2>/dev/null \
-    | sed -n '/^pub:/,/^ASN1 OID/p' | sed '1d;$d' | tr -d ' \n:')"
-  rm -f "$key_pem"
+# Prints "<64-hex private scalar>\n<130-hex public point>" from the text
+# `openssl ec -noout -text` prints on stdin (OpenSSL 1.1/3 and LibreSSL share
+# the layout).
+vapid_hex_from_ec_text() {
+  local text priv_hex pub_hex
+  text="$(cat)"
+  priv_hex="$(printf '%s\n' "$text" | sed -n '/^priv:/,/^pub:/p' | sed '1d;$d' | tr -d ' \n:')"
+  pub_hex="$(printf '%s\n' "$text" | sed -n '/^pub:/,/^ASN1 OID/p' | sed '1d;$d' | tr -d ' \n:')"
   # OpenSSL left-pads a BIGNUM with an extra 00 byte when the MSB is set —
   # keep exactly the last 32 bytes (64 hex chars) of the raw scalar.
   if [[ ${#priv_hex} -gt 64 ]]; then priv_hex="${priv_hex: -64}"; fi
-  while [[ ${#priv_hex} -lt 64 ]]; do priv_hex="0${priv_hex}"; done
+  while [[ -n "$priv_hex" && ${#priv_hex} -lt 64 ]]; do priv_hex="0${priv_hex}"; done
+  printf '%s\n%s\n' "$priv_hex" "$pub_hex"
+}
+
+vapid_pair_valid() {  # $1 priv hex, $2 pub hex
+  [[ "$1" =~ ^[0-9a-fA-F]{64}$ && "$2" =~ ^04[0-9a-fA-F]{128}$ && -n "${1//0/}" ]]
+}
+
+# Fallback for a host whose openssl output is not parseable: run the same two
+# commands in a pinned container (multi-arch index digest).
+vapid_pair_via_container() {
+  docker run --rm --network none "$OPENSSL_FALLBACK_IMAGE" ecparam -name prime256v1 -genkey -noout 2>/dev/null \
+    | docker run --rm -i --network none "$OPENSSL_FALLBACK_IMAGE" ec -noout -text 2>/dev/null \
+    | vapid_hex_from_ec_text
+}
+
+# Web Push VAPID keypair: a raw P-256 (prime256v1) keypair, base64url encoded
+# (RFC 8292 §2 — public key is the 65-byte uncompressed point, private key is
+# the raw 32-byte scalar). No node/npm dependency: pure openssl + sed.
+generate_vapid_keypair() {
+  local key_pem pair="" priv_hex pub_hex
+  key_pem="$(mktemp)"
+  if openssl ecparam -name prime256v1 -genkey -noout -out "$key_pem" 2>/dev/null; then
+    pair="$(openssl ec -in "$key_pem" -noout -text 2>/dev/null | vapid_hex_from_ec_text)"
+  fi
+  rm -f "$key_pem"
+  priv_hex="${pair%%$'\n'*}"; pub_hex="${pair##*$'\n'}"
+  if ! vapid_pair_valid "$priv_hex" "$pub_hex"; then
+    host_is_desktop || die "could not generate the Web Push (VAPID) keypair with this host's openssl."
+    log "This Mac's openssl output is not usable for the VAPID keypair — generating it in a pinned container instead."
+    pair="$(vapid_pair_via_container || true)"
+    priv_hex="${pair%%$'\n'*}"; pub_hex="${pair##*$'\n'}"
+    vapid_pair_valid "$priv_hex" "$pub_hex" || die "could not generate the Web Push (VAPID) keypair (host openssl and the container fallback both failed)."
+  fi
   VAPID_PRIVATE_KEY="$(hex_to_base64url "$priv_hex")"
   VAPID_PUBLIC_KEY="$(hex_to_base64url "$pub_hex")"
 }
@@ -1057,6 +1538,13 @@ generate_secrets() {
 
 write_mongo_keyfile() {
   local keyfile="$PRIVOS_DIR/secrets/mongo-keyfile"
+  if host_is_desktop; then
+    # Owned by the user, 0600 (a 0400 file could not be rewritten on re-run).
+    # privos-init copies it into the mongo-keyfile volume as 0400, uid 999.
+    ( umask 077; mongo_keyfile_content "$MONGO_ROOT_PASSWORD" > "$keyfile" )
+    chmod 0600 "$keyfile"
+    return 0
+  fi
   mongo_keyfile_content "$MONGO_ROOT_PASSWORD" > "$keyfile"
   chmod 0400 "$keyfile"
   chown 999:999 "$keyfile"
@@ -1066,9 +1554,14 @@ write_mongo_keyfile() {
 # .env rendering
 # ---------------------------------------------------------------------------
 
+# The quote/escape pieces live in variables because bash 3.2 (macOS) reads
+# backslashes inside "${v//pat/rep}" differently from bash 4+/5.
+ENV_SQ="'"
+ENV_SQ_ESCAPED="'\\''"
+
 env_quote() {
   local v="$1"
-  printf "'%s'" "${v//\'/\'\\\'\'}"
+  printf "'%s'" "${v//$ENV_SQ/$ENV_SQ_ESCAPED}"
 }
 
 # Exact inverse of env_quote(): strip the wrapping single quotes, then
@@ -1082,7 +1575,7 @@ env_unquote() {
   if [[ "$v" == \'*\' ]]; then
     v="${v#\'}"
     v="${v%\'}"
-    v="${v//\'\\\'\'/\'}"
+    v="${v//"$ENV_SQ_ESCAPED"/$ENV_SQ}"
   fi
   printf '%s' "$v"
 }
@@ -1247,7 +1740,12 @@ EOF
 }
 
 finalize_sidecar_config() {
-  if [[ "$PRIVOS_WITH_APP_CLUSTER" == "true" ]]; then
+  if [[ "$PRIVOS_WITH_APP_CLUSTER" == "true" ]] && host_is_desktop; then
+    # Nothing on the Mac to stat: the group of the socket inside the Desktop VM
+    # is probed from the daemon side once the bundle is verified
+    # (probe_desktop_socket_gid), because the image to probe with comes from it.
+    :
+  elif [[ "$PRIVOS_WITH_APP_CLUSTER" == "true" ]]; then
     : "${PRIVOS_DOCKER_SOCKET_GID:=$(stat -c %g /var/run/docker.sock 2>/dev/null || true)}"
     [[ -n "$PRIVOS_DOCKER_SOCKET_GID" ]] || die "the App Cluster is enabled but /var/run/docker.sock is not present — cannot resolve the docker socket group. Pass --without-app-cluster to opt out."
   fi
@@ -1267,7 +1765,11 @@ finalize_sidecar_config() {
 # ---------------------------------------------------------------------------
 
 compose() {
-  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" --project-name "$PRIVOS_PROJECT" "$@"
+  if host_is_desktop && [[ -f "$(desktop_overlay_path)" ]]; then
+    docker compose -f "$COMPOSE_FILE" -f "$(desktop_overlay_path)" --env-file "$ENV_FILE" --project-name "$PRIVOS_PROJECT" "$@"
+  else
+    docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" --project-name "$PRIVOS_PROJECT" "$@"
+  fi
 }
 
 ensure_network() {
@@ -1400,10 +1902,10 @@ check_local_runtime_installations() {
 bring_up_stack() {
   compose pull
   compose up -d mongo redis rustfs
-  wait_for_compose_healthy mongo 120 || die "mongo did not become healthy — inspect with: docker compose -f ${COMPOSE_FILE} logs mongo"
+  wait_for_compose_healthy mongo 120 || die "mongo did not become healthy — inspect with: $(compose_cli_hint) logs mongo"
   initiate_replica_set
   check_local_runtime_installations
-  wait_for_compose_healthy rustfs 60 || die "rustfs did not become healthy — inspect with: docker compose -f ${COMPOSE_FILE} logs rustfs"
+  wait_for_compose_healthy rustfs 60 || die "rustfs did not become healthy — inspect with: $(compose_cli_hint) logs rustfs"
   # rustfs-init runs once here: `compose up -d` starts it via its dependents'
   # `service_completed_successfully` conditions after rustfs is healthy. A prior
   # explicit `compose run --rm rustfs-init` made it run twice per install.
@@ -1502,7 +2004,7 @@ print_summary() {
     echo "  Activate at:    https://client.privos.io/self-hosted/activate#code=${code}"
   else
     echo "  Activation request code not yet available — check again shortly with:"
-    echo "    docker compose -f ${COMPOSE_FILE} --env-file ${ENV_FILE} exec hub cat /var/lib/privos/self-hosted/license-request-code"
+    echo "    $(compose_cli_hint) --env-file ${ENV_FILE} exec hub cat /var/lib/privos/self-hosted/license-request-code"
   fi
 }
 
@@ -1600,8 +2102,35 @@ do_uninstall() {
   ENV_FILE="$PRIVOS_DIR/.env"
   [[ -f "$COMPOSE_FILE" ]] || die "no install found at ${PRIVOS_DIR}"
   load_existing_env
+  if host_is_desktop; then
+    # A stopped Docker Desktop would make every docker call below fail
+    # quietly and then rm -rf the install dir — leaving containers and volumes
+    # nobody can find. Stop instead.
+    docker_daemon_up || die "Docker Desktop is not running — start it, then re-run --uninstall."
+    if [[ "$PURGE" == "true" ]]; then
+      compose down --volumes --remove-orphans || true
+      purge_desktop_resources
+      # privos-netguard leaves its DOCKER-USER rules in place when it stops
+      # (agents may outlive the stack); remove them inside the Desktop VM now.
+      local ng_image
+      ng_image="$(netguard_image_ref "$PRIVOS_DIR")"
+      if [[ -n "$ng_image" ]]; then
+        docker run --rm --network host --cap-drop ALL --cap-add NET_ADMIN --cap-add NET_RAW "$ng_image" --clear >/dev/null 2>&1 \
+          || log "WARNING: could not remove the privos-netguard firewall rules; restarting Docker Desktop clears them."
+      fi
+      docker network rm "$PRIVOS_NETWORK" >/dev/null 2>&1 || true
+      docker network rm "$PRIVOS_AGENT_NETWORK" >/dev/null 2>&1 || true
+      rm -rf "${PRIVOS_DIR:?}"
+      log "Uninstalled and purged all data (Docker volumes, networks and ${PRIVOS_DIR})."
+    else
+      compose down --remove-orphans || true
+      log "Stopped. Data preserved in the Docker volumes ${PRIVOS_PROJECT}-* and config in ${PRIVOS_DIR}. Re-run install.sh to restart, or add --purge to delete data."
+    fi
+    return 0
+  fi
   compose down --remove-orphans || true
   if [[ "$PURGE" == "true" ]]; then
+    purge_app_resources
     docker network rm "$PRIVOS_NETWORK" >/dev/null 2>&1 || true
     docker network rm "$PRIVOS_AGENT_NETWORK" >/dev/null 2>&1 || true
     docker volume rm "${PRIVOS_PROJECT}-hub-lib" >/dev/null 2>&1 || true
@@ -1634,13 +2163,22 @@ main() {
   trap on_err ERR EXIT
 
   parse_args "$@"
+  detect_host_os
   set_stage "resolving --dir"
-  PRIVOS_DIR="${DIR_FLAG:-${PRIVOS_DIR:-$DEFAULT_DIR}}"
+  PRIVOS_DIR="${DIR_FLAG:-${PRIVOS_DIR:-$(default_privos_dir)}}"
   PRIVOS_DIR="$(validate_privos_dir "$PRIVOS_DIR")"
+  if host_is_desktop; then
+    desktop_prepare_path
+    # Docker Desktop only shares /Users, /Volumes, /private and /tmp with its VM by default.
+    case "$PRIVOS_DIR" in
+      /Users/*|/Volumes/*|/private/*|/tmp/*) ;;
+      *) log "WARNING: ${PRIVOS_DIR} is outside Docker Desktop's default shared folders (/Users, /Volumes, /private, /tmp) — add it under Settings → Resources → File sharing or the install will fail to mount the keyfile." ;;
+    esac
+  fi
 
   if [[ "$MODE" == "uninstall" ]]; then
     set_stage "uninstall"
-    require_root
+    require_host_privilege
     PRIVOS_PROJECT="${PRIVOS_PROJECT:-$PROJECT_NAME}"
     PRIVOS_NETWORK="${PRIVOS_NETWORK:-$NETWORK_NAME}"
     PRIVOS_AGENT_NETWORK="${PRIVOS_AGENT_NETWORK:-$AGENT_NETWORK_NAME}"
@@ -1649,14 +2187,14 @@ main() {
   fi
 
   set_stage "preflight"
-  require_root
+  require_host_privilege
   warn_if_dev_signing_key
   detect_platform
   require_host_tools
-  check_network_environment
+  if host_is_linux; then check_network_environment; fi
   check_registry_reachability
   check_clock_skew
-  check_selinux
+  if host_is_linux; then check_selinux; fi
   ensure_docker
   check_resources
   resolve_bundle_source
@@ -1677,7 +2215,7 @@ main() {
     pub_host="$(url_hostname "$PRIVOS_PUBLISHER_URL")"
     root_host="$(url_hostname "$PRIVOS_ROOT_URL")"
     [[ -n "$pub_host" ]] || { echo "PRIVOS_PUBLISHER_URL is not a valid URL: ${PRIVOS_PUBLISHER_URL}" >&2; exit 1; }
-    if [[ "${pub_host,,}" == "${root_host,,}" ]]; then
+    if [[ "$(to_lower "$pub_host")" == "$(to_lower "$root_host")" ]]; then
       echo "PRIVOS_PUBLISHER_URL host (${pub_host}) must differ from the hub host (${root_host}) —" >&2
       echo "the publisher renders untrusted HTML in a sandboxed origin; front it on a separate hostname." >&2
       exit 1
@@ -1685,24 +2223,35 @@ main() {
   fi
 
   set_stage "port conflict check"
+  local vm_port_list vm_port
   local -a requested_ports=("$PRIVOS_HUB_PORT" "$PRIVOS_BOARD_PORT" "$PRIVOS_PROXY_PORT" "$PRIVOS_RUSTFS_PORT" "${PRIVOS_PUBLISHER_PORT:-8558}")
-  mapfile -t vm_ports < <(expand_port_range "$PRIVOS_VM_PORT_RANGE")
-  requested_ports+=("${vm_ports[@]}")
+  # Command substitution (not mapfile / process substitution): bash 3.2 has no
+  # mapfile, and here an invalid range's die() must reach the caller.
+  vm_port_list="$(expand_port_range "$PRIVOS_VM_PORT_RANGE")"
+  while IFS= read -r vm_port; do requested_ports+=("$vm_port"); done <<<"$vm_port_list"
   check_ports "${requested_ports[@]}" || exit 1
 
   set_stage "license acceptance"
   require_license_acceptance
 
   set_stage "creating directories"
-  mkdir -p "$PRIVOS_DIR"/data/{mongo,rustfs,hub-uploads,hub-marketplace/apps,hub-lib,sandbox-board,sandbox-proxy,sandbox-pool,weaviate,app-cluster-state}
+  # Docker Desktop keeps every data directory in a named volume, so only the
+  # secrets directory (the keyfile the init service copies) lives on the host.
+  if host_is_linux; then
+    mkdir -p "$PRIVOS_DIR"/data/{mongo,rustfs,hub-uploads,hub-marketplace/apps,hub-lib,sandbox-board,sandbox-proxy,sandbox-pool,weaviate,app-cluster-state}
+  fi
   mkdir -p "$PRIVOS_DIR"/secrets
-  [[ "$PRIVOS_WITH_APP_CLUSTER" == "true" ]] && install_mcp_broker_root
+  if host_is_desktop; then chmod 0700 "$PRIVOS_DIR/secrets"; fi
+  if host_is_linux && [[ "$PRIVOS_WITH_APP_CLUSTER" == "true" ]]; then install_mcp_broker_root; fi
   write_license_marker
+  if host_is_desktop; then install_desktop_tools; fi
 
   set_stage "fetching and verifying the bundle"
   fetch_bundle "$PRIVOS_DIR"
   verify_bundle_integrity "$PRIVOS_DIR"
   adopt_bundle_stack_version "$PRIVOS_DIR"
+  check_image_platforms "$PRIVOS_DIR"
+  if host_is_desktop; then probe_desktop_socket_gid "$PRIVOS_DIR"; fi
   chmod 0644 "$PRIVOS_DIR/LICENSE" "$PRIVOS_DIR/NOTICE" "$PRIVOS_DIR/OPEN-SOURCE-NOTICES" \
     "$PRIVOS_DIR/rocketchat-upstream-files.txt" "$PRIVOS_DIR/TRADEMARK.md"
 
@@ -1717,45 +2266,56 @@ main() {
   set_stage "network + firewall setup"
   ensure_network
   ensure_agent_network
-  # RustFS runs as uid/gid 10001 in its official image (compose.yml `user:`).
-  chown 10001:10001 "$PRIVOS_DIR/data/rustfs"
-  chown -R 1001:1001 "$PRIVOS_DIR/data/sandbox-board" "$PRIVOS_DIR/data/sandbox-proxy" "$PRIVOS_DIR/data/sandbox-pool"
-  # Hub (uid 1001) writes uploads and marketplace artifacts; the driver reads
-  # apps/ as uid 1001 too and requires 0750 on it (compose-ssh-driver parity).
-  chown 1001:1001 "$PRIVOS_DIR/data/hub-uploads" "$PRIVOS_DIR/data/hub-marketplace"
-  refuse_symlink "$PRIVOS_DIR/data/hub-marketplace/apps"
-  chown -h 1001:1001 "$PRIVOS_DIR/data/hub-marketplace/apps"
-  chmod 0750 "$PRIVOS_DIR/data/hub-marketplace/apps"
-  # hub-lib holds the hub identity keypair + self-hosted license code/status;
-  # the hub (uid 1001) must be able to mkdir under it. 0700 — private to the hub.
-  chown 1001:1001 "$PRIVOS_DIR/data/hub-lib"
-  chmod 0700 "$PRIVOS_DIR/data/hub-lib"
-  # hub-lib/self-hosted is ALSO bind-mounted read-only into sandbox-board and
-  # sandbox-proxy (compose.yml), so they can pick up the gateway credential
-  # the hub writes to llm.env there after activation, without a container
-  # restart. Pre-create it here — with the SAME owner/mode as hub-lib above —
-  # rather than let the hub mkdir it lazily at boot, or let `docker compose up`
-  # auto-create the bind-mount path as root before the hub ever runs (which
-  # would leave the hub unable to write into its own directory). No group or
-  # mode widening is needed to make it readable: sandbox-board already runs
-  # as uid 1001 (compose.yml `user:`), the SAME owner set here, and
-  # sandbox-proxy runs as root (uid 0), which reads any file regardless of
-  # its mode — see the compose.yml comments on both volume mounts.
-  refuse_symlink "$PRIVOS_DIR/data/hub-lib/self-hosted"
-  mkdir -p "$PRIVOS_DIR/data/hub-lib/self-hosted"
-  chown -h 1001:1001 "$PRIVOS_DIR/data/hub-lib/self-hosted"
-  chmod 0700 "$PRIVOS_DIR/data/hub-lib/self-hosted"
-  # The official node:20-alpine image's built-in "node" user is uid/gid 1000
-  # — app-cluster (Dockerfile: `USER node`) must be able to write its state
-  # dir (credential file, temp artifact chunks) there.
-  chown 1000:1000 "$PRIVOS_DIR/data/app-cluster-state"
-  install_docker_user_rules
+  if host_is_linux; then
+    # RustFS runs as uid/gid 10001 in its official image (compose.yml `user:`).
+    chown 10001:10001 "$PRIVOS_DIR/data/rustfs"
+    chown -R 1001:1001 "$PRIVOS_DIR/data/sandbox-board" "$PRIVOS_DIR/data/sandbox-proxy" "$PRIVOS_DIR/data/sandbox-pool"
+    # Hub (uid 1001) writes uploads and marketplace artifacts; the driver reads
+    # apps/ as uid 1001 too and requires 0750 on it (compose-ssh-driver parity).
+    chown 1001:1001 "$PRIVOS_DIR/data/hub-uploads" "$PRIVOS_DIR/data/hub-marketplace"
+    refuse_symlink "$PRIVOS_DIR/data/hub-marketplace/apps"
+    chown -h 1001:1001 "$PRIVOS_DIR/data/hub-marketplace/apps"
+    chmod 0750 "$PRIVOS_DIR/data/hub-marketplace/apps"
+    # hub-lib holds the hub identity keypair + self-hosted license code/status;
+    # the hub (uid 1001) must be able to mkdir under it. 0700 — private to the hub.
+    chown 1001:1001 "$PRIVOS_DIR/data/hub-lib"
+    chmod 0700 "$PRIVOS_DIR/data/hub-lib"
+    # hub-lib/self-hosted is ALSO bind-mounted read-only into sandbox-board and
+    # sandbox-proxy (compose.yml), so they can pick up the gateway credential
+    # the hub writes to llm.env there after activation, without a container
+    # restart. Pre-create it here — with the SAME owner/mode as hub-lib above —
+    # rather than let the hub mkdir it lazily at boot, or let `docker compose up`
+    # auto-create the bind-mount path as root before the hub ever runs (which
+    # would leave the hub unable to write into its own directory). No group or
+    # mode widening is needed to make it readable: sandbox-board already runs
+    # as uid 1001 (compose.yml `user:`), the SAME owner set here, and
+    # sandbox-proxy runs as root (uid 0), which reads any file regardless of
+    # its mode — see the compose.yml comments on both volume mounts.
+    refuse_symlink "$PRIVOS_DIR/data/hub-lib/self-hosted"
+    mkdir -p "$PRIVOS_DIR/data/hub-lib/self-hosted"
+    chown -h 1001:1001 "$PRIVOS_DIR/data/hub-lib/self-hosted"
+    chmod 0700 "$PRIVOS_DIR/data/hub-lib/self-hosted"
+    # The official node:20-alpine image's built-in "node" user is uid/gid 1000
+    # — app-cluster (Dockerfile: `USER node`) must be able to write its state
+    # dir (credential file, temp artifact chunks) there.
+    chown 1000:1000 "$PRIVOS_DIR/data/app-cluster-state"
+    install_docker_user_rules
+  else
+    # privos-init (volume owners) and privos-netguard (DOCKER-USER rules inside
+    # the Desktop VM) are compose services; nothing to apply from the Mac. The
+    # rule arguments are still validated here, before anything starts, so a typo
+    # aborts the install exactly as install_docker_user_rules does on Linux.
+    VM_EGRESS_MODE="${VM_EGRESS_MODE:-open}" bash "$PRIVOS_DIR/docker-user-rules.sh" --check \
+      "${PRIVOS_BOARD_PORT},${PRIVOS_PROXY_PORT},${PRIVOS_RUSTFS_PORT},${PRIVOS_VM_PORT_RANGE}" "${PRIVOS_EGRESS_ALLOWLIST:-}"
+    desktop_firewall_note
+    desktop_autostart_hint
+  fi
 
   set_stage "bringing up the stack (docker compose)"
   check_stale_stack
   bring_up_stack
   set_stage "waiting for hub + sandbox-proxy to become healthy"
-  wait_for_stack_ready || die "stack did not become healthy in time — inspect with: docker compose -f ${COMPOSE_FILE} --env-file ${ENV_FILE} logs"
+  wait_for_stack_ready || die "stack did not become healthy in time — inspect with: $(compose_cli_hint) --env-file ${ENV_FILE} logs"
 
   # Interactive activation only when NOT --yes and a controlling terminal is
   # reachable (works under `curl | bash`, where stdin is the pipe but /dev/tty

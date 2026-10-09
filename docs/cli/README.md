@@ -70,6 +70,8 @@ process list. Do not put credentials in the URL.
 | Hub auth token | `--auth-token` | `PRIVOS_HUB_AUTH_TOKEN`, then `PRIVOS_PAT` | `X-Auth-Token` |
 | Hub bot key | `--bot-key` | `PRIVOS_BOT_KEY` | `Authorization: Bearer` (replaces the two rows above; `hub` and `agents` commands only, never `hub get`) |
 
+Inside an agent VM there is no bot key at all; see [Bot mode and sandbox egress](#bot-mode-and-sandbox-egress).
+
 `API_ACCESS_KEY` is the name the board container uses. `SANDBOX_API_KEY` is
 the name `install.sh` writes into the stack `.env`. `PRIVOS_ROOT_URL` is the
 public hub URL the installer already records.
@@ -126,6 +128,12 @@ privos hub rooms list [--updated-since RFC3339]
 privos hub rooms create --name NAME [--kind channel|group] [--member USER] [--read-only] [--exclude-self]
 privos hub rooms update --room ID [--kind channel|group] [--name NEW] [--topic TEXT]
 privos hub rooms delete --room ID [--kind channel|group]
+privos hub rooms members --room ID [--kind channel|group]
+privos hub rooms invite --room ID --member USER_ID [--member USER_ID ...] [--kind channel|group]
+privos hub rooms kick --room ID --member USER_ID [--member USER_ID ...] [--kind channel|group]
+privos hub rooms archive --room ID [--kind channel|group]
+
+privos hub dm reply --room DM_ROOM_ID --text TEXT            # agent VM only, see "Bot mode and sandbox egress"
 
 privos hub messages list --room ROOM_ID [--kind channel|group|direct] [--count N] [--offset N]
 privos hub messages send --room ROOM_ID --text TEXT
@@ -192,11 +200,48 @@ a JSON array, and its response includes `defaultStage` for
 `items.bulkUpdateOrder`, and `stages.*` are not commands. The CLI does not
 call `/api/v1/bot/lists` or MCP `privos.lists.*`. See [Hub API](../api/hub.md).
 
+## Bot mode and sandbox egress
+
+An agent bot runs hub commands with its own key (`--bot-key` or `PRIVOS_BOT_KEY`, sent as
+`Authorization: Bearer`). Bot keys cannot use the public `lists.*`, `items.*` and
+`stages.*` routes, so in bot mode `hub lists` and `hub items` call the room routes
+`/api/v1/internal/rooms/ROOM_ID/...` instead:
+
+- `--room` is required (default `PRIVOS_ROOM_ID`); `--name` is required on `lists create` and `items create`.
+- Options the room routes would silently ignore are refused with a usage error before any request:
+  `--isolated`; on `items update` `--archived`, `--order` and `--show-archived-sub-items`; on `items list` `--parent`,
+  `--sort`, `--after`, `--include-sub-items` and combining `--list` with `--stage`. `items search`, `items find`
+  and `items reorder` are refused too.
+- `hub rooms create|update|members|invite|kick|archive` manage channels and private groups. `invite` and `kick` take
+  user ids (`hub rooms members` prints them); `rooms update --name` is the rename.
+- On a list owned by an MCP app, item writes work only for a super agent in a room where its owner holds
+  owner, admin or leader. The hub answers with the app-owned error otherwise.
+
+Route-by-route detail: [Hub API](../api/hub.md#bot-mode-agent-bots). Personal-token mode is unchanged.
+
+**Sandbox egress.** An agent VM never holds the bot key. When `PRIVOS_SANDBOX_MODE=true` and both `PROXY_URL`
+and `PROXY_TOKEN` are set, and the command has no credential of its own (no flag, none of `PRIVOS_BOT_KEY`,
+`PRIVOS_HUB_USER_ID`, `PRIVOS_USER_ID`, `PRIVOS_HUB_AUTH_TOKEN`, `PRIVOS_PAT`), the commands `hub rooms|lists|items|dm`
+and `agents a2a` send each request as `POST $PROXY_URL/egress` with an `x-proxy-token` header, and the proxy
+attaches the key. The hub is `--url`, else `PRIVOS_HUB_URL`, else `https://$PRIVOS_HUB_HOST`. The proxy decides what
+the agent may call: a refusal prints its code first, for example `HTTP 403: no-binding: ...`, and an unreachable proxy
+prints `sandbox proxy egress: ...`. `hub rooms update --topic` and `hub rooms delete` are refused over egress because
+the catalog does not open them. `hub get`, `subscribe` and `sandbox tasks answer` never use egress and say so when a VM
+leaves them without a connection of their own.
+
+**DM reply.** `privos hub dm reply --room DM_ROOM_ID --text TEXT` asks the hub to answer one of the owner's
+one-to-one DMs in the owner's name, with a "sent by agent" badge. It works only over egress, because the hub
+accepts it only from the agent room session. The owner's setting decides the result and the agent cannot change it:
+`status: drafted` waits for the owner to press Send on the draft card in the agent room, `status: sent` was posted at
+once. The JSON is printed to stdout and a one-line explanation to stderr. It is a dry run unless `--confirm`.
+
 ## Agent bot-to-bot messages
 
 `privos agents a2a` drives the hub's bot-to-bot protocol (`agents.a2a.send`,
 `agents.a2a.team.members`, `agents.a2a.list`) from outside the sandbox, for
-example from an external master agent. It authenticates as an agent bot:
+example from an external master agent. (Inside an agent VM the commands go through the
+sandbox egress instead; see [Bot mode and sandbox egress](#bot-mode-and-sandbox-egress).)
+It authenticates as an agent bot:
 set `PRIVOS_BOT_KEY` (or `--bot-key`) and the CLI sends
 `Authorization: Bearer <key>` and no `X-User-Id` or `X-Auth-Token`. Agent bots
 cannot mint personal access tokens, so a bot key is the only credential that

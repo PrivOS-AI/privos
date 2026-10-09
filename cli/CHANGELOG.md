@@ -3,6 +3,40 @@
 All notable changes to `@privos_ai/privos`. Full command notes live in
 [docs/cli/README.md](https://github.com/PrivOS-AI/privos/blob/main/docs/cli/README.md).
 
+## 0.7.0 — 2026-10-09
+
+### Added
+
+- Bot mode for `privos hub lists` and `privos hub items`: with a bot key
+  (`--bot-key`, `PRIVOS_BOT_KEY`) or the sandbox egress they call the room
+  routes `/api/v1/internal/rooms/ROOM_ID/...`, because bot keys cannot use the
+  public `lists.*` and `items.*` routes. `--room` is required (default
+  `PRIVOS_ROOM_ID`) and `items create` and `lists create` need `--name`. Flags the
+  room routes would drop silently and the commands `items search|find|reorder`
+  are refused with a usage error. `lists get` and `items get` print the same
+  shape as personal-token mode.
+- Sandbox egress: inside an agent VM (`PRIVOS_SANDBOX_MODE=true`, `PROXY_URL`,
+  `PROXY_TOKEN`) with no credential of your own, `hub rooms|lists|items|dm` and
+  `agents a2a` send every request through `POST $PROXY_URL/egress`. The VM never
+  holds the bot key; the proxy attaches it. The hub is `--url`, else
+  `PRIVOS_HUB_URL`, else `https://$PRIVOS_HUB_HOST`. The proxy's error `code`
+  prints first (`no-binding`, `ssrf-denied`). `hub get`, `subscribe` and
+  `sandbox tasks answer` refuse the egress with a clear message when they have
+  no connection of their own.
+- `privos hub rooms members|invite|kick|archive`: room management for an agent
+  bot (`--member` is a user id; `--kind channel|group` as on `update`). Rename
+  is `hub rooms update --name`. Over the egress, `update --topic` and `delete`
+  are refused because the proxy does not open those routes.
+- `privos hub dm reply --room DM_ROOM_ID --text TEXT`: asks the PrivOS Hub to
+  answer the owner's one-to-one DM in the owner's name. Egress only. Prints the
+  hub's `status`: `drafted` (the owner must press Send in the agent room) or
+  `sent`.
+
+### Fixed
+
+- The `hub lists` help said lists use user headers only; they accept a bot key
+  and the egress too.
+
 ## 0.6.0 — 2026-10-08
 
 ### Added

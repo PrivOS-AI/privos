@@ -112,7 +112,7 @@ services:
       start_period: 10s
 
   rustfs:
-    image: ghcr.io/rustfs/rustfs:1.0.0-rc.6@sha256:8d8bfa61f3a20cdcf644562bb8c3a314ca03c66a9827f6056f741e787bf0c804  # linux/amd64 child digest resolved on ctl-01 (D6)
+    image: ghcr.io/rustfs/rustfs:1.0.0-rc.6@sha256:8d8bfa61f3a20cdcf644562bb8c3a314ca03c66a9827f6056f741e787bf0c804  # source pin; the publisher swaps in the multi-arch index digest
     container_name: ${PRIVOS_PROJECT:-privos}-rustfs
     restart: unless-stopped
     networks: [privos]
@@ -158,7 +158,7 @@ services:
   # `docker compose up -d` brings it up again as a no-op on every re-run
   # (idempotent — see rustfs-init.sh).
   rustfs-init:
-    image: docker.io/rustfs/rc:v0.1.35@sha256:6558b9777a1e75fc92e040a7bae67af93334703b4b4ab3a28cf45ecc08ee2404  # linux/amd64 child digest resolved on ctl-01 (D6)
+    image: docker.io/rustfs/rc:v0.1.35@sha256:6558b9777a1e75fc92e040a7bae67af93334703b4b4ab3a28cf45ecc08ee2404  # source pin; the publisher swaps in the multi-arch index digest
     container_name: ${PRIVOS_PROJECT:-privos}-rustfs-init
     networks: [privos]
     depends_on:

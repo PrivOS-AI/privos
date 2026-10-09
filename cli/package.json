@@ -1,6 +1,6 @@
 {
   "name": "@privos_ai/privos",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "PrivOS operator CLI for the sandbox board and the hub",
   "type": "module",
   "bin": {
