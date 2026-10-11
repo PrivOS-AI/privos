@@ -88,6 +88,8 @@ export interface Parsed {
   mode: string;
   state: string;
   since: string;
+  oldest: string;
+  latest: string;
   webhookURLEnv: string;
   webhookKeyEnv: string;
   webhookHeader: string;
@@ -186,6 +188,8 @@ const VALUE_FLAGS = new Set([
   "mode",
   "state",
   "since",
+  "oldest",
+  "latest",
   "webhook-url-env",
   "webhook-key-env",
   "webhook-header",
@@ -362,6 +366,8 @@ function emptyParsed(): Parsed {
     mode: "",
     state: "",
     since: "",
+    oldest: "",
+    latest: "",
     webhookURLEnv: "",
     webhookKeyEnv: "",
     webhookHeader: "",
@@ -695,6 +701,12 @@ function assignValue(p: Parsed, name: string, value: string): void {
       break;
     case "since":
       p.since = trimmed;
+      break;
+    case "oldest":
+      p.oldest = trimmed;
+      break;
+    case "latest":
+      p.latest = trimmed;
       break;
     case "webhook-url-env":
       p.webhookURLEnv = trimmed;

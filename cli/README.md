@@ -37,18 +37,25 @@ rooms with `hub rooms create|members|invite|kick|archive` and `update --name`.
 
 Inside an agent VM (`PRIVOS_SANDBOX_MODE=true` with `PROXY_URL` and
 `PROXY_TOKEN`) there is no bot key. When no credential of your own is set,
-`hub rooms|lists|items|dm` and `agents a2a` send each PrivOS Hub request through
+`hub rooms|lists|items|dm|owner` and `agents a2a` send each PrivOS Hub request through
 the sandbox proxy (`POST $PROXY_URL/egress`) and the proxy attaches the key. The
 hub is `--url`, else `PRIVOS_HUB_URL`, else `https://$PRIVOS_HUB_HOST`. The
 proxy decides what the agent may call and a refusal prints its code, for example
 `no-binding`. `hub get`, `subscribe` and `sandbox tasks answer` never use it.
 
-`privos hub dm reply --room DM_ROOM_ID --text TEXT` asks the PrivOS Hub to answer
-the owner's one-to-one DM in the owner's name, with a "sent by agent" badge. It
+`privos hub dm reply --room DM_ROOM_ID --text TEXT` asks the PrivOS Hub to post
+in the owner's name, with a "sent by agent" badge, in one of the owner's
+one-to-one DMs with a person, the owner's Inbox, or the owner's DM with the
+Universal Assistant (which then answers with the owner's access). It
 works only over the egress, because the hub accepts it only from the agent room
 session. The owner's setting decides the outcome: `drafted` waits for the owner
 to press Send on the draft card in the agent room, `sent` is posted at once. No
 CLI command changes that setting.
+
+`privos hub owner rooms` and `privos hub owner messages --room RID` let a super
+agent read its owner's one-to-one DMs, Inbox and Universal Assistant DM without
+joining them. Only over the egress, from the agent's own agent room; the hub
+audits every read.
 
 `privos subscribe` is a read-only watcher that turns DMs, mentions, in-app
 notifications, list items, room files, and board tasks into JSON events on

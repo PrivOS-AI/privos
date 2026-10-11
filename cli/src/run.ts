@@ -27,6 +27,8 @@ import {
   hubMessagesList,
   hubMessagesSend,
   hubMessagesUpdate,
+  hubOwnerMessages,
+  hubOwnerRooms,
   hubRoomsArchive,
   hubRoomsCreate,
   hubRoomsDelete,
@@ -128,6 +130,7 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
     case "hub lists":
     case "hub items":
     case "hub dm":
+    case "hub owner":
     case "agents":
     case "agents a2a":
       throw usage(`${text.trimEnd()}\nRun privos ${cmd} --help`);
@@ -239,6 +242,12 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
       return;
     case "hub dm reply":
       await hubDmReply(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub owner rooms":
+      await hubOwnerRooms(p, stdout, fetchImpl);
+      return;
+    case "hub owner messages":
+      await hubOwnerMessages(p, stdout, fetchImpl);
       return;
     case "hub messages list":
       await hubMessagesList(p, stdout, fetchImpl);
