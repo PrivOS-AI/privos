@@ -359,8 +359,56 @@ export async function hubDmReply(p: Parsed, stdout: Out, stderr: Out, fetchImpl:
   if (status === "drafted") {
     stderr.write("dm reply: status drafted. Nothing is posted yet: the owner must press Send on the draft card in the agent room.\n");
   } else if (status === "sent") {
-    stderr.write("dm reply: status sent. The reply was posted in the owner's DM.\n");
+    stderr.write("dm reply: status sent. The message was posted in the owner's name.\n");
   }
+}
+
+const ownerRoomColumns: Column[] = [
+  { header: "ID", path: ["_id"] },
+  { header: "KIND", path: ["kind"] },
+  { header: "WITH", path: ["counterpart", "username"] },
+  { header: "LAST", path: ["lm"] },
+];
+
+/** The owner reads exist only for a super agent's agent room session, as for hub dm reply. */
+function requireAgentRoomEgress(fetchImpl: typeof fetch, cmd: string): void {
+  if (egressOf(fetchImpl) === undefined) {
+    throw usage(
+      `${cmd} works only inside an agent VM, through the sandbox egress: the hub answers only a super agent ` +
+        "asking from its own agent room, not a personal token or a bare bot key",
+    );
+  }
+}
+
+/** Lists the owner's one-to-one DMs (the Universal Assistant DM included) and the owner's Inbox. */
+export async function hubOwnerRooms(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
+  requireAgentRoomEgress(fetchImpl, "hub owner rooms");
+  forbidUnknown(p, "hub owner rooms", ["url", "count", "offset"]);
+  const query = new URLSearchParams();
+  const count = optionalNonNegative("--count", p.count);
+  const offset = optionalNonNegative("--offset", p.offset);
+  if (count !== undefined) query.set("count", String(count));
+  if (offset !== undefined) query.set("offset", String(offset));
+  await hubGetPath(p, stdout, fetchImpl, "/api/v1/agents.superAgent.ownerRooms", query, "rooms", ownerRoomColumns);
+}
+
+/** Reads one of the owner's DMs or the owner's Inbox; the room never needs the bot as a member. */
+export async function hubOwnerMessages(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
+  requireAgentRoomEgress(fetchImpl, "hub owner messages");
+  forbidUnknown(p, "hub owner messages", ["url", "room", "count", "offset", "oldest", "latest"]);
+  requireFlag(p, "room", p.room, helpFor(["hub", "owner", "messages"]));
+  const query = new URLSearchParams();
+  query.set("roomId", p.room);
+  const count = optionalNonNegative("--count", p.count);
+  const offset = optionalNonNegative("--offset", p.offset);
+  if (count !== undefined) query.set("count", String(count));
+  if (offset !== undefined) query.set("offset", String(offset));
+  for (const [flag, value] of [["oldest", p.oldest], ["latest", p.latest]] as const) {
+    if (value === "") continue;
+    if (Number.isNaN(Date.parse(value))) throw usage(`--${flag} must be an ISO date or time, got ${JSON.stringify(value)}`);
+    query.set(flag, new Date(value).toISOString());
+  }
+  await hubGetPath(p, stdout, fetchImpl, "/api/v1/agents.superAgent.ownerMessages", query, "messages", messageColumns);
 }
 
 export async function hubMessagesSend(

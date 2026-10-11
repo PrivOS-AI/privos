@@ -588,6 +588,71 @@ describe("sandbox egress", { concurrency: false }, () => {
   });
 });
 
+describe("hub owner", { concurrency: false }, () => {
+  test("rooms and messages read through the egress with paging and a time range", async () => {
+    const proxy = await fakeProxy((envelope) =>
+      envelope.url.includes("ownerRooms")
+        ? { json: { success: true, rooms: [{ _id: "inboxU1", kind: "inbox" }, { _id: "U1U2", kind: "dm", counterpart: { _id: "U2", username: "longdl" } }], count: 2, offset: 0, total: 2 } }
+        : { json: { success: true, messages: [{ _id: "m1", msg: "Làm trên mtm nhé" }], count: 1, offset: 0, total: 1 } });
+    vmEnv(proxy.url);
+    try {
+      let result = await runCLI(["hub", "owner", "rooms", "--count", "10"]);
+      assert.equal(result.code, 0, result.stderr);
+      let call = proxy.seen[0];
+      assert.equal(call.authorization, undefined);
+      assert.equal(call.envelope.method, "GET");
+      assert.equal(call.envelope.url, "https://hub.example.test/api/v1/agents.superAgent.ownerRooms?count=10");
+      assert.equal(JSON.parse(result.stdout).rooms[1].counterpart.username, "longdl");
+
+      result = await runCLI(["hub", "owner", "messages", "--room", "U1U2", "--oldest", "2026-10-06T00:00:00Z", "--count", "50"]);
+      assert.equal(result.code, 0, result.stderr);
+      call = proxy.seen[1];
+      const url = new URL(call.envelope.url);
+      assert.equal(url.pathname, "/api/v1/agents.superAgent.ownerMessages");
+      assert.equal(url.searchParams.get("roomId"), "U1U2");
+      assert.equal(url.searchParams.get("count"), "50");
+      assert.equal(url.searchParams.get("oldest"), "2026-10-06T00:00:00.000Z");
+      assert.equal(JSON.parse(result.stdout).messages[0]._id, "m1");
+    } finally {
+      await proxy.close();
+    }
+  });
+
+  test("a personal token or a bare bot key is refused before any request", async () => {
+    const hub = await fakeHub();
+    try {
+      let result = await runCLI(["hub", "owner", "rooms", "--url", hub.url, "--bot-key", "bot-key-1"]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /works only inside an agent VM, through the sandbox egress/);
+      result = await runCLI(["hub", "owner", "messages", "--room", "D1", "--url", hub.url, "--user-id", "u1", "--auth-token", "tok"]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /works only inside an agent VM/);
+      assert.equal(hub.seen.length, 0);
+    } finally {
+      await hub.close();
+    }
+  });
+
+  test("flags are validated and the commands have help", async () => {
+    vmEnv("http://127.0.0.1:9");
+    let result = await runCLI(["hub", "owner", "messages"]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /required flag --room/);
+    result = await runCLI(["hub", "owner", "messages", "--room", "D1", "--latest", "yesterday"]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--latest must be an ISO date/);
+    result = await runCLI(["hub", "owner", "rooms", "--text", "x"]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /unsupported flag --text/);
+    result = await runCLI(["hub", "owner"]);
+    assert.equal(result.code, 2);
+    result = await runCLI(["hub", "owner", "rooms", "--help"]);
+    assert.match(result.stdout, /Group DMs\s+are not included/);
+    result = await runCLI(["--help"]);
+    assert.match(result.stdout, /hub owner messages/);
+  });
+});
+
 describe("hub dm reply", { concurrency: false }, () => {
   test("an owner-approved draft is reported as waiting for Send", async () => {
     const proxy = await fakeProxy(() => ({
@@ -686,6 +751,6 @@ describe("hub dm reply", { concurrency: false }, () => {
     assert.match(result.stdout, /Sandbox egress/);
     assert.match(result.stdout, /Bot mode/);
     result = await runCLI(["version"]);
-    assert.equal(result.stdout, "privos 0.7.0\n");
+    assert.equal(result.stdout, "privos 0.8.0\n");
   });
 });

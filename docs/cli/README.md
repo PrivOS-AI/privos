@@ -134,6 +134,8 @@ privos hub rooms kick --room ID --member USER_ID [--member USER_ID ...] [--kind 
 privos hub rooms archive --room ID [--kind channel|group]
 
 privos hub dm reply --room DM_ROOM_ID --text TEXT            # agent VM only, see "Bot mode and sandbox egress"
+privos hub owner rooms [--count N] [--offset N]               # agent VM only, super agent
+privos hub owner messages --room RID [--count N] [--offset N] [--oldest ISO] [--latest ISO]
 
 privos hub messages list --room ROOM_ID [--kind channel|group|direct] [--count N] [--offset N]
 privos hub messages send --room ROOM_ID --text TEXT
@@ -229,11 +231,19 @@ prints `sandbox proxy egress: ...`. `hub rooms update --topic` and `hub rooms de
 the catalog does not open them. `hub get`, `subscribe` and `sandbox tasks answer` never use egress and say so when a VM
 leaves them without a connection of their own.
 
-**DM reply.** `privos hub dm reply --room DM_ROOM_ID --text TEXT` asks the hub to answer one of the owner's
-one-to-one DMs in the owner's name, with a "sent by agent" badge. It works only over egress, because the hub
+**DM reply.** `privos hub dm reply --room DM_ROOM_ID --text TEXT` asks the hub to post in the owner's name, with a
+"sent by agent" badge, in one of the owner's one-to-one DMs with a person, the owner's Inbox, or the owner's DM with
+the Universal Assistant. A message in the last two asks the Universal Assistant, which answers with the owner's
+access; its answer never wakes the agent. It works only over egress, because the hub
 accepts it only from the agent room session. The owner's setting decides the result and the agent cannot change it:
 `status: drafted` waits for the owner to press Send on the draft card in the agent room, `status: sent` was posted at
 once. The JSON is printed to stdout and a one-line explanation to stderr. It is a dry run unless `--confirm`.
+
+**Owner reads.** `privos hub owner rooms` lists the owner's one-to-one DMs (`kind: dm`, the Universal Assistant DM
+included) and the owner's Inbox (`kind: inbox`). `privos hub owner messages --room RID` reads one of them, with
+`--count`, `--offset`, `--oldest` and `--latest`. The bot never joins these rooms, nothing is marked read for the
+owner, group DMs are not included, and the hub writes a `super-agent.owner-read` audit row for every call. Like DM
+reply, both work only over egress from the super agent's own agent room.
 
 ## Agent bot-to-bot messages
 
