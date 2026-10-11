@@ -3,6 +3,23 @@
 All notable changes to `@privos_ai/privos`. Full command notes live in
 [docs/cli/README.md](https://github.com/PrivOS-AI/privos/blob/main/docs/cli/README.md).
 
+## 0.8.0 — 2026-10-11
+
+### Added
+
+- `privos hub owner rooms` and `privos hub owner messages --room RID
+  [--count N] [--offset N] [--oldest ISO] [--latest ISO]`: a super agent reads
+  its owner's one-to-one DMs, the owner's Inbox and the owner's DM with the
+  Universal Assistant without joining them. Only inside an agent VM, over the
+  sandbox egress; a personal token or a bare bot key is refused before any
+  request. The hub audits every read.
+
+### Changed
+
+- `privos hub dm reply` also accepts the owner's Inbox and the owner's DM with
+  the Universal Assistant. A message there asks the Universal Assistant in the
+  owner's name; read its answer with `privos hub owner messages`.
+
 ## 0.7.0 — 2026-10-09
 
 ### Added

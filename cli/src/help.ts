@@ -31,7 +31,9 @@ Commands:
   hub rooms invite
   hub rooms kick
   hub rooms archive
-  hub dm reply             Ask the hub to answer an owner DM in the owner's name (agent VM only)
+  hub dm reply             Ask the hub to post in an owner DM, Inbox or Assistant DM as the owner (agent VM only)
+  hub owner rooms          List the owner's DMs and Inbox (super agent, agent VM only)
+  hub owner messages       Read one owner DM or the owner's Inbox (super agent, agent VM only)
   hub messages list
   hub messages send
   hub messages update
@@ -379,6 +381,7 @@ Commands:
   lists list|get|create|update|delete
   items list|get|search|find|create|update|delete|move|reorder
   dm reply --room DM_ROOM_ID --text TEXT
+  owner rooms|messages
   inbox --since TIME
 
 Environment (flags override):
@@ -406,8 +409,8 @@ Bot mode (an agent bot, not a person):
 
 Sandbox egress (inside an agent VM):
   An agent VM holds no bot key. With PRIVOS_SANDBOX_MODE=true, PROXY_URL and PROXY_TOKEN set and
-  no credential of your own, the commands "hub rooms", "hub lists", "hub items", "hub dm" and
-  "agents a2a" send every PrivOS Hub request through POST $PROXY_URL/egress, and the proxy
+  no credential of your own, the commands "hub rooms", "hub lists", "hub items", "hub dm", "hub owner"
+  and "agents a2a" send every PrivOS Hub request through POST $PROXY_URL/egress, and the proxy
   attaches the bot key. The hub is --url, else PRIVOS_HUB_URL, else https://$PRIVOS_HUB_HOST.
   The proxy decides what an agent may call: a refusal prints its code first, for example
   "no-binding: no catalog entry for this domain". "hub get", "subscribe" and
@@ -517,7 +520,11 @@ const hubDmReplyHelp = `Usage:
   privos hub dm reply --room DM_ROOM_ID --text TEXT [--url URL]
 
 POST /api/v1/agents.superAgent.dmReply with {"roomId","text"}: a super agent asks
-the PrivOS Hub to answer one of its owner's one-to-one DMs in the owner's name.
+the PrivOS Hub to post in the owner's name in one of these rooms of its owner:
+  a one-to-one DM with a person (an answer to that person),
+  the owner's Inbox, or the owner's DM with the Universal Assistant. A message
+  there asks the Universal Assistant, which then works with the owner's access.
+  Its answer never wakes the agent: read it with privos hub owner messages.
 The hub posts the message as the owner, with a "sent by <agent>" badge, in one of
 two ways that the owner chose and the agent cannot change:
   status drafted  A draft card appears in the agent room. Nothing reaches the DM
@@ -530,6 +537,43 @@ This works only inside an agent VM, over the sandbox egress: the hub accepts the
 call only from the agent room session. A personal token or a bare --bot-key is
 refused here before any request. Dry run unless --confirm. Errors print the hub's
 code first, for example error-not-owner-dm or error-super-agent-inactive.
+`;
+
+const hubOwnerHelp = `Usage:
+  privos hub owner <command>
+
+Commands:
+  rooms                   The owner's one-to-one DMs and Inbox
+  messages --room RID     Messages of one of those rooms
+
+A super agent reads its owner's DMs, the owner's Inbox and the owner's DM with
+the Universal Assistant without joining them. Only inside an agent VM, over the
+sandbox egress, from the agent's own agent room. Every read is audited.
+`;
+
+const hubOwnerRoomsHelp = `Usage:
+  privos hub owner rooms [--count N] [--offset N] [--url URL]
+
+GET /api/v1/agents.superAgent.ownerRooms: the owner's one-to-one DMs (kind dm,
+with the other person or bot as counterpart; the Universal Assistant DM is one
+of them) and the owner's Inbox (kind inbox), newest activity first. Group DMs
+are not included. Use an id with privos hub owner messages --room.
+
+Only inside an agent VM, over the sandbox egress: the hub answers only a super
+agent asking from its own agent room. A personal token or a bare --bot-key is
+refused here before any request.
+`;
+
+const hubOwnerMessagesHelp = `Usage:
+  privos hub owner messages --room RID [--count N] [--offset N]
+                            [--oldest ISO] [--latest ISO] [--url URL]
+
+GET /api/v1/agents.superAgent.ownerMessages: messages of one of the owner's
+one-to-one DMs or the owner's Inbox, newest first, threads included. --oldest
+and --latest bound the time range. Reading never marks anything read for the
+owner. Errors print the hub's code first.
+
+Only inside an agent VM, over the sandbox egress (see privos hub owner rooms).
 `;
 
 const hubMessagesHelp = `Usage:
@@ -995,6 +1039,9 @@ const HELP: Record<string, string> = {
   "hub rooms archive": hubRoomsArchiveHelp,
   "hub dm": hubDmHelp,
   "hub dm reply": hubDmReplyHelp,
+  "hub owner": hubOwnerHelp,
+  "hub owner rooms": hubOwnerRoomsHelp,
+  "hub owner messages": hubOwnerMessagesHelp,
   "hub messages": hubMessagesHelp,
   "hub messages list": hubMessagesListHelp,
   "hub messages send": hubMessagesSendHelp,
