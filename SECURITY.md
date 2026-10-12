@@ -38,5 +38,5 @@ PrivOS Hub is derived from Rocket.Chat (MIT; see `rocketchat-upstream-files.txt`
 
 ## Scope
 
-In scope: the PrivOS Hub, sandbox, installer and deployment configuration, the agent SDK, and MCP apps published by PrivOS-AI.
+In scope: the PrivOS Hub, sandbox, installer and deployment configuration, the supported agent SDK (`@privos_ai/privos-agent-sdk`), and MCP apps published by PrivOS-AI. Archived repositories, such as the experimental `agentic-sdk`, are not supported.
 Out of scope: third-party MCP apps and integrations you install yourself, your own model provider, and issues that require physical access to the host.
