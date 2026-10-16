@@ -1855,3 +1855,216 @@ describe("privos", { concurrency: false }, () => {
     }
   });
 });
+
+const REFUSAL = { success: false, error: "Bot not found or not authorized", errorType: "error-not-authorized" };
+const AGENTS = [
+  { _id: "A1", username: "rox-ops", name: "Rox Ops", active: true, runtime: "claude", agentRoomId: "ar-A1", superAgent: false },
+  { _id: "B1", username: "rox-b", name: "Twin", active: true, runtime: "codex", agentRoomId: "ar-B1", superAgent: false },
+  { _id: "C1", username: "rox-c", name: "Twin", active: false, runtime: "codex", agentRoomId: "ar-C1", superAgent: true },
+];
+const A1_TRIGGERS = [
+  { id: "t-cron", type: "cron", name: "Morning", schedule: "0 9 * * *", timezone: "Asia/Bangkok", enabled: true, nextAction: "agentic_response", prompt: "say hi\u001b[2K\u0007 now‮c", lastRunAt: "2026-10-15T02:00:00Z", lastOutcome: "ok" },
+  { id: "t-once", type: "cron", name: "Once", schedule: "at:2026-11-01T00:00:00Z", enabled: true, prompt: "later" },
+  { id: "t-event", type: "event", name: "Rooms", event: "message.new", sourceRoomIds: ["r1", "r2"], enabled: true, promptTemplate: "react", nextAction: "agentic_response" },
+  { id: "t-filter", type: "event", name: "Filtered", enabled: false, filter: { subject: "bot", rooms: ["r1"], match: { mention: true, keywords: ["a", "b"], hotRoom: { windowMinutes: 5 } }, coalesce: { windowSeconds: 30, maxEvents: 4 } }, promptTemplate: "p" },
+  { id: "t-hook", type: "webhook", name: "Hook", enabled: true, nextAction: "emit_event", webhookToken: "SECRETTOKEN123", webhookSecret: "s3cr3t" },
+  { id: "t-handler", type: "cron", name: "Handler", schedule: "*/5 * * * *", enabled: true, nextAction: "run_handler", handler: { name: "sync" } },
+  { id: "t-legacy", type: "event", name: "Legacy", event: "file.created", enabled: false, needsReview: true, promptTemplate: "x" },
+];
+
+async function triggersHub(extra = {}) {
+  const seen = [];
+  const srv = await serve(async (req, res) => {
+    seen.push({ method: req.method, url: req.url, user: req.headers["x-user-id"], token: req.headers["x-auth-token"], authorization: req.headers.authorization });
+    const u = new URL(req.url, "http://x");
+    let status = 200;
+    let json = {};
+    if (u.pathname === "/api/v1/agents.mine") json = { agents: AGENTS };
+    else if (u.pathname === "/api/v1/agents.triggers.list") {
+      const id = u.searchParams.get("botId");
+      if (id === "A1") json = { triggers: A1_TRIGGERS, maxTriggers: 20 };
+      else if (id === "C1") json = { triggers: [], maxTriggers: 20 };
+      else { status = 400; json = REFUSAL; }
+    } else if (u.pathname === "/api/v1/agents.triggers.list-all") {
+      json = { triggers: [{ id: "x1", type: "cron", botId: "A1", botName: "Rox Ops", botUsername: "rox-ops", webhookToken: "T0K" }], total: 1 };
+    } else if (u.pathname === "/api/v1/users.info") {
+      const name = u.searchParams.get("username");
+      if (name === "some-bot") json = { user: { _id: "D1", username: "some-bot", type: "bot", services: { password: "PW" } } };
+      else if (name === "a-person") json = { user: { _id: "P1", username: "a-person", type: "user" } };
+      else { status = 400; json = { success: false, error: "User not found." }; }
+    } else if (extra[u.pathname]) ({ status, json } = extra[u.pathname]);
+    res.statusCode = status;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify(json));
+  });
+  return { ...srv, seen };
+}
+
+describe("hub agents and triggers (personal token)", { concurrency: false }, () => {
+  const creds = (srv) => ["--url", srv.url, "--user-id", "u1", "--auth-token", "tok"];
+
+  test("agents list passes the hub answer through with the token headers", async () => {
+    clearCreds();
+    const srv = await triggersHub();
+    try {
+      let result = await runCLI(["hub", "agents", "list", ...creds(srv)]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(JSON.parse(result.stdout).agents.length, 3);
+      assert.equal(srv.seen[0].user, "u1");
+      assert.equal(srv.seen[0].token, "tok");
+      result = await runCLI(["hub", "agents", "list", ...creds(srv), "--format", "table"]);
+      assert.match(result.stdout, /ID\s+USERNAME\s+NAME\s+ACTIVE\s+RUNTIME\s+SUPER\s+ROOM/);
+      assert.match(result.stdout, /C1\s+rox-c\s+Twin\s+false\s+codex\s+true\s+ar-C1/);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("triggers list: envelope, kind labels, fingerprint, partial failure, GET only", async () => {
+    clearCreds();
+    const srv = await triggersHub();
+    try {
+      const result = await runCLI(["hub", "triggers", "list", ...creds(srv)]);
+      // Agent B1 answers 400: its rows are missing, errors name it, exit code is 1.
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /B1: GET \/api\/v1\/agents\.triggers\.list\?botId=B1|B1: GET \/api\/v1\/agents\.triggers\.list: HTTP 400: error-not-authorized: Bot not found or not authorized/);
+      const out = JSON.parse(result.stdout);
+      assert.equal(out.total, 7);
+      assert.equal(out.errors.length, 1);
+      assert.equal(out.errors[0].botId, "B1");
+      const byId = Object.fromEntries(out.triggers.map((t) => [t.id, t]));
+      assert.equal(byId["t-cron"].kind, "llm");
+      assert.equal(byId["t-hook"].kind, "no-llm");
+      assert.equal(byId["t-handler"].kind, "handler");
+      assert.equal(byId["t-cron"].botUsername, "rox-ops");
+      assert.equal(byId["t-hook"].hasWebhook, true);
+      assert.match(byId["t-hook"].webhookTokenFingerprint, /^[0-9a-f]{8}$/);
+      assert.equal(byId["t-cron"].hasWebhook, false);
+      assert.ok(!result.stdout.includes("webhookToken\""));
+      assert.ok(!result.stdout.includes("SECRETTOKEN123"));
+      assert.ok(!result.stdout.includes("s3cr3t"));
+      assert.ok(srv.seen.every((r) => r.method === "GET"));
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("triggers list --format table shows labels and cleans control characters", async () => {
+    clearCreds();
+    const srv = await triggersHub();
+    try {
+      const result = await runCLI(["hub", "triggers", "list", ...creds(srv), "--agent", "rox-ops", "--format", "table"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stderr, /rox-ops \(A1\)/);
+      assert.match(result.stdout, /ID\s+AGENT\s+NAME\s+TYPE\s+KIND\s+WHEN\s+ENABLED\s+LAST RUN\s+OUTCOME\s+PROMPT/);
+      assert.match(result.stdout, /t-cron\s+rox-ops\s+Morning\s+cron\s+llm\s+0 9 \* \* \* Asia\/Bangkok\s+true/);
+      assert.match(result.stdout, /once @ 2026-11-01T00:00:00Z/);
+      assert.match(result.stdout, /message\.new in 2 rooms/);
+      assert.match(result.stdout, /filter: bot · 1 room · mention,keywords\(2\) · hot 5m · coalesce 30s\/4/);
+      assert.match(result.stdout, /t-hook\s+rox-ops\s+Hook\s+webhook\s+no-llm\s+webhook/);
+      assert.match(result.stdout, /handler:sync/);
+      assert.match(result.stdout, /t-legacy.*false \(needs review\)/);
+      assert.match(result.stdout, /say hi \[2K {2}now c/);
+      assert.ok(!/[\u0000-\u0008\u000B-\u001F‮]/.test(result.stdout));
+      assert.ok(!result.stdout.includes("SECRETTOKEN123"));
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("--agent resolves id, username, agent room, unique name; ambiguous name lists candidates", async () => {
+    clearCreds();
+    const srv = await triggersHub();
+    try {
+      for (const x of ["A1", "rox-ops", "ar-A1", "Rox Ops"]) {
+        const result = await runCLI(["hub", "triggers", "list", ...creds(srv), "--agent", x]);
+        assert.equal(result.code, 0, `${x}: ${result.stderr}`);
+        assert.equal(JSON.parse(result.stdout).total, 7, x);
+        assert.match(result.stderr, /rox-ops \(A1\)/);
+      }
+      const dup = await runCLI(["hub", "triggers", "list", ...creds(srv), "--agent", "Twin"]);
+      assert.equal(dup.code, 2);
+      assert.match(dup.stderr, /B1 \(rox-b\)/);
+      assert.match(dup.stderr, /C1 \(rox-c\)/);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("--agent falls back to users.info and keeps only the bot id", async () => {
+    clearCreds();
+    const srv = await triggersHub({ "/api/v1/agents.triggers.list-x": { status: 200, json: {} } });
+    try {
+      let result = await runCLI(["hub", "triggers", "list", ...creds(srv), "--agent", "some-bot"]);
+      // D1 is unknown to agents.triggers.list in the fixture: the hub refusal surfaces as-is.
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /GET \/api\/v1\/agents\.triggers\.list: HTTP 400: error-not-authorized: Bot not found or not authorized/);
+      assert.ok(srv.seen.some((r) => r.url === "/api/v1/agents.triggers.list?botId=D1"));
+      assert.ok(!result.stdout.includes("PW") && !result.stderr.includes("PW"));
+      result = await runCLI(["hub", "triggers", "list", ...creds(srv), "--agent", "a-person"]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /a-person is not a bot/);
+      result = await runCLI(["hub", "triggers", "list", ...creds(srv), "--agent", "nobody"]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /no agent matches nobody/);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("--all uses list-all; flag misuse is a usage error", async () => {
+    clearCreds();
+    const srv = await triggersHub();
+    try {
+      let result = await runCLI(["hub", "triggers", "list", ...creds(srv), "--all"]);
+      assert.equal(result.code, 0, result.stderr);
+      const out = JSON.parse(result.stdout);
+      assert.equal(out.triggers[0].botUsername, "rox-ops");
+      assert.ok(!result.stdout.includes("T0K"));
+      assert.equal(srv.seen.at(-1).url, "/api/v1/agents.triggers.list-all");
+      const before = srv.seen.length;
+      for (const args of [
+        ["list", "--all", "--agent", "x"],
+        ["list", "--raw"],
+        ["list", "--confirm"],
+        ["list", "--dry-run"],
+        ["get", "--id", "t1", "--format", "table"],
+        ["get"],
+      ]) {
+        result = await runCLI(["hub", "triggers", ...args, ...creds(srv)]);
+        assert.equal(result.code, 2, args.join(" "));
+      }
+      assert.equal(srv.seen.length, before);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("triggers get prints one trigger or fails", async () => {
+    clearCreds();
+    const srv = await triggersHub();
+    try {
+      let result = await runCLI(["hub", "triggers", "get", ...creds(srv), "--agent", "A1", "--id", "t-hook"]);
+      assert.equal(result.code, 0, result.stderr);
+      const row = JSON.parse(result.stdout);
+      assert.equal(row.id, "t-hook");
+      assert.equal(row.kind, "no-llm");
+      assert.ok(!result.stdout.includes("SECRETTOKEN123"));
+      result = await runCLI(["hub", "triggers", "get", ...creds(srv), "--agent", "A1", "--id", "missing"]);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /trigger ID not found/);
+      assert.ok(srv.seen.every((r) => r.method === "GET"));
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("root help lists the new commands", async () => {
+    const result = await runCLI(["--help"]);
+    assert.match(result.stdout, /hub agents list/);
+    assert.match(result.stdout, /hub triggers list/);
+    assert.match(result.stdout, /hub triggers get/);
+    const group = await runCLI(["hub", "triggers", "--help"]);
+    assert.match(group.stdout, /get --id TRIGGER_ID/);
+  });
+});

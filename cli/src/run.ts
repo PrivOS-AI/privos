@@ -38,6 +38,7 @@ import {
   hubRoomsMembers,
   hubRoomsUpdate,
 } from "./hub.js";
+import { hubAgentsList, hubTriggersGet, hubTriggersList } from "./triggers.js";
 import {
   commandOf,
   forbidUnknown,
@@ -131,6 +132,8 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
     case "hub items":
     case "hub dm":
     case "hub owner":
+    case "hub agents":
+    case "hub triggers":
     case "agents":
     case "agents a2a":
       throw usage(`${text.trimEnd()}\nRun privos ${cmd} --help`);
@@ -242,6 +245,15 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
       return;
     case "hub dm reply":
       await hubDmReply(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub agents list":
+      await hubAgentsList(p, stdout, fetchImpl);
+      return;
+    case "hub triggers list":
+      await hubTriggersList(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub triggers get":
+      await hubTriggersGet(p, stdout, stderr, fetchImpl);
       return;
     case "hub owner rooms":
       await hubOwnerRooms(p, stdout, fetchImpl);

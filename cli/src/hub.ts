@@ -55,7 +55,7 @@ const itemColumns: Column[] = [
   { header: "STAGE", path: ["stageId"] },
 ];
 
-const HUB_READ = ["url", "user-id", "auth-token", "bot-key"];
+export const HUB_READ = ["url", "user-id", "auth-token", "bot-key"];
 const HUB_AUTH = [...HUB_READ, "confirm", "dry-run"];
 
 export async function hubRoomsList(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
@@ -84,7 +84,7 @@ export async function hubMessagesList(p: Parsed, stdout: Out, fetchImpl: typeof 
   await hubGetPath(p, stdout, fetchImpl, messagePath(kind), query, "messages", messageColumns);
 }
 
-async function hubGetPath(
+export async function hubGetPath(
   p: Parsed,
   stdout: Out,
   fetchImpl: typeof fetch,
@@ -143,7 +143,7 @@ function hubConfig(p: Parsed, fetchImpl: typeof fetch): HubConfig {
   return egress ? resolveEgressHub(p.url, egress) : resolveHub(p.url, p.userId, p.authToken, p.botKey);
 }
 
-function hubClient(p: Parsed, fetchImpl: typeof fetch): Client {
+export function hubClient(p: Parsed, fetchImpl: typeof fetch): Client {
   const cfg = hubConfig(p, fetchImpl);
   return new Client(
     cfg.baseURL,
@@ -159,7 +159,7 @@ function hubClient(p: Parsed, fetchImpl: typeof fetch): Client {
  * and items commands use the room routes there. Decided without resolving credentials, so a missing
  * flag is reported before a missing credential.
  */
-function botMode(p: Parsed, fetchImpl: typeof fetch): boolean {
+export function botMode(p: Parsed, fetchImpl: typeof fetch): boolean {
   return (
     egressOf(fetchImpl) !== undefined || p.botKey !== "" || (process.env.PRIVOS_BOT_KEY ?? "").trim() !== ""
   );
@@ -185,12 +185,12 @@ function botUnsupported(p: Parsed, flags: string[]): void {
 }
 
 /** A whole command the room routes cannot do. */
-function botRefuse(p: Parsed, fetchImpl: typeof fetch, why: string): void {
+export function botRefuse(p: Parsed, fetchImpl: typeof fetch, why: string): void {
   if (botMode(p, fetchImpl)) throw usage(`${commandOf(p)}: not available in bot mode; ${why}`);
 }
 
 /** Rebuilds a JSON object body; a body that is not a JSON object passes through unchanged. */
-function reshape(body: Buffer, fn: (o: Record<string, unknown>) => Record<string, unknown>): Buffer {
+export function reshape(body: Buffer, fn: (o: Record<string, unknown>) => Record<string, unknown>): Buffer {
   try {
     const parsed = JSON.parse(body.toString("utf8")) as unknown;
     if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -906,7 +906,7 @@ function optionalBool(flagName: string, value: string): boolean | undefined {
   return parseBoolWord(flagName, value);
 }
 
-function rejectTable(p: Parsed, cmd: string): void {
+export function rejectTable(p: Parsed, cmd: string): void {
   if (p.format === "table") {
     throw usage(`${cmd} prints JSON; --format table applies to list reads`);
   }

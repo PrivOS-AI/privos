@@ -137,6 +137,10 @@ privos hub dm reply --room DM_ROOM_ID --text TEXT            # agent VM only, se
 privos hub owner rooms [--count N] [--offset N]               # agent VM only, super agent
 privos hub owner messages --room RID [--count N] [--offset N] [--oldest ISO] [--latest ISO]
 
+privos hub agents list                                         # personal token: the agents you created
+privos hub triggers list [--agent BOT_ID|USERNAME|AGENT_ROOM_ID | --all]
+privos hub triggers get --id TRIGGER_ID [--agent ... | --all]
+
 privos hub messages list --room ROOM_ID [--kind channel|group|direct] [--count N] [--offset N]
 privos hub messages send --room ROOM_ID --text TEXT
 privos hub messages update --room ROOM_ID --id MSG_ID --text TEXT
@@ -202,6 +206,34 @@ a JSON array, and its response includes `defaultStage` for
 `items.bulkUpdateOrder`, and `stages.*` are not commands. The CLI does not
 call `/api/v1/bot/lists` or MCP `privos.lists.*`. See [Hub API](../api/hub.md).
 
+### Agent triggers
+
+`privos hub agents list` calls `GET agents.mine` (the agents you created). `privos hub triggers list` calls
+`GET agents.triggers.list?botId=` for each agent, or for one agent with `--agent` (a bot id, username, agent room id,
+or a unique name; other users are looked up with `GET users.info`). `--all` calls `GET agents.triggers.list-all` and is
+for administrators. `privos hub triggers get --id TRIGGER_ID` prints one trigger as JSON and does not take
+`--format table`. All of these send `GET` only and need no `--confirm`; `--raw` is refused.
+
+Who may read, decided by the hub and not by the CLI:
+
+| Caller | May read |
+|---|---|
+| Owner (personal token) | Triggers of the agents they created; `--agent` for an agent room they own or lead |
+| Administrator | Any agent, and `--all` |
+| Ordinary agent (bot key or egress) | Its own triggers |
+| Super agent | Its own triggers, only over the egress from its agent room; a bare bot key is refused with HTTP 400 `error-not-authorized` and the CLI prints a hint |
+| Another agent (peer) | Refused until the hub's peer-read rule ships |
+
+`agents list` has no bot-mode form; use `privos agents a2a members --team TEAM_ID`.
+
+Output is `{ triggers, total, errors? }`. When one agent fails, the others are still printed, `errors` lists the failure
+and the exit code is 1. Each row is the hub's trigger plus `botId`, `botUsername`, `botName` and a `kind` label derived
+from `nextAction`: `llm` (wakes the agent), `no-llm` (`emit_event`) or `handler` (`run_handler`; the table shows
+`handler:<name>`). `webhookToken` is replaced by `hasWebhook` and `webhookTokenFingerprint` (first 8 hex of its SHA-256).
+`needsReview: true` marks a legacy file trigger that waits for review; the table shows it as `false (needs review)` in the
+`ENABLED` column. A hidden (inactive) agent's cron triggers still fire. `agents list` only shows agents you created, so
+use `--agent` for one you only own or lead. Table cells are stripped of terminal control characters.
+
 ## Bot mode and sandbox egress
 
 An agent bot runs hub commands with its own key (`--bot-key` or `PRIVOS_BOT_KEY`, sent as
@@ -223,12 +255,13 @@ Route-by-route detail: [Hub API](../api/hub.md#bot-mode-agent-bots). Personal-to
 
 **Sandbox egress.** An agent VM never holds the bot key. When `PRIVOS_SANDBOX_MODE=true` and both `PROXY_URL`
 and `PROXY_TOKEN` are set, and the command has no credential of its own (no flag, none of `PRIVOS_BOT_KEY`,
-`PRIVOS_HUB_USER_ID`, `PRIVOS_USER_ID`, `PRIVOS_HUB_AUTH_TOKEN`, `PRIVOS_PAT`), the commands `hub rooms|lists|items|dm`
+`PRIVOS_HUB_USER_ID`, `PRIVOS_USER_ID`, `PRIVOS_HUB_AUTH_TOKEN`, `PRIVOS_PAT`), the commands `hub rooms|lists|items|dm|agents|triggers`
 and `agents a2a` send each request as `POST $PROXY_URL/egress` with an `x-proxy-token` header, and the proxy
 attaches the key. The hub is `--url`, else `PRIVOS_HUB_URL`, else `https://$PRIVOS_HUB_HOST`. The proxy decides what
 the agent may call: a refusal prints its code first, for example `HTTP 403: no-binding: ...`, and an unreachable proxy
 prints `sandbox proxy egress: ...`. `hub rooms update --topic` and `hub rooms delete` are refused over egress because
-the catalog does not open them. `hub get`, `subscribe` and `sandbox tasks answer` never use egress and say so when a VM
+the catalog does not open them. In bot mode `hub triggers` reads the agent's own triggers only (`PRIVOS_BOT_ID`, or `--agent` naming that same agent or its agent room)
+and never calls `users.info`. `hub get`, `subscribe` and `sandbox tasks answer` never use egress and say so when a VM
 leaves them without a connection of their own.
 
 **DM reply.** `privos hub dm reply --room DM_ROOM_ID --text TEXT` asks the hub to post in the owner's name, with a

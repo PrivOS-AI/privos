@@ -3,6 +3,29 @@
 All notable changes to `@privos_ai/privos`. Full command notes live in
 [docs/cli/README.md](https://github.com/PrivOS-AI/privos/blob/main/docs/cli/README.md).
 
+## 0.9.0 — 2026-10-16
+
+### Added
+
+- `privos hub agents list`: the agents you created (id, username, name, runtime,
+  agent room, super agent flag). Personal token only; a bot key is told to use
+  `privos agents a2a members` instead.
+- `privos hub triggers list [--agent ID|USERNAME|AGENT_ROOM_ID | --all]` and
+  `privos hub triggers get --id TRIGGER_ID`: read the cron, event and webhook
+  triggers of your agents as JSON (`{ triggers, total, errors? }`) or as a table.
+  Every row carries a `kind` label (`llm`, `no-llm` or `handler`). Reads send
+  `GET` only and need no `--confirm`.
+- Bot mode (bot key or sandbox egress) reads the agent's own triggers only. A
+  super agent reads them from a session in its own agent room over the egress;
+  another agent's triggers are refused until the hub's peer-read rule ships.
+
+### Changed
+
+- A webhook trigger's `webhookToken` is never printed; rows show `hasWebhook`
+  and `webhookTokenFingerprint` (first 8 hex of its SHA-256) instead.
+- Table output strips terminal control characters and direction overrides from
+  every cell.
+
 ## 0.8.0 — 2026-10-11
 
 ### Added
