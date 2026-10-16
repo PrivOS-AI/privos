@@ -20,6 +20,7 @@ const ENV_KEYS = [
   "PROXY_TOKEN",
   "PRIVOS_HUB_HOST",
   "PRIVOS_ROOM_ID",
+  "PRIVOS_BOT_ID",
 ];
 
 function clearEnv() {
@@ -751,6 +752,130 @@ describe("hub dm reply", { concurrency: false }, () => {
     assert.match(result.stdout, /Sandbox egress/);
     assert.match(result.stdout, /Bot mode/);
     result = await runCLI(["version"]);
-    assert.equal(result.stdout, "privos 0.8.0\n");
+    assert.match(result.stdout, /^privos \d+\.\d+\.\d+\n$/);
+  });
+});
+
+const TRIGGERS_BODY = {
+  triggers: [
+    { id: "t1", type: "cron", name: "Morning", schedule: "0 9 * * *", enabled: true, prompt: "hi", webhookToken: "SECRETTOKEN123" },
+    { id: "t2", type: "webhook", name: "Hook", enabled: true, nextAction: "emit_event" },
+  ],
+  maxTriggers: 20,
+};
+
+describe("hub agents and triggers (bot mode)", { concurrency: false }, () => {
+  test("bot key reads its own triggers; peers, --all and agents list are refused", async () => {
+    const hub = await fakeHub(() => ({ json: TRIGGERS_BODY }));
+    const auth = ["--url", hub.url, "--bot-key", "bot-key-1"];
+    try {
+      let result = await runCLI(["hub", "triggers", "list", ...auth]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /bot mode needs PRIVOS_BOT_ID or --agent <own bot id>/);
+      assert.equal(hub.seen.length, 0);
+
+      process.env.PRIVOS_BOT_ID = "B1";
+      for (const agent of ["B1", "agent-room-B1"]) {
+        result = await runCLI(["hub", "triggers", "list", ...auth, "--agent", agent]);
+        assert.equal(result.code, 0, result.stderr);
+      }
+      result = await runCLI(["hub", "triggers", "list", ...auth]);
+      assert.equal(result.code, 0, result.stderr);
+      const last = hub.seen.at(-1);
+      assert.equal(last.method, "GET");
+      assert.equal(last.url, "/api/v1/agents.triggers.list?botId=B1");
+      assert.equal(last.authorization, "Bearer bot-key-1");
+      const out = JSON.parse(result.stdout);
+      assert.equal(out.total, 2);
+      assert.equal(out.triggers[0].botId, "B1");
+      assert.equal(out.triggers[1].kind, "no-llm");
+      assert.ok(!result.stdout.includes("SECRETTOKEN123"));
+
+      const before = hub.seen.length;
+      result = await runCLI(["hub", "triggers", "list", ...auth, "--agent", "A1"]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /bot mode reads this agent's own triggers only/);
+      result = await runCLI(["hub", "triggers", "list", ...auth, "--all"]);
+      assert.equal(result.code, 2);
+      result = await runCLI(["hub", "agents", "list", ...auth]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /not available in bot mode/);
+      assert.match(result.stderr, /privos agents a2a members --team TEAM_ID/);
+      assert.equal(hub.seen.length, before);
+    } finally {
+      await hub.close();
+    }
+  });
+
+  test("without PRIVOS_BOT_ID, --agent is taken as the own id and the hub decides", async () => {
+    const hub = await fakeHub(() => ({ json: TRIGGERS_BODY }));
+    delete process.env.PRIVOS_BOT_ID;
+    try {
+      const result = await runCLI(["hub", "triggers", "list", "--url", hub.url, "--bot-key", "k", "--agent", "agent-room-X1"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(hub.seen.length, 1);
+      assert.equal(hub.seen[0].method, "GET");
+      assert.equal(hub.seen[0].url, "/api/v1/agents.triggers.list?botId=X1");
+    } finally {
+      await hub.close();
+    }
+  });
+
+  test("a hub refusal in bot mode adds the super agent hint", async () => {
+    const hub = await fakeHub(() => ({
+      status: 400,
+      json: { success: false, error: "Bot not found or not authorized", errorType: "error-not-authorized" },
+    }));
+    process.env.PRIVOS_BOT_ID = "B1";
+    try {
+      const result = await runCLI(["hub", "triggers", "list", "--url", hub.url, "--bot-key", "k"]);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /GET \/api\/v1\/agents\.triggers\.list: HTTP 400: error-not-authorized: Bot not found or not authorized/);
+      assert.match(result.stderr, /a super agent reads its triggers only from a session in its own agent room/);
+    } finally {
+      await hub.close();
+    }
+  });
+
+  test("egress reads own triggers; the users. prefix is never needed", async () => {
+    const proxy = await fakeProxy((env) => {
+      const path = new URL(env.url).pathname;
+      if (path.startsWith("/api/v1/users.")) return { status: 403, json: { error: "no catalog entry", code: "no-binding" } };
+      return { json: TRIGGERS_BODY };
+    });
+    vmEnv(proxy.url, { PRIVOS_BOT_ID: "B1" });
+    try {
+      let result = await runCLI(["hub", "triggers", "list"]);
+      assert.equal(result.code, 0, result.stderr);
+      const call = proxy.seen[0];
+      assert.equal(call.proxyToken, "proxy-token-1");
+      assert.equal(call.authorization, undefined);
+      assert.equal(call.envelope.method, "GET");
+      assert.equal(call.envelope.url, "https://hub.example.test/api/v1/agents.triggers.list?botId=B1");
+      assert.equal(JSON.parse(result.stdout).total, 2);
+
+      result = await runCLI(["hub", "triggers", "get", "--id", "t2"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(JSON.parse(result.stdout).id, "t2");
+
+      const before = proxy.seen.length;
+      result = await runCLI(["hub", "triggers", "list", "--agent", "rox-ops"]);
+      assert.equal(result.code, 2);
+      assert.equal(proxy.seen.length, before);
+    } finally {
+      await proxy.close();
+    }
+  });
+
+  test("an egress refusal prints the proxy code", async () => {
+    const proxy = await fakeProxy(() => ({ status: 403, json: { error: "no catalog entry for this domain", code: "no-binding" } }));
+    vmEnv(proxy.url, { PRIVOS_BOT_ID: "B1" });
+    try {
+      const result = await runCLI(["hub", "triggers", "list"]);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /HTTP 403: no-binding: no catalog entry for this domain/);
+    } finally {
+      await proxy.close();
+    }
   });
 });

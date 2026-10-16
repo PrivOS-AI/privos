@@ -8,6 +8,8 @@ export interface Parsed {
   dryRun: boolean;
   readOnly: boolean;
   excludeSelf: boolean;
+  all: boolean;
+  agent: string;
   sandbox: boolean;
   autoStart: boolean;
   hookTemplate: boolean;
@@ -105,6 +107,7 @@ const BOOL_FLAGS = new Set([
   "dry-run",
   "read-only",
   "exclude-self",
+  "all",
   "sandbox",
   "auto-start",
   "hook-template",
@@ -150,6 +153,7 @@ const VALUE_FLAGS = new Set([
   "id",
   "list",
   "updated-since",
+  "agent",
   "name",
   "path",
   "title",
@@ -286,6 +290,8 @@ function emptyParsed(): Parsed {
     dryRun: false,
     readOnly: false,
     excludeSelf: false,
+    all: false,
+    agent: "",
     sandbox: false,
     autoStart: false,
     hookTemplate: false,
@@ -451,6 +457,9 @@ function assignBool(p: Parsed, name: string): void {
     case "exclude-self":
       p.excludeSelf = true;
       break;
+    case "all":
+      p.all = true;
+      break;
     case "sandbox":
       p.sandbox = true;
       break;
@@ -587,6 +596,9 @@ function assignValue(p: Parsed, name: string, value: string): void {
       break;
     case "updated-since":
       p.updatedSince = trimmed;
+      break;
+    case "agent":
+      p.agent = trimmed;
       break;
     case "name":
       p.name = trimmed;

@@ -110,7 +110,7 @@ function scalar(v: unknown): string {
 }
 
 function sanitize(s: string): string {
-  return s.replaceAll("\r", " ").replaceAll("\n", " ").replaceAll("\t", " ");
+  return s.replace(/[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/gu, " ");
 }
 
 function clip(s: string, n: number): string {

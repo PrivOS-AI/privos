@@ -57,6 +57,12 @@ agent read its owner's one-to-one DMs, Inbox and Universal Assistant DM without
 joining them. Only over the egress, from the agent's own agent room; the hub
 audits every read.
 
+`privos hub agents list` lists the agents you created. `privos hub triggers list
+[--agent ID|USERNAME|AGENT_ROOM_ID | --all]` and `privos hub triggers get --id ID`
+read their cron, event and webhook triggers as JSON or a table, each labelled
+`llm`, `no-llm` or `handler`. Reads only; a webhook token is shown as a
+fingerprint, never in full. With a bot key an agent reads its own triggers only.
+
 `privos subscribe` is a read-only watcher that turns DMs, mentions, in-app
 notifications, list items, room files, and board tasks into JSON events on
 stdout or a webhook. `privos hub inbox --since` does one poll for cron jobs.
