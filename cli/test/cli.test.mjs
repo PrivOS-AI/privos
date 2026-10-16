@@ -1112,6 +1112,44 @@ describe("privos", { concurrency: false }, () => {
     return { srv, seen, run };
   }
 
+  test("tasks create --callback-*-env reads the env, hides the secret in the dry run and sends it with --confirm", async () => {
+    clearCreds();
+    process.env.TEST_CB_URL = "https://hub.example.test/api/v1/agents.a2a.callback/tok";
+    process.env.TEST_CB_KEY = "CB-SECRET-VALUE";
+    const b = await createBoard();
+    try {
+      const flags = ["--callback-url-env", "TEST_CB_URL", "--callback-key-env", "TEST_CB_KEY"];
+      let r = await b.run(...flags);
+      assert.equal(r.code, 0, r.stderr);
+      assert.ok(!r.stdout.includes("CB-SECRET-VALUE") && !r.stderr.includes("CB-SECRET-VALUE"));
+      assert.deepEqual(JSON.parse(r.stdout).requests[0].body.callback, { host: "hub.example.test", secret: "<set>" });
+      assert.deepEqual(b.seen, []);
+
+      r = await b.run(...flags, "--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.ok(!r.stdout.includes("CB-SECRET-VALUE") && !r.stderr.includes("CB-SECRET-VALUE"));
+      assert.deepEqual(b.seen[0].body.callback, {
+        url: "https://hub.example.test/api/v1/agents.a2a.callback/tok",
+        secret: "CB-SECRET-VALUE",
+      });
+
+      r = await b.run("--callback-url-env", "TEST_CB_URL");
+      assert.equal(r.code, 2);
+      assert.match(r.stderr, /go together/);
+      r = await b.run("--callback-url-env", "TEST_CB_URL", "--callback-key-env", "TEST_CB_MISSING");
+      assert.equal(r.code, 2);
+      assert.match(r.stderr, /TEST_CB_MISSING is not set/);
+      process.env.TEST_CB_URL = "http://hub.example.test/x";
+      r = await b.run(...flags);
+      assert.equal(r.code, 2);
+      assert.match(r.stderr, /must hold an https URL/);
+    } finally {
+      delete process.env.TEST_CB_URL;
+      delete process.env.TEST_CB_KEY;
+      await b.srv.close();
+    }
+  });
+
   test("tasks create --start dry run previews three requests and sends nothing", async () => {
     clearCreds();
     const b = await createBoard();

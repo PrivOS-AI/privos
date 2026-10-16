@@ -111,6 +111,7 @@ privos sandbox projects start --id ID
 privos sandbox tasks list [--project ID] [--status STATUS] [--limit N] [--after CURSOR]
 privos sandbox tasks create --project ID --title TITLE [--description TEXT] [--status STATUS]
 privos sandbox tasks create --project ID --title TITLE --description TEXT --start [--model M] [--provider P | --llm-provider ID] [--effort E]
+privos sandbox tasks create --project ID --title TITLE ... --callback-url-env NAME --callback-key-env NAME
 privos sandbox tasks update --id ID [--title T] [--description TEXT] [--status STATUS] [--position N] [--chat-init true|false]
 privos sandbox tasks delete --id ID
 privos sandbox tasks start --id ID [--model M] [--provider P | --llm-provider ID] [--effort E] [--prompt TEXT] [--force]
@@ -172,6 +173,9 @@ privos agents a2a send --team TEAM_ID --room ROOM_ID --to BOT_ID,...|team --kind
 privos agents a2a members --team TEAM_ID
 privos agents a2a chain --correlation C_ID [--count N] [--offset N]
 privos agents a2a stop --correlation C_ID [--team TEAM_ID] [--room ROOM_ID] [--text REASON]
+privos agents a2a await --correlation C_ID --room ROOM_ID --deadline-at ISO --text TEXT [--team TEAM_ID] [--reply-to M_ID]
+                        [--match-event EVENT --match-room ROOM_ID] [--message-id M_ID]
+privos agents a2a cancel --row ROW_ID
 
 privos subscribe [--events LIST] [--rooms LIST] [--lists LIST|all] [--projects BOARD:PID,...]
                  [--priority-from USERS] [--mode realtime|poll] [--state PATH]
@@ -222,7 +226,7 @@ Who may read, decided by the hub and not by the CLI:
 | Administrator | Any agent, and `--all` |
 | Ordinary agent (bot key or egress) | Its own triggers |
 | Super agent | Its own triggers, only over the egress from its agent room; a bare bot key is refused with HTTP 400 `error-not-authorized` and the CLI prints a hint |
-| Another agent (peer) | Refused until the hub's peer-read rule ships |
+| Another agent (peer), bot key or egress | `--agent BOT_ID` for a peer with the same owner or on a shared agent team, from the agent room or the chain room. Direct only when the person behind the turn owns the peer; the answer is a reduced view without prompt text (empty `PROMPT`, note `peer read: reduced view, no prompt text` on stderr). Otherwise the hub answers `error-peer-owner-approval-required` and the peer's owner approves on a card (`needs-approval --action trigger-read`). |
 
 `agents list` has no bot-mode form; use `privos agents a2a members --team TEAM_ID`.
 
@@ -260,8 +264,8 @@ and `agents a2a` send each request as `POST $PROXY_URL/egress` with an `x-proxy-
 attaches the key. The hub is `--url`, else `PRIVOS_HUB_URL`, else `https://$PRIVOS_HUB_HOST`. The proxy decides what
 the agent may call: a refusal prints its code first, for example `HTTP 403: no-binding: ...`, and an unreachable proxy
 prints `sandbox proxy egress: ...`. `hub rooms update --topic` and `hub rooms delete` are refused over egress because
-the catalog does not open them. In bot mode `hub triggers` reads the agent's own triggers only (`PRIVOS_BOT_ID`, or `--agent` naming that same agent or its agent room)
-and never calls `users.info`. `hub get`, `subscribe` and `sandbox tasks answer` never use egress and say so when a VM
+the catalog does not open them. In bot mode `hub triggers` reads the agent's own triggers (`PRIVOS_BOT_ID`) or, with `--agent BOT_ID`, a peer's reduced view when the hub allows it;
+it never calls `users.info`, so a peer is named by id. `hub get`, `subscribe` and `sandbox tasks answer` never use egress and say so when a VM
 leaves them without a connection of their own.
 
 **DM reply.** `privos hub dm reply --room DM_ROOM_ID --text TEXT` asks the hub to post in the owner's name, with a
@@ -300,6 +304,9 @@ privos agents a2a send --team TEAM_ID --room ROOM_ID --to BOT_ID --kind task \
   --text "Summarize the open incidents" --confirm     # prints the new correlationId
 privos agents a2a chain --correlation C_ID --format table
 privos agents a2a stop --correlation C_ID --confirm
+privos agents a2a await --correlation C_ID --room ROOM_ID --team TEAM_ID \
+  --deadline-at 2026-10-17T09:00:00Z --text "Waiting for the nightly import" --confirm
+privos agents a2a cancel --row ROW_ID --confirm
 ```
 
 Sends and stops are a dry run until `--confirm`, like every write. `send`
@@ -319,6 +326,14 @@ agent room, so a send to another room is a cross-room call: allowed for the
 same owner (who must be a member of the room) and for a streaming team, refused
 otherwise. A refusal prints the hub's code first, for example
 `HTTP 403: a2a-owner-mismatch: ...`.
+
+`await` registers a one-time wake in an existing chain: the bot is woken once, in that chain, when the callback URL
+is called, when a matching room event happens (`--match-event` message.new, file.created, file.updated or
+file.deleted with `--match-room`), or at `--deadline-at` (required, no maximum). The hub answer contains the
+one-time `callbackPath` and `callbackSecret`; it is printed once on stdout and a repeated `--message-id` returns the
+row without the secret, so keep it out of rooms, logs and message data. `cancel` ends an await that is still waiting
+(the registering bot, the chain's accountable human or an administrator). Both need the bot key and are a dry run
+until `--confirm`.
 
 Pairing with `privos subscribe`: send with `agents a2a send`, then watch the
 results arrive in the team room with `privos subscribe --events message --rooms
@@ -609,6 +624,10 @@ does not store it, so attempt reads show `"effort": null`.
 `start` refuses while an attempt created in the last 24 hours is still
 running, because the board would run a second agent on the same task.
 `--force` starts anyway and prints a warning.
+
+`tasks create --callback-url-env NAME --callback-key-env NAME` hands the board the callback URL and secret of an
+await (from `agents a2a await`); the task POSTs once when it leaves `in_progress`. Both values are read from the named
+environment variables, never from argv; the dry run shows the URL host and `secret: "<set>"`.
 
 `tasks create --start` creates the task in `in_progress` and starts it in the
 same command: `POST /api/tasks`, `PATCH /api/tasks/{new id}`, then

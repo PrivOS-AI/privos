@@ -9,6 +9,8 @@ export interface PlannedRequest {
   method: string;
   path: string;
   body?: unknown;
+  /** Shown by the dry run instead of body, so a secret in body is never printed. */
+  previewBody?: unknown;
   extraHeaders?: Record<string, string>;
   /** Rebuilds the request from earlier responses just before sending. The dry run shows the template. */
   prepare?: (prior: unknown[]) => PlannedRequest;
@@ -107,7 +109,7 @@ function preview(baseURL: string, plan: PlannedRequest, omittedHeaderNames: stri
     url,
     headers,
     omittedHeaderNames: [...omittedHeaderNames].sort(),
-    ...(plan.body !== undefined ? { body: plan.body } : {}),
+    ...(plan.body !== undefined ? { body: plan.previewBody ?? plan.body } : {}),
   };
 }
 

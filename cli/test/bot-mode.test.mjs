@@ -792,9 +792,6 @@ describe("hub agents and triggers (bot mode)", { concurrency: false }, () => {
       assert.ok(!result.stdout.includes("SECRETTOKEN123"));
 
       const before = hub.seen.length;
-      result = await runCLI(["hub", "triggers", "list", ...auth, "--agent", "A1"]);
-      assert.equal(result.code, 2);
-      assert.match(result.stderr, /bot mode reads this agent's own triggers only/);
       result = await runCLI(["hub", "triggers", "list", ...auth, "--all"]);
       assert.equal(result.code, 2);
       result = await runCLI(["hub", "agents", "list", ...auth]);
@@ -802,6 +799,61 @@ describe("hub agents and triggers (bot mode)", { concurrency: false }, () => {
       assert.match(result.stderr, /not available in bot mode/);
       assert.match(result.stderr, /privos agents a2a members --team TEAM_ID/);
       assert.equal(hub.seen.length, before);
+    } finally {
+      await hub.close();
+    }
+  });
+
+  test("a peer read sends the request, notes the reduced view and renders", async () => {
+    const hub = await fakeHub(() => ({
+      json: {
+        success: true,
+        peerRead: true,
+        triggers: [{ id: "p1", type: "cron", name: "Nightly", schedule: "0 2 * * *", enabled: true }],
+      },
+    }));
+    process.env.PRIVOS_BOT_ID = "B1";
+    try {
+      const result = await runCLI(["hub", "triggers", "list", "--url", hub.url, "--bot-key", "k", "--agent", "agent-room-B2", "--format", "table"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(hub.seen.length, 1);
+      assert.equal(hub.seen[0].method, "GET");
+      assert.equal(hub.seen[0].url, "/api/v1/agents.triggers.list?botId=B2");
+      assert.match(result.stderr, /peer read: reduced view, no prompt text/);
+      assert.match(result.stdout, /p1\s+\S*\s*Nightly/);
+    } finally {
+      await hub.close();
+    }
+  });
+
+  test("a peer read that needs the owner's approval prints the hub message and the hint", async () => {
+    const hub = await fakeHub(() => ({
+      status: 400,
+      json: { success: false, error: "The peer's owner must approve this read", errorType: "error-peer-owner-approval-required" },
+    }));
+    process.env.PRIVOS_BOT_ID = "B1";
+    try {
+      const result = await runCLI(["hub", "triggers", "list", "--url", hub.url, "--bot-key", "k", "--agent", "B2"]);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /HTTP 400: error-peer-owner-approval-required: The peer's owner must approve this read/);
+      assert.match(result.stderr, /the peer's owner must approve; agents use needs-approval --action trigger-read/);
+      assert.doesNotMatch(result.stderr, /super agent/);
+    } finally {
+      await hub.close();
+    }
+  });
+
+  test("a plain peer refusal prints the refusal only", async () => {
+    const hub = await fakeHub(() => ({
+      status: 400,
+      json: { success: false, error: "Bot not found or not authorized", errorType: "error-not-authorized" },
+    }));
+    process.env.PRIVOS_BOT_ID = "B1";
+    try {
+      const result = await runCLI(["hub", "triggers", "list", "--url", hub.url, "--bot-key", "k", "--agent", "B2"]);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /HTTP 400: error-not-authorized: Bot not found or not authorized/);
+      assert.doesNotMatch(result.stderr, /needs-approval|super agent/);
     } finally {
       await hub.close();
     }
@@ -858,8 +910,12 @@ describe("hub agents and triggers (bot mode)", { concurrency: false }, () => {
       assert.equal(result.code, 0, result.stderr);
       assert.equal(JSON.parse(result.stdout).id, "t2");
 
+      result = await runCLI(["hub", "triggers", "list", "--agent", "B2"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(proxy.seen.at(-1).envelope.url, "https://hub.example.test/api/v1/agents.triggers.list?botId=B2");
+
       const before = proxy.seen.length;
-      result = await runCLI(["hub", "triggers", "list", "--agent", "rox-ops"]);
+      result = await runCLI(["hub", "triggers", "list", "--all"]);
       assert.equal(result.code, 2);
       assert.equal(proxy.seen.length, before);
     } finally {
@@ -874,6 +930,126 @@ describe("hub agents and triggers (bot mode)", { concurrency: false }, () => {
       const result = await runCLI(["hub", "triggers", "list"]);
       assert.equal(result.code, 1);
       assert.match(result.stderr, /HTTP 403: no-binding: no catalog entry for this domain/);
+    } finally {
+      await proxy.close();
+    }
+  });
+});
+
+describe("agents a2a await and cancel", { concurrency: false }, () => {
+  const AWAIT = ["agents", "a2a", "await", "--correlation", "c_1", "--room", "R1", "--team", "T1", "--deadline-at", "2026-10-17T09:00:00Z", "--text", "wait for import"];
+
+  test("await is a dry run, then sends the contract body and prints the hub answer once", async () => {
+    const answer = { success: true, rowId: "r1", callbackPath: "/api/v1/agents.a2a.callback/tok", callbackSecret: "S3CRET", deadlineAt: "2026-10-17T09:00:00.000Z" };
+    const hub = await fakeHub(() => ({ json: answer }));
+    const auth = ["--url", hub.url, "--bot-key", "bot-key-1"];
+    try {
+      let result = await runCLI([...AWAIT, ...auth, "--match-event", "file.created", "--match-room", "R2"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(hub.seen.length, 0);
+      const plan = JSON.parse(result.stdout);
+      assert.equal(plan.dryRun, true);
+      assert.equal(plan.requests[0].method, "POST");
+      assert.ok(plan.requests[0].url.endsWith("/api/v1/agents.a2a.await"));
+      const { messageId, ...rest } = plan.requests[0].body;
+      assert.match(messageId, /^m_[A-Za-z0-9_-]{16}$/);
+      assert.deepEqual(rest, {
+        correlationId: "c_1",
+        roomId: "R1",
+        teamId: "T1",
+        deadlineAt: "2026-10-17T09:00:00Z",
+        text: "wait for import",
+        match: { event: "file.created", roomId: "R2" },
+      });
+
+      result = await runCLI([...AWAIT, ...auth, "--message-id", "m_abcdefgh1234", "--confirm"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(hub.seen.length, 1);
+      assert.equal(hub.seen[0].method, "POST");
+      assert.equal(hub.seen[0].url, "/api/v1/agents.a2a.await");
+      assert.equal(hub.seen[0].authorization, "Bearer bot-key-1");
+      assert.equal(JSON.parse(hub.seen[0].body).messageId, "m_abcdefgh1234");
+      assert.equal(JSON.parse(result.stdout).callbackSecret, "S3CRET");
+      assert.ok(!result.stderr.includes("S3CRET"));
+    } finally {
+      await hub.close();
+    }
+  });
+
+  test("await validates its flags before any request", async () => {
+    const hub = await fakeHub();
+    const auth = ["--url", hub.url, "--bot-key", "k", "--confirm"];
+    try {
+      for (const [extra, pattern] of [
+        [["--match-event", "message.new"], /go together/],
+        [["--match-event", "folder.created", "--match-room", "R2"], /--match-event must be one of/],
+        [["--message-id", "bad"], /--message-id must match/],
+      ]) {
+        const result = await runCLI([...AWAIT, ...auth, ...extra]);
+        assert.equal(result.code, 2, extra.join(" "));
+        assert.match(result.stderr, pattern);
+      }
+      let result = await runCLI(["agents", "a2a", "await", "--correlation", "c_1", "--room", "R1", "--text", "x", ...auth]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /required flag --deadline-at/);
+      result = await runCLI([...AWAIT.map((a) => (a === "2026-10-17T09:00:00Z" ? "tomorrow" : a)), ...auth]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /ISO date-time/);
+      assert.equal(hub.seen.length, 0);
+    } finally {
+      await hub.close();
+    }
+  });
+
+  test("a human token is refused by the hub and the refusal is printed", async () => {
+    const hub = await fakeHub(() => ({
+      status: 400,
+      json: { success: false, error: "Only an agent bot may register an await", errorType: "a2a-sender-ineligible" },
+    }));
+    try {
+      const result = await runCLI([...AWAIT, "--url", hub.url, "--user-id", "u", "--auth-token", "t", "--confirm"]);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /HTTP 400: a2a-sender-ineligible/);
+    } finally {
+      await hub.close();
+    }
+  });
+
+  test("cancel posts the row id only with --confirm", async () => {
+    const hub = await fakeHub();
+    const auth = ["--url", hub.url, "--bot-key", "k"];
+    try {
+      let result = await runCLI(["agents", "a2a", "cancel", "--row", "r1", ...auth]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(hub.seen.length, 0);
+      assert.deepEqual(JSON.parse(result.stdout).requests[0].body, { rowId: "r1" });
+      result = await runCLI(["agents", "a2a", "cancel", "--row", "r1", ...auth, "--confirm"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(hub.seen[0].url, "/api/v1/agents.a2a.await.cancel");
+      assert.deepEqual(JSON.parse(hub.seen[0].body), { rowId: "r1" });
+      result = await runCLI(["agents", "a2a", "cancel", ...auth]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /required flag --row/);
+    } finally {
+      await hub.close();
+    }
+  });
+
+  test("await and cancel go through the egress with no credentials", async () => {
+    const proxy = await fakeProxy();
+    vmEnv(proxy.url);
+    try {
+      let result = await runCLI([...AWAIT, "--message-id", "m_abcdefgh1234", "--confirm"]);
+      assert.equal(result.code, 0, result.stderr);
+      let call = proxy.seen.at(-1);
+      assert.equal(call.proxyToken, "proxy-token-1");
+      assert.equal(call.envelope.method, "POST");
+      assert.equal(call.envelope.url, "https://hub.example.test/api/v1/agents.a2a.await");
+      assert.equal(JSON.parse(call.envelope.body).correlationId, "c_1");
+      result = await runCLI(["agents", "a2a", "cancel", "--row", "r1", "--confirm"]);
+      assert.equal(result.code, 0, result.stderr);
+      call = proxy.seen.at(-1);
+      assert.equal(call.envelope.url, "https://hub.example.test/api/v1/agents.a2a.await.cancel");
     } finally {
       await proxy.close();
     }

@@ -59,6 +59,8 @@ Commands:
   agents a2a members       List the roster bots of a team
   agents a2a chain         Read every row of one bot-to-bot chain
   agents a2a stop          Stop a chain you started
+  agents a2a await         Register a one-time callback wake in a chain (--bot-key)
+  agents a2a cancel        Cancel a registered await
   hub inbox                One read-only poll of messages and notifications
   subscribe                Read-only event daemon (hub, lists, files, board tasks)
   subscribe status         Heartbeat, cursor, lag, and outbox of the daemon
@@ -220,6 +222,7 @@ Environment: PRIVOS_SANDBOX_URL, PRIVOS_SANDBOX_API_KEY
 const sandboxTasksCreateHelp = `Usage:
   privos sandbox tasks create --project ID --title TITLE [--description TEXT] [--status STATUS]
          [--start [--model M] [--provider P | --llm-provider ID] [--effort E]]
+         [--callback-url-env NAME --callback-key-env NAME]
 
 POST /api/tasks with a JSON body and the x-project-id header set to --project.
 The board client sends projectId, title, and optionally description and status.
@@ -234,6 +237,12 @@ in_progress, in_review, done, cancelled. Dry run unless --confirm.
 known after request 1, so the dry run shows {taskId from response 1} where
 it will go. --model, --provider, --llm-provider and --effort work as in
 "privos sandbox tasks start" and need --start.
+
+--callback-url-env and --callback-key-env name environment variables that hold the callback
+URL and secret printed by "privos agents a2a await"; the task then POSTs once when it leaves
+in_progress. The values are read from the environment only, never from argv, and the dry run
+shows the URL host and secret: "<set>". Both flags go together; the board accepts only a hub
+callback URL.
 `;
 
 const sandboxTasksUpdateHelp = `Usage:
@@ -594,8 +603,14 @@ is refused by the hub. A webhook token is never printed: rows carry hasWebhook a
 webhookTokenFingerprint (first 8 hex of its SHA-256).
 
 Bot mode (--bot-key, PRIVOS_BOT_KEY or the egress) reads this agent's own triggers, using
-PRIVOS_BOT_ID. Another agent's triggers need its owner's or an administrator's personal
-token. --raw, --confirm and --dry-run are not supported.
+PRIVOS_BOT_ID. --agent BOT_ID (an id or agent-room-ID; names are not resolved in bot mode)
+asks the hub for a peer's triggers: allowed for a peer with the same owner or on a shared
+agent team, from the agent room or the chain room, and directly only when the person behind
+the turn owns the peer; the answer is a reduced view without prompt text (PROMPT is empty,
+"peer read: reduced view, no prompt text" on stderr). Otherwise the hub refuses with
+error-peer-owner-approval-required and the peer's owner approves on a card (agents send
+needs-approval --action trigger-read). --all stays refused in bot mode. --raw, --confirm
+and --dry-run are not supported.
 `;
 
 const hubTriggersGetHelp = `Usage:
@@ -881,7 +896,7 @@ const agentsHelp = `Usage:
   privos agents a2a <command>
 
 Commands:
-  a2a send|members|chain|stop    Bot-to-bot (a2a) messages between roster bots
+  a2a send|members|chain|stop|await|cancel    Bot-to-bot (a2a) messages between roster bots
 
 Run privos agents a2a --help.
 `;
@@ -894,9 +909,11 @@ Commands:
   members --team TEAM_ID
   chain --correlation C_ID
   stop --correlation C_ID
+  await --correlation C_ID --room ROOM_ID --deadline-at ISO --text TEXT
+  cancel --row ROW_ID
 
-These call the hub routes agents.a2a.send, agents.a2a.team.members, and
-agents.a2a.list. They authenticate as an agent bot, not as a human:
+These call the hub routes agents.a2a.send, agents.a2a.team.members,
+agents.a2a.list, agents.a2a.await and agents.a2a.await.cancel. They authenticate as an agent bot, not as a human:
 
 Environment (flags override):
   PRIVOS_HUB_URL          Hub base URL
@@ -947,6 +964,36 @@ needs-approval, {"approval":{"action":"...","draft":"..."}}; for question,
 
 Authentication is the bot key (--bot-key or PRIVOS_BOT_KEY). Dry run unless
 --confirm.
+`;
+
+const agentsA2aAwaitHelp = `Usage:
+  privos agents a2a await --correlation C_ID --room ROOM_ID --deadline-at ISO --text TEXT
+                          [--team TEAM_ID] [--reply-to M_ID] [--message-id M_ID]
+                          [--match-event EVENT --match-room ROOM_ID] [--bot-key KEY]
+
+POST /api/v1/agents.a2a.await. Registers an await in an existing chain: the bot is woken
+once, in that chain, when the one-time callback URL is called, when a matching room event
+happens, or at --deadline-at, whichever comes first. --deadline-at is required (ISO
+date-time, in the future). --match-event is message.new, file.created, file.updated or
+file.deleted and needs --match-room (the bot must be a member of it). --reply-to names a
+message addressed to this bot; the wake answers its sender. The CLI generates --message-id
+(the idempotency key) unless you pass one.
+
+THE HUB ANSWER CONTAINS THE ONE-TIME CALLBACK SECRET (callbackSecret) together with
+callbackPath. It is printed once, on stdout, and never again: keep it out of rooms, logs and
+message data, and hand it only to the job that will call back. A repeated --message-id
+returns the stored row with duplicate: true and no secret.
+
+Authentication is the bot key (--bot-key or PRIVOS_BOT_KEY); the hub refuses a human token.
+Dry run unless --confirm.
+`;
+
+const agentsA2aCancelHelp = `Usage:
+  privos agents a2a cancel --row ROW_ID [--bot-key KEY]
+
+POST /api/v1/agents.a2a.await.cancel with {"rowId"}. Cancels an await that is still
+waiting; the one-time URL stops working. Allowed for the bot that registered it, the chain's
+accountable human or an administrator. Dry run unless --confirm.
 `;
 
 const agentsA2aMembersHelp = `Usage:
@@ -1142,6 +1189,8 @@ const HELP: Record<string, string> = {
   "agents a2a members": agentsA2aMembersHelp,
   "agents a2a chain": agentsA2aChainHelp,
   "agents a2a stop": agentsA2aStopHelp,
+  "agents a2a await": agentsA2aAwaitHelp,
+  "agents a2a cancel": agentsA2aCancelHelp,
   "hub inbox": hubInboxHelp,
   subscribe: subscribeHelp,
   "subscribe status": subscribeStatusHelp,

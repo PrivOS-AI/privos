@@ -38,8 +38,9 @@ const triggerColumns: Column[] = [
   { header: "PROMPT", path: ["promptText"] },
 ];
 
-const BOT_PEER_REFUSAL =
-  "bot mode reads this agent's own triggers only; another agent's triggers need its owner's or an administrator's personal token";
+const PEER_READ_NOTE = "peer read: reduced view, no prompt text";
+const PEER_APPROVAL_CODE = "error-peer-owner-approval-required";
+const PEER_APPROVAL_HINT = "the peer's owner must approve; agents use needs-approval --action trigger-read";
 const BOT_SUPER_HINT =
   "a super agent reads its triggers only from a session in its own agent room over the sandbox egress; a bare bot key or a room-scoped session is refused by the hub";
 
@@ -219,17 +220,25 @@ interface Envelope {
   errors?: { botId: string; error: string }[];
 }
 
-async function fetchTriggers(p: Parsed, botId: string, fetchImpl: typeof fetch, stderr: Out): Promise<Obj[]> {
+async function fetchTriggers(
+  p: Parsed,
+  botId: string,
+  fetchImpl: typeof fetch,
+  stderr: Out,
+  peer = false,
+): Promise<Obj[]> {
   let buf: Buffer;
   try {
     buf = await hubClient(p, fetchImpl).get("/api/v1/agents.triggers.list", new URLSearchParams({ botId }));
   } catch (err) {
     if (err instanceof HTTPError && err.status === 400 && botMode(p, fetchImpl)) {
-      stderr.write(`hint: ${BOT_SUPER_HINT}\n`);
+      if (peer && err.message.includes(PEER_APPROVAL_CODE)) stderr.write(`${PEER_APPROVAL_HINT}\n`);
+      else if (!peer) stderr.write(`hint: ${BOT_SUPER_HINT}\n`);
     }
     throw err;
   }
   const body = parseBody(buf, "agents.triggers.list");
+  if (body.peerRead === true) stderr.write(`${PEER_READ_NOTE}\n`);
   return (Array.isArray(body.triggers) ? body.triggers : []).filter(isObj);
 }
 
@@ -239,14 +248,18 @@ async function loadTriggers(p: Parsed, cmd: string, stderr: Out, fetchImpl: type
   if (botMode(p, fetchImpl)) {
     if (p.all) throw usage(`${cmd}: --all is not available in bot mode; it needs an administrator's personal token`);
     let own = (process.env.PRIVOS_BOT_ID ?? "").trim();
+    let target = own;
     if (own === "") {
       // Without PRIVOS_BOT_ID the id is unverifiable here; the hub refuses a wrong one with HTTP 400.
       if (p.agent === "") throw usage("bot mode needs PRIVOS_BOT_ID or --agent <own bot id>");
-      own = p.agent.replace(/^agent-room-/, "");
+      own = target = p.agent.replace(/^agent-room-/, "");
     } else if (p.agent !== "" && p.agent !== own && p.agent !== `agent-room-${own}`) {
-      throw usage(BOT_PEER_REFUSAL);
+      // A peer: the hub applies the peer-read rule. Bot mode cannot resolve names, so this is a bot id.
+      target = p.agent.replace(/^agent-room-/, "");
     }
-    const rows = (await fetchTriggers(p, own, fetchImpl, stderr)).map((t) => decorateRow(t, { botId: own }));
+    const rows = (await fetchTriggers(p, target, fetchImpl, stderr, target !== own)).map((t) =>
+      decorateRow(t, { botId: target }),
+    );
     return { triggers: rows, total: rows.length };
   }
 
