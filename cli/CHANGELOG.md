@@ -3,6 +3,28 @@
 All notable changes to `@privos_ai/privos`. Full command notes live in
 [docs/cli/README.md](https://github.com/PrivOS-AI/privos/blob/main/docs/cli/README.md).
 
+## 0.10.0 — 2026-10-16
+
+### Added
+
+- `privos agents a2a await` registers a one-time callback wake in a chain (bot key;
+  dry run unless `--confirm`): `--correlation`, `--room`, `--deadline-at`, `--text`,
+  optional `--team`, `--reply-to`, `--message-id` and `--match-event` with
+  `--match-room`. The hub answer carries the one-time callback path and secret; it
+  is printed once on stdout. `privos agents a2a cancel --row ROW_ID` cancels it.
+- `privos sandbox tasks create --callback-url-env NAME --callback-key-env NAME`
+  passes an await's callback to the board task. Values come from the environment
+  only; the dry run shows the URL host and `secret: "<set>"`.
+
+### Changed
+
+- In bot mode `privos hub triggers list --agent BOT_ID` now sends the request for
+  a peer and lets the hub decide (same owner or shared agent team). A peer answer
+  is a reduced view without prompt text, with a note on stderr; when the peer's
+  owner must approve, the hub's refusal is followed by a hint to use
+  `needs-approval --action trigger-read`. `--all` stays refused in bot mode.
+- Needs the hub release that carries the peer-read rule and the await routes.
+
 ## 0.9.0 — 2026-10-16
 
 ### Added

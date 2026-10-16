@@ -154,7 +154,7 @@ interface Webhook {
   keyEnv: string;
 }
 
-function envName(flag: string, value: string, fallback: string): string {
+export function envName(flag: string, value: string, fallback: string): string {
   const name = value === "" ? fallback : value;
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw usage(`--${flag} must be an environment variable name`);
   return name;

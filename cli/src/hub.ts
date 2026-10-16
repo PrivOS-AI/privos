@@ -990,6 +990,75 @@ export async function hubA2aSend(
   );
 }
 
+const A2A_MATCH_EVENTS = ["message.new", "file.created", "file.updated", "file.deleted"];
+
+/**
+ * Registers an await: the hub answers with a one-time callback path and secret. The answer is
+ * printed once, on stdout, as the hub sent it.
+ */
+export async function hubA2aAwait(
+  p: Parsed,
+  stdout: Out,
+  stderr: Out,
+  fetchImpl: typeof fetch,
+): Promise<void> {
+  forbidUnknown(p, "agents a2a await", [
+    ...HUB_AUTH,
+    "team",
+    "room",
+    "correlation",
+    "reply-to",
+    "deadline-at",
+    "text",
+    "message-id",
+    "match-event",
+    "match-room",
+  ]);
+  const help = helpFor(["agents", "a2a", "await"]);
+  requireFlag(p, "correlation", p.correlation, help);
+  requireFlag(p, "room", p.room, help);
+  requireFlag(p, "deadline-at", p.deadlineAt, help);
+  requireFlag(p, "text", p.text, help);
+  if (Number.isNaN(Date.parse(p.deadlineAt))) throw usage("--deadline-at must be an ISO date-time");
+  if (p.messageId !== "" && !A2A_MESSAGE_ID.test(p.messageId)) {
+    throw usage("--message-id must match ^m_[A-Za-z0-9_-]{8,64}$");
+  }
+  if ((p.matchEvent === "") !== (p.matchRoom === "")) {
+    throw usage("--match-event and --match-room go together");
+  }
+  if (p.matchEvent !== "" && !A2A_MATCH_EVENTS.includes(p.matchEvent)) {
+    throw usage(`--match-event must be one of ${A2A_MATCH_EVENTS.join(", ")}`);
+  }
+  const body: Record<string, unknown> = {
+    correlationId: p.correlation,
+    roomId: p.room,
+    messageId: p.messageId !== "" ? p.messageId : `m_${randomBytes(12).toString("base64url")}`,
+    deadlineAt: p.deadlineAt,
+    text: p.text,
+  };
+  if (p.team !== "") body.teamId = p.team;
+  if (p.replyTo !== "") body.replyTo = p.replyTo;
+  if (p.matchEvent !== "") body.match = { event: p.matchEvent, roomId: p.matchRoom };
+  await sendHub(p, [{ method: "POST", path: "/api/v1/agents.a2a.await", body }], stdout, stderr, fetchImpl);
+}
+
+export async function hubA2aCancel(
+  p: Parsed,
+  stdout: Out,
+  stderr: Out,
+  fetchImpl: typeof fetch,
+): Promise<void> {
+  forbidUnknown(p, "agents a2a cancel", [...HUB_AUTH, "row"]);
+  requireFlag(p, "row", p.row, helpFor(["agents", "a2a", "cancel"]));
+  await sendHub(
+    p,
+    [{ method: "POST", path: "/api/v1/agents.a2a.await.cancel", body: { rowId: p.row } }],
+    stdout,
+    stderr,
+    fetchImpl,
+  );
+}
+
 /**
  * A bot stops a chain with kind "stop" through the send route (initiator only). The team and
  * room come from the chain unless given, read with one GET that is safe in a dry run.

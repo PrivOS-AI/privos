@@ -19,6 +19,7 @@ import {
   type Parsed,
 } from "./parse.js";
 import { render, type Column, type Out } from "./render.js";
+import { envName } from "./subscribe.js";
 import { usage } from "./usage.js";
 
 const projectColumns: Column[] = [
@@ -265,6 +266,8 @@ export async function sandboxTasksCreate(
     "provider",
     "llm-provider",
     "effort",
+    "callback-url-env",
+    "callback-key-env",
   ]);
   if (p.projects.length !== 1) {
     throw usage(
@@ -274,7 +277,7 @@ export async function sandboxTasksCreate(
   requireFlag(p, "title", p.title, helpFor(["sandbox", "tasks", "create"]));
   const projectId = p.projects[0]!;
   pathSegment("project", projectId);
-  const body: Record<string, string> = { projectId, title: p.title };
+  const body: Record<string, unknown> = { projectId, title: p.title };
   if (p.description !== "") body.description = p.description;
   if (p.status !== "") body.status = p.status;
   if (!p.start && (p.model !== "" || p.provider !== "" || p.llmProvider !== "" || p.effort !== "")) {
@@ -313,7 +316,35 @@ export async function sandboxTasksCreate(
       { ...attempt(NEW_TASK_ID), prepare: (prior) => attempt(newTaskId(prior)) },
     );
   }
+  const callback = resolveCallback(p);
+  if (callback) {
+    body.callback = { url: callback.url, secret: callback.secret };
+    plans[0]!.previewBody = { ...body, callback: { host: callback.host, secret: "<set>" } };
+  }
   await sendSandbox(p, plans, stdout, stderr, fetchImpl);
+}
+
+/** The callback URL and secret come from the environment only, so they never show up in argv. */
+function resolveCallback(p: Parsed): { url: string; secret: string; host: string } | undefined {
+  if (p.callbackURLEnv === "" && p.callbackKeyEnv === "") return undefined;
+  if (p.callbackURLEnv === "" || p.callbackKeyEnv === "") {
+    throw usage("--callback-url-env and --callback-key-env go together");
+  }
+  const urlEnv = envName("callback-url-env", p.callbackURLEnv, "");
+  const keyEnv = envName("callback-key-env", p.callbackKeyEnv, "");
+  const url = (process.env[urlEnv] ?? "").trim();
+  const secret = (process.env[keyEnv] ?? "").trim();
+  if (url === "") throw usage(`--callback-url-env: ${urlEnv} is not set`);
+  if (secret === "") throw usage(`--callback-key-env: ${keyEnv} is not set`);
+  let host: string;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") throw new Error("not https");
+    host = parsed.host;
+  } catch {
+    throw usage(`--callback-url-env: ${urlEnv} must hold an https URL`);
+  }
+  return { url, secret, host };
 }
 
 /** Dry-run placeholder for the id that POST /api/tasks returns. */
