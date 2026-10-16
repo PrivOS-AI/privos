@@ -16,7 +16,7 @@ export interface EgressConfig {
 const adapters = new WeakMap<object, EgressConfig>();
 
 /** Hub commands that run as the agent bot. Everything else keeps its own credentials and transport. */
-const EGRESS_COMMANDS = /^(hub (rooms|lists|items|dm|owner)|agents a2a) \S/;
+const EGRESS_COMMANDS = /^(hub (rooms|lists|items|dm|owner|agents|triggers)|agents a2a) \S/;
 
 /** Headers the envelope may carry. Credentials are never forwarded: the proxy strips them and adds the key. */
 const FORWARDED_HEADERS = ["accept", "content-type", "user-agent"];

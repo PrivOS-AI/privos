@@ -32,6 +32,9 @@ Commands:
   hub rooms kick
   hub rooms archive
   hub dm reply             Ask the hub to post in an owner DM, Inbox or Assistant DM as the owner (agent VM only)
+  hub agents list          List the agents you created
+  hub triggers list        List agent triggers (cron, event, webhook), LLM and non-LLM
+  hub triggers get         Print one agent trigger as JSON
   hub owner rooms          List the owner's DMs and Inbox (super agent, agent VM only)
   hub owner messages       Read one owner DM or the owner's Inbox (super agent, agent VM only)
   hub messages list
@@ -382,6 +385,8 @@ Commands:
   items list|get|search|find|create|update|delete|move|reorder
   dm reply --room DM_ROOM_ID --text TEXT
   owner rooms|messages
+  agents list
+  triggers list|get
   inbox --since TIME
 
 Environment (flags override):
@@ -409,8 +414,8 @@ Bot mode (an agent bot, not a person):
 
 Sandbox egress (inside an agent VM):
   An agent VM holds no bot key. With PRIVOS_SANDBOX_MODE=true, PROXY_URL and PROXY_TOKEN set and
-  no credential of your own, the commands "hub rooms", "hub lists", "hub items", "hub dm", "hub owner"
-  and "agents a2a" send every PrivOS Hub request through POST $PROXY_URL/egress, and the proxy
+  no credential of your own, the commands "hub rooms", "hub lists", "hub items", "hub dm", "hub owner",
+  "hub agents", "hub triggers" and "agents a2a" send every PrivOS Hub request through POST $PROXY_URL/egress, and the proxy
   attaches the bot key. The hub is --url, else PRIVOS_HUB_URL, else https://$PRIVOS_HUB_HOST.
   The proxy decides what an agent may call: a refusal prints its code first, for example
   "no-binding: no catalog entry for this domain". "hub get", "subscribe" and
@@ -537,6 +542,69 @@ This works only inside an agent VM, over the sandbox egress: the hub accepts the
 call only from the agent room session. A personal token or a bare --bot-key is
 refused here before any request. Dry run unless --confirm. Errors print the hub's
 code first, for example error-not-owner-dm or error-super-agent-inactive.
+`;
+
+const hubAgentsHelp = `Usage:
+  privos hub agents <command>
+
+Commands:
+  list                    The agents you created
+`;
+
+const hubAgentsListHelp = `Usage:
+  privos hub agents list [--url URL] [--user-id ID] [--auth-token TOKEN] [--format json|table]
+
+GET /api/v1/agents.mine: the agents the caller created (not agents it only owns or leads
+in an agent room; use "triggers list --agent" for those). Columns: ID, USERNAME, NAME,
+ACTIVE, RUNTIME, SUPER, ROOM. Personal token only: the hub lists no agents to a bot, so
+in bot mode use privos agents a2a members --team TEAM_ID for an agent team's roster.
+`;
+
+const hubTriggersHelp = `Usage:
+  privos hub triggers <command>
+
+Commands:
+  list [--agent AGENT | --all]
+  get --id TRIGGER_ID [--agent AGENT | --all]
+
+Reads only (GET); no --confirm is needed and nothing is changed.
+`;
+
+const hubTriggersListHelp = `Usage:
+  privos hub triggers list [--agent BOT_ID|USERNAME|AGENT_ROOM_ID | --all] [--bot-key KEY]
+                           [--url URL] [--user-id ID] [--auth-token TOKEN] [--format json|table]
+
+Routes (GET): agents.mine, then agents.triggers.list?botId= per agent; --all uses
+agents.triggers.list-all (administrator only). JSON is { triggers, total, errors? }; a
+failing agent is listed in errors, the others still print, and the exit code is 1.
+
+--agent takes an agent id, username, agent room id, or a name that only one of your agents
+has; anything else is looked up with users.info. The resolved agent is printed to stderr.
+--agent with --all is a usage error.
+
+KIND tells how a trigger runs: llm (wakes the agent), no-llm (emits an event, no model) or
+handler:NAME (runs a handler script). ENABLED shows "false (needs review)" for a trigger a
+migration disabled until its owner checks it. Event triggers fire today only for
+message.new and notification.created. A hidden (inactive) agent's crons still fire.
+
+Who may read: the agent's creator, the agent-room owner or leader, or an administrator. A
+super agent's triggers are readable by its owner, an administrator, or the agent itself from
+its own agent room session over the sandbox egress; a bare bot key or a room-scoped session
+is refused by the hub. A webhook token is never printed: rows carry hasWebhook and
+webhookTokenFingerprint (first 8 hex of its SHA-256).
+
+Bot mode (--bot-key, PRIVOS_BOT_KEY or the egress) reads this agent's own triggers, using
+PRIVOS_BOT_ID. Another agent's triggers need its owner's or an administrator's personal
+token. --raw, --confirm and --dry-run are not supported.
+`;
+
+const hubTriggersGetHelp = `Usage:
+  privos hub triggers get --id TRIGGER_ID [--agent BOT_ID|USERNAME|AGENT_ROOM_ID | --all]
+                          [--bot-key KEY] [--url URL] [--user-id ID] [--auth-token TOKEN]
+
+Prints the first trigger whose id matches as one JSON object, from the same sources as
+"hub triggers list" (same flags, same rules; webhook tokens are fingerprinted). A missing id
+is an error. --format table is not supported.
 `;
 
 const hubOwnerHelp = `Usage:
@@ -1039,6 +1107,11 @@ const HELP: Record<string, string> = {
   "hub rooms archive": hubRoomsArchiveHelp,
   "hub dm": hubDmHelp,
   "hub dm reply": hubDmReplyHelp,
+  "hub agents": hubAgentsHelp,
+  "hub agents list": hubAgentsListHelp,
+  "hub triggers": hubTriggersHelp,
+  "hub triggers list": hubTriggersListHelp,
+  "hub triggers get": hubTriggersGetHelp,
   "hub owner": hubOwnerHelp,
   "hub owner rooms": hubOwnerRoomsHelp,
   "hub owner messages": hubOwnerMessagesHelp,
