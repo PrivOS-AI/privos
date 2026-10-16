@@ -238,11 +238,13 @@ async function loadTriggers(p: Parsed, cmd: string, stderr: Out, fetchImpl: type
 
   if (botMode(p, fetchImpl)) {
     if (p.all) throw usage(`${cmd}: --all is not available in bot mode; it needs an administrator's personal token`);
-    const own = (process.env.PRIVOS_BOT_ID ?? "").trim();
-    if (p.agent !== "") {
-      if (own === "" || (p.agent !== own && p.agent !== `agent-room-${own}`)) throw usage(BOT_PEER_REFUSAL);
-    } else if (own === "") {
-      throw usage("bot mode needs PRIVOS_BOT_ID or --agent <own bot id>");
+    let own = (process.env.PRIVOS_BOT_ID ?? "").trim();
+    if (own === "") {
+      // Without PRIVOS_BOT_ID the id is unverifiable here; the hub refuses a wrong one with HTTP 400.
+      if (p.agent === "") throw usage("bot mode needs PRIVOS_BOT_ID or --agent <own bot id>");
+      own = p.agent.replace(/^agent-room-/, "");
+    } else if (p.agent !== "" && p.agent !== own && p.agent !== `agent-room-${own}`) {
+      throw usage(BOT_PEER_REFUSAL);
     }
     const rows = (await fetchTriggers(p, own, fetchImpl, stderr)).map((t) => decorateRow(t, { botId: own }));
     return { triggers: rows, total: rows.length };

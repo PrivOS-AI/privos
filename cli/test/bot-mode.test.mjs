@@ -807,6 +807,20 @@ describe("hub agents and triggers (bot mode)", { concurrency: false }, () => {
     }
   });
 
+  test("without PRIVOS_BOT_ID, --agent is taken as the own id and the hub decides", async () => {
+    const hub = await fakeHub(() => ({ json: TRIGGERS_BODY }));
+    delete process.env.PRIVOS_BOT_ID;
+    try {
+      const result = await runCLI(["hub", "triggers", "list", "--url", hub.url, "--bot-key", "k", "--agent", "agent-room-X1"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(hub.seen.length, 1);
+      assert.equal(hub.seen[0].method, "GET");
+      assert.equal(hub.seen[0].url, "/api/v1/agents.triggers.list?botId=X1");
+    } finally {
+      await hub.close();
+    }
+  });
+
   test("a hub refusal in bot mode adds the super agent hint", async () => {
     const hub = await fakeHub(() => ({
       status: 400,
