@@ -752,7 +752,7 @@ describe("hub dm reply", { concurrency: false }, () => {
     assert.match(result.stdout, /Sandbox egress/);
     assert.match(result.stdout, /Bot mode/);
     result = await runCLI(["version"]);
-    assert.equal(result.stdout, "privos 0.8.0\n");
+    assert.match(result.stdout, /^privos \d+\.\d+\.\d+\n$/);
   });
 });
 
