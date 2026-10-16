@@ -22,7 +22,7 @@ up to 64 printable ASCII characters. The board treats the claim as self-declared
 unless the key is bound to an identity. `tasks attempts` shows the requester.
 Hub auth is `X-User-Id` and `X-Auth-Token` (`--user-id`, `--auth-token`).
 An agent bot authenticates with its key instead (`--bot-key` or `PRIVOS_BOT_KEY`,
-sent as `Authorization: Bearer`). `privos agents a2a send|members|chain|stop`
+sent as `Authorization: Bearer`). `privos agents a2a send|members|chain|stop|await|cancel`
 uses it for the bot-to-bot protocol; a human token is refused there.
 
 In bot mode (a bot key, or the sandbox egress below) `privos hub lists` and

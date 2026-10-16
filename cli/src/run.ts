@@ -3,6 +3,8 @@ import { resolveHub, resolveSandbox, VERSION } from "./config.js";
 import { refuseEgress, transportFor } from "./egress.js";
 import { helpFor, rootHelp } from "./help.js";
 import {
+  hubA2aAwait,
+  hubA2aCancel,
   hubA2aChain,
   hubA2aMembers,
   hubA2aSend,
@@ -148,6 +150,12 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
       return;
     case "agents a2a send":
       await hubA2aSend(p, stdout, stderr, fetchImpl);
+      return;
+    case "agents a2a await":
+      await hubA2aAwait(p, stdout, stderr, fetchImpl);
+      return;
+    case "agents a2a cancel":
+      await hubA2aCancel(p, stdout, stderr, fetchImpl);
       return;
     case "agents a2a members":
       await hubA2aMembers(p, stdout, fetchImpl);

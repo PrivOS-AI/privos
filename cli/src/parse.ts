@@ -95,6 +95,11 @@ export interface Parsed {
   webhookURLEnv: string;
   webhookKeyEnv: string;
   webhookHeader: string;
+  row: string;
+  matchEvent: string;
+  matchRoom: string;
+  callbackURLEnv: string;
+  callbackKeyEnv: string;
   positionals: string[];
   seen: Set<string>;
 }
@@ -197,6 +202,11 @@ const VALUE_FLAGS = new Set([
   "webhook-url-env",
   "webhook-key-env",
   "webhook-header",
+  "row",
+  "match-event",
+  "match-room",
+  "callback-url-env",
+  "callback-key-env",
 ]);
 
 const REPEATABLE = new Set(["project", "member", "answer", "file-id", "param"]);
@@ -377,6 +387,11 @@ function emptyParsed(): Parsed {
     webhookURLEnv: "",
     webhookKeyEnv: "",
     webhookHeader: "",
+    row: "",
+    matchEvent: "",
+    matchRoom: "",
+    callbackURLEnv: "",
+    callbackKeyEnv: "",
     positionals: [],
     seen: new Set(),
   };
@@ -728,6 +743,21 @@ function assignValue(p: Parsed, name: string, value: string): void {
       break;
     case "webhook-header":
       p.webhookHeader = trimmed;
+      break;
+    case "row":
+      p.row = trimmed;
+      break;
+    case "match-event":
+      p.matchEvent = trimmed;
+      break;
+    case "match-room":
+      p.matchRoom = trimmed;
+      break;
+    case "callback-url-env":
+      p.callbackURLEnv = trimmed;
+      break;
+    case "callback-key-env":
+      p.callbackKeyEnv = trimmed;
       break;
     default:
       throw usage(`unknown flag --${name}`);
