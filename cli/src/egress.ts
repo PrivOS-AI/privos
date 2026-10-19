@@ -16,7 +16,7 @@ export interface EgressConfig {
 const adapters = new WeakMap<object, EgressConfig>();
 
 /** Hub commands that run as the agent bot. Everything else keeps its own credentials and transport. */
-const EGRESS_COMMANDS = /^(hub (rooms|lists|items|dm|owner|agents|triggers)|agents a2a) \S/;
+const EGRESS_COMMANDS = /^(hub (rooms|messages|files|lists|items|dm|owner|agents|triggers)|agents a2a) \S/;
 
 /** Headers the envelope may carry. Credentials are never forwarded: the proxy strips them and adds the key. */
 const FORWARDED_HEADERS = ["accept", "content-type", "user-agent"];
@@ -74,15 +74,20 @@ export function egressFetch(cfg: EgressConfig, base: typeof fetch): typeof fetch
       const value = headers.get(name);
       if (value !== null) forwarded[name] = value;
     }
-    const body = init?.body;
-    if (body !== undefined && body !== null && typeof body !== "string") {
-      throw new Error("egress carries string bodies only");
+    let body = init?.body ?? undefined;
+    // A binary body (a multipart upload) travels base64-encoded; the proxy decodes it before forwarding.
+    if (body instanceof Uint8Array) {
+      body = Buffer.from(body).toString("base64");
+      forwarded["x-content-encoding"] = "base64";
+    }
+    if (body !== undefined && typeof body !== "string") {
+      throw new Error("egress carries string or binary bodies only");
     }
     const envelope = {
       url: String(input),
       method: init?.method ?? "GET",
       headers: forwarded,
-      body: body ?? undefined,
+      body,
     };
     try {
       return await base(`${cfg.proxyURL}/egress`, {

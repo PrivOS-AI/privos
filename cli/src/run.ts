@@ -10,7 +10,10 @@ import {
   hubA2aSend,
   hubA2aStop,
   hubDmReply,
+  hubFilesFolders,
+  hubFilesUpload,
   hubGet,
+  hubItemsAttach,
   hubItemsCreate,
   hubItemsDelete,
   hubItemsFind,
@@ -130,6 +133,7 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
     case "hub":
     case "hub rooms":
     case "hub messages":
+    case "hub files":
     case "hub lists":
     case "hub items":
     case "hub dm":
@@ -280,6 +284,15 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
       return;
     case "hub messages delete":
       await hubMessagesDelete(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub files upload":
+      await hubFilesUpload(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub files folders":
+      await hubFilesFolders(p, stdout, fetchImpl);
+      return;
+    case "hub items attach":
+      await hubItemsAttach(p, stdout, stderr, fetchImpl);
       return;
     case "hub lists list":
       await hubListsList(p, stdout, fetchImpl);

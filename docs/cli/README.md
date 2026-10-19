@@ -144,8 +144,12 @@ privos hub triggers get --id TRIGGER_ID [--agent ... | --all]
 
 privos hub messages list --room ROOM_ID [--kind channel|group|direct] [--count N] [--offset N]
 privos hub messages send --room ROOM_ID --text TEXT
+privos hub messages send --room ROOM_ID --file PATH [--text TEXT]
 privos hub messages update --room ROOM_ID --id MSG_ID --text TEXT
 privos hub messages delete --room ROOM_ID --id MSG_ID
+
+privos hub files upload --room ROOM_ID --file PATH [--folder FOLDER_ID] [--duplicate replace|keep_both|cancel]
+privos hub files folders --room ROOM_ID [--parent FOLDER_ID] [--count N] [--offset N]
 
 privos hub lists list [--room ROOM_ID]
 privos hub lists get --id LIST_ID
@@ -165,6 +169,7 @@ privos hub items update --id ITEM_ID [--name NAME] [--description TEXT] [--stage
 privos hub items delete --id ITEM_ID
 privos hub items move --id ITEM_ID --stage STAGE_ID
 privos hub items reorder --id ITEM_ID --order N
+privos hub items attach --room ROOM_ID --id ITEM_ID --field FIELD_ID --file PATH [--duplicate replace|keep_both|cancel]
 
 privos hub inbox --since ISO|EPOCH_MS [--events dm,mention,message,notification] [--rooms LIST] [--include-text]
 
@@ -209,6 +214,28 @@ a JSON array, and its response includes `defaultStage` for
 `hub items create --stage`. Field CRUD (`lists.addField`, `lists.fields.*`),
 `items.bulkUpdateOrder`, and `stages.*` are not commands. The CLI does not
 call `/api/v1/bot/lists` or MCP `privos.lists.*`. See [Hub API](../api/hub.md).
+
+### Attachments
+
+Three commands upload a local file of any type (image, video, audio, document). The
+content type comes from the file extension. Each is a dry run unless `--confirm`, and the
+dry run prints the file's name, type and size, never its bytes.
+
+- `hub messages send --room ROOM_ID --file PATH [--text TEXT]` posts the file in the room
+  chat, with `--text` as its message (`rooms.upload`).
+- `hub files upload --room ROOM_ID --file PATH [--folder FOLDER_ID]` stores it in the room's
+  File Management. `hub files folders` lists folder ids. A file name that already exists in
+  the folder is refused with `DUPLICATE_FILE` unless `--duplicate replace|keep_both|cancel`.
+- `hub items attach --room ROOM_ID --id ITEM_ID --field FIELD_ID --file PATH` uploads it into
+  the item's folder `Uploads/list-items/ITEM_ID` (created when missing) and sets it on a
+  `FILE`, `FILE_MULTIPLE` or `DOCUMENT` field. A `FILE` field is replaced; the other two keep
+  their files and get this one added. No other field changes.
+
+Large files can need a longer `--timeout` (default 30 s, at most 300 s). All three take a
+personal token, a bot key, or the sandbox egress. `--room` defaults to
+`PRIVOS_ROOM_ID` for `files` and `items attach`. Route detail:
+[Hub API](../api/hub.md#send-a-file), [Files](../api/hub.md#files-file-management),
+[Item attachments](../api/hub.md#item-attachments).
 
 ### Agent triggers
 
@@ -259,7 +286,7 @@ Route-by-route detail: [Hub API](../api/hub.md#bot-mode-agent-bots). Personal-to
 
 **Sandbox egress.** An agent VM never holds the bot key. When `PRIVOS_SANDBOX_MODE=true` and both `PROXY_URL`
 and `PROXY_TOKEN` are set, and the command has no credential of its own (no flag, none of `PRIVOS_BOT_KEY`,
-`PRIVOS_HUB_USER_ID`, `PRIVOS_USER_ID`, `PRIVOS_HUB_AUTH_TOKEN`, `PRIVOS_PAT`), the commands `hub rooms|lists|items|dm|agents|triggers`
+`PRIVOS_HUB_USER_ID`, `PRIVOS_USER_ID`, `PRIVOS_HUB_AUTH_TOKEN`, `PRIVOS_PAT`), the commands `hub rooms|messages|files|lists|items|dm|owner|agents|triggers`
 and `agents a2a` send each request as `POST $PROXY_URL/egress` with an `x-proxy-token` header, and the proxy
 attaches the key. The hub is `--url`, else `PRIVOS_HUB_URL`, else `https://$PRIVOS_HUB_HOST`. The proxy decides what
 the agent may call: a refusal prints its code first, for example `HTTP 403: no-binding: ...`, and an unreachable proxy

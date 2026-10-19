@@ -162,6 +162,37 @@ privos hub messages delete --room ROOM_ID --id MSG_ID --confirm
 
 Every write above is a dry run until `--confirm`.
 
+### Send a file
+
+`hub messages send --room ROOM_ID --file PATH [--text TEXT]` posts a local file as a chat
+attachment in one multipart request: `POST /api/v1/rooms.upload/ROOM_ID` with the file
+under `file` and `--text`, when set, as the `msg` field. The hub stores the file, posts
+the message and answers `{"message": {...}}`. Any file type is accepted; the part's
+content type comes from the file extension (`application/octet-stream` when unknown), and
+images and videos render inline. The size cap is the hub's `FileUpload_MaxFileSize`.
+The route takes a personal token and a bot key alike, and the egress catalog opens it.
+`rooms.upload` is marked deprecated in favour of `rooms.media` plus
+`rooms.mediaConfirm`, which the egress catalog does not open.
+
+```text
+privos hub messages send --room ROOM_ID --file ./chart.png --text 'this week' --confirm
+privos hub messages send --room ROOM_ID --file ./report.pdf --confirm
+```
+
+## Files (File Management)
+
+The room's Files tab, not chat attachments.
+
+| CLI | Method and route |
+|---|---|
+| `hub files upload --room R --file PATH [--folder F] [--duplicate D]` | `POST /api/v1/file-management.files.upload`, multipart: the file under `files`, fields `channelId` (R), `folderId` (F), `duplicateAction` (D: `replace`, `keep_both` or `cancel`) |
+| `hub files folders --room R [--parent F] [--count N] [--offset N]` | `GET /api/v1/file-management.folders.channel/R?fatherId=F` |
+
+Without `--folder` the file lands at the room's top level. When the folder already holds
+a file of that name the hub answers HTTP 400 `DUPLICATE_FILE` unless `--duplicate` is set;
+`replace` keeps the file id and overwrites the content. `--room` defaults to
+`PRIVOS_ROOM_ID`. Both work with a personal token, a bot key, and over the egress.
+
 ## Lists and items
 
 Lists are a PrivOS feature (structured rows inside a room, with item keys
@@ -259,6 +290,37 @@ privos hub items find --list LIST_ID --field FIELD_ID --value done
 `--order` on `items update` is the `order` field of `items.update`.
 `items reorder` is the separate `items.updateOrder` method.
 
+### Item attachments
+
+`hub items attach --room R --id I --field F --file PATH [--duplicate D]` attaches a
+local file to a `FILE`, `FILE_MULTIPLE` or `DOCUMENT` field the way the item panel does.
+It uses the room routes, which take a personal token and a bot key alike:
+
+1. `GET /api/v1/internal/rooms/R/items/I`, then `GET .../lists/LIST_ID` for the field type.
+   Any other field type is refused before a write.
+2. Finds the item folder `Uploads/list-items/I` with
+   `GET /api/v1/file-management.folders.channel/R?fatherId=...` (paged by 100) and creates
+   each missing level with `POST /api/v1/file-management.folders.create`
+   (`{"name","channelId","fatherId"}`, plus `itemId` on the item folder).
+3. `POST /api/v1/file-management.files.upload` into that folder (as `hub files upload`).
+4. `GET /api/v1/file-management.files/FILE_ID` for the download URL. Skipped over the
+   egress, whose catalog does not open it; the reference then carries the file id with an
+   empty `downloadUrl`.
+5. `PUT /api/v1/internal/rooms/R/items/I/customFields/F` with `{"value": ...}`. The value is
+   the reference `{_id, name, size, type, url, file_size, file_type, downloadUrl, uploadedAt}`;
+   a `FILE` field gets it in place of the old value, a `FILE_MULTIPLE` or `DOCUMENT` field
+   gets it appended to its current list. Other fields are not touched (`items.update`
+   would replace the whole `customFields` array).
+
+The reads in steps 1 and 2 run in a dry run too, so the preview shows the real folder ids;
+an id that only a later response carries is shown as `<folder created by request N>` or
+`<uploaded file>`.
+
+```text
+privos hub items attach --room ROOM_ID --id ITEM_ID --field FIELD_ID --file ./photo.jpg
+privos hub items attach --room ROOM_ID --id ITEM_ID --field FIELD_ID --file ./spec.pdf --confirm
+```
+
 ```text
 privos hub items create --list LIST_ID --stage STAGE_ID --name Draft
 privos hub items create --list LIST_ID --stage STAGE_ID --name Draft --confirm
@@ -326,8 +388,8 @@ DM replaces the pending draft. Errors print the hub's code first, for example
 An agent VM holds no bot key. With `PRIVOS_SANDBOX_MODE=true`, `PROXY_URL` and
 `PROXY_TOKEN` set, and no credential of your own (no flag and none of `PRIVOS_BOT_KEY`,
 `PRIVOS_HUB_USER_ID`, `PRIVOS_USER_ID`, `PRIVOS_HUB_AUTH_TOKEN`, `PRIVOS_PAT`), the
-commands `hub rooms|lists|items|dm` and `agents a2a` send each request through the sandbox
-proxy:
+commands `hub rooms|messages|files|lists|items|dm|owner|agents|triggers` and `agents a2a`
+send each request through the sandbox proxy:
 
 ```text
 POST $PROXY_URL/egress
@@ -335,13 +397,19 @@ x-proxy-token: ...
 {"url": "https://HUB/api/v1/...", "method": "POST", "headers": {...}, "body": "<string>"}
 ```
 
+A multipart upload travels as base64 in `body`, with `"x-content-encoding": "base64"` in
+`headers`; the proxy decodes it before forwarding. The proxy's body limit (100 MB) caps
+an upload over the egress at about 75 MB of file.
+
 The proxy matches the URL against the agent's catalog and attaches the bot key; the CLI
 sends no `Authorization`, `X-User-Id` or `X-Auth-Token`. The hub URL is `--url`, else
 `PRIVOS_HUB_URL`, else `https://$PRIVOS_HUB_HOST`. The proxy decides what the agent may call, and a
 refusal prints its code first, for example `HTTP 403: no-binding: ...`.
 
 Over the egress `hub rooms update --topic` and `hub rooms delete` are refused: the catalog
-does not open `setTopic` or `delete`. `hub get`, `subscribe` and `sandbox tasks answer`
+does not open `setTopic` or `delete`. `hub messages list` reaches the proxy but the catalog
+does not open `channels.messages`, `groups.messages` or `im.messages`, so it answers
+`no-binding`. `hub get`, `subscribe` and `sandbox tasks answer`
 never use the egress and fail with a clear message in a VM that gives them no connection
 of their own.
 

@@ -3,12 +3,15 @@ import { mutationMode } from "./parse.js";
 import { Client, userAgent } from "./http.js";
 import { render, type Out } from "./render.js";
 import { requesterHeaders, type Requester } from "./requester.js";
+import { previewForm, type UploadForm } from "./upload.js";
 import { usage } from "./usage.js";
 
 export interface PlannedRequest {
   method: string;
   path: string;
   body?: unknown;
+  /** A multipart upload, sent instead of body. The dry run shows its fields and the file's name, type and size. */
+  form?: UploadForm;
   /** Shown by the dry run instead of body, so a secret in body is never printed. */
   previewBody?: unknown;
   extraHeaders?: Record<string, string>;
@@ -51,6 +54,7 @@ export async function mutate(
       bodies.push(
         await client.send(plan.method, plan.path, {
           body: plan.body,
+          form: plan.form,
           extraHeaders: plan.extraHeaders,
           allowMutation: true,
         }),
@@ -99,7 +103,8 @@ function preview(baseURL: string, plan: PlannedRequest, omittedHeaderNames: stri
   authHeaders.forEach((value, key) => {
     if (key.startsWith("x-privos-requester-")) headers[key] = value;
   });
-  if (plan.body !== undefined) headers["content-type"] = "application/json";
+  if (plan.form !== undefined) headers["content-type"] = "multipart/form-data";
+  else if (plan.body !== undefined) headers["content-type"] = "application/json";
   for (const [key, value] of Object.entries(plan.extraHeaders ?? {})) {
     headers[key.toLowerCase()] = value;
   }
@@ -109,7 +114,11 @@ function preview(baseURL: string, plan: PlannedRequest, omittedHeaderNames: stri
     url,
     headers,
     omittedHeaderNames: [...omittedHeaderNames].sort(),
-    ...(plan.body !== undefined ? { body: plan.previewBody ?? plan.body } : {}),
+    ...(plan.form !== undefined
+      ? { body: previewForm(plan.form) }
+      : plan.body !== undefined
+        ? { body: plan.previewBody ?? plan.body }
+        : {}),
   };
 }
 

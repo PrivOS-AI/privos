@@ -100,6 +100,9 @@ export interface Parsed {
   matchRoom: string;
   callbackURLEnv: string;
   callbackKeyEnv: string;
+  file: string;
+  folder: string;
+  duplicate: string;
   positionals: string[];
   seen: Set<string>;
 }
@@ -207,6 +210,9 @@ const VALUE_FLAGS = new Set([
   "match-room",
   "callback-url-env",
   "callback-key-env",
+  "file",
+  "folder",
+  "duplicate",
 ]);
 
 const REPEATABLE = new Set(["project", "member", "answer", "file-id", "param"]);
@@ -392,6 +398,9 @@ function emptyParsed(): Parsed {
     matchRoom: "",
     callbackURLEnv: "",
     callbackKeyEnv: "",
+    file: "",
+    folder: "",
+    duplicate: "",
     positionals: [],
     seen: new Set(),
   };
@@ -563,6 +572,15 @@ function assignValue(p: Parsed, name: string, value: string): void {
       break;
     case "file-id":
       p.fileIds.push(trimmed);
+      break;
+    case "file":
+      p.file = trimmed;
+      break;
+    case "folder":
+      p.folder = trimmed;
+      break;
+    case "duplicate":
+      p.duplicate = trimmed;
       break;
     case "route":
       p.route = trimmed;

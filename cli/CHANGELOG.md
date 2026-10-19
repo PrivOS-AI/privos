@@ -3,6 +3,30 @@
 All notable changes to `@privos_ai/privos`. Full command notes live in
 [docs/cli/README.md](https://github.com/PrivOS-AI/privos/blob/main/docs/cli/README.md).
 
+## 0.11.0 — 2026-10-19
+
+### Added
+
+- `privos hub messages send --room ROOM_ID --file PATH [--text TEXT]` posts a local file
+  (image, video, audio, document, any type) as a chat attachment with one multipart
+  `POST /api/v1/rooms.upload/ROOM_ID`; `--text` becomes its message.
+- `privos hub files upload --room ROOM_ID --file PATH [--folder FOLDER_ID]
+  [--duplicate replace|keep_both|cancel]` uploads a file to the room's File Management
+  (`file-management.files.upload`), and `privos hub files folders --room ROOM_ID
+  [--parent FOLDER_ID]` lists its folders.
+- `privos hub items attach --room ROOM_ID --id ITEM_ID --field FIELD_ID --file PATH`
+  uploads a file into the item folder `Uploads/list-items/ITEM_ID` (created when missing)
+  and sets it on a `FILE`, `FILE_MULTIPLE` or `DOCUMENT` field through the single-field
+  room route, so no other field changes. A `FILE` field is replaced; the others get the
+  file appended.
+- The content type comes from the file extension. Dry runs print the file's name, type
+  and size, never its bytes.
+
+### Changed
+
+- `hub messages` and `hub files` use the sandbox egress in an agent VM, like the other
+  bot commands. A binary body travels base64-encoded with `x-content-encoding: base64`.
+
 ## 0.10.0 — 2026-10-16
 
 ### Added

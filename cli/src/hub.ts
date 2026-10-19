@@ -21,6 +21,7 @@ import {
 } from "./parse.js";
 import { render, type Column, type Out } from "./render.js";
 import { randomBytes } from "node:crypto";
+import { readUpload, type UploadForm } from "./upload.js";
 import { usage } from "./usage.js";
 
 const roomColumns: Column[] = [
@@ -169,11 +170,14 @@ const BOT_ROOMS = "/api/v1/internal/rooms";
 
 /** Room of a bot-mode lists or items command: --room, else the agent VM's PRIVOS_ROOM_ID. */
 function botRoomBase(p: Parsed): string {
+  return `${BOT_ROOMS}/${pathSegment("room", roomOrEnv(p, "bot mode needs"))}`;
+}
+
+/** --room, else the agent VM's PRIVOS_ROOM_ID; `needs` says who asks when both are empty. */
+function roomOrEnv(p: Parsed, needs: string): string {
   const room = p.room !== "" ? p.room : (process.env.PRIVOS_ROOM_ID ?? "").trim();
-  if (room === "") {
-    throw usage(`${commandOf(p)}: bot mode needs --room ROOM_ID (PRIVOS_ROOM_ID is not set)`);
-  }
-  return `${BOT_ROOMS}/${pathSegment("room", room)}`;
+  if (room === "") throw usage(`${commandOf(p)}: ${needs} --room ROOM_ID (PRIVOS_ROOM_ID is not set)`);
+  return room;
 }
 
 /** The room routes ignore fields they do not read and still answer success, so these flags must fail here. */
@@ -417,8 +421,15 @@ export async function hubMessagesSend(
   stderr: Out,
   fetchImpl: typeof fetch,
 ): Promise<void> {
-  forbidUnknown(p, "hub messages send", [...HUB_AUTH, "room", "text"]);
+  forbidUnknown(p, "hub messages send", [...HUB_AUTH, "room", "text", "file"]);
   requireFlag(p, "room", p.room, helpFor(["hub", "messages", "send"]));
+  if (p.file !== "") {
+    // One request uploads the file and posts it with --text as its message; a bot key and the egress catalog take it too.
+    const form: UploadForm = { file: readUpload(p.file, "file"), fields: p.text !== "" ? { msg: p.text } : {} };
+    const path = `/api/v1/rooms.upload/${pathSegment("room", p.room)}`;
+    await sendHub(p, [{ method: "POST", path, form }], stdout, stderr, fetchImpl);
+    return;
+  }
   requireFlag(p, "text", p.text, helpFor(["hub", "messages", "send"]));
   await sendHub(
     p,
@@ -899,6 +910,203 @@ export async function hubItemsReorder(
     stderr,
     fetchImpl,
   );
+}
+
+const folderColumns: Column[] = [
+  { header: "ID", path: ["_id"] },
+  { header: "NAME", path: ["name"] },
+  { header: "PATH", path: ["folder_path"] },
+];
+
+const FILES_UPLOAD = "/api/v1/file-management.files.upload";
+const FOLDERS_CREATE = "/api/v1/file-management.folders.create";
+
+/** --duplicate: what the hub does when the folder already holds a file of that name. Unset, it refuses with DUPLICATE_FILE. */
+function duplicateAction(p: Parsed): Record<string, string> {
+  if (p.duplicate === "") return {};
+  if (!["replace", "keep_both", "cancel"].includes(p.duplicate)) {
+    throw usage("--duplicate must be replace, keep_both or cancel");
+  }
+  return { duplicateAction: p.duplicate };
+}
+
+export async function hubFilesUpload(p: Parsed, stdout: Out, stderr: Out, fetchImpl: typeof fetch): Promise<void> {
+  forbidUnknown(p, "hub files upload", [...HUB_AUTH, "room", "file", "folder", "duplicate"]);
+  const room = roomOrEnv(p, "needs");
+  requireFlag(p, "file", p.file, helpFor(["hub", "files", "upload"]));
+  const fields = { channelId: room, ...(p.folder !== "" ? { folderId: p.folder } : {}), ...duplicateAction(p) };
+  const form: UploadForm = { file: readUpload(p.file, "files"), fields };
+  await sendHub(p, [{ method: "POST", path: FILES_UPLOAD, form }], stdout, stderr, fetchImpl);
+}
+
+export async function hubFilesFolders(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
+  forbidUnknown(p, "hub files folders", [...HUB_READ, "room", "parent", "count", "offset"]);
+  const room = roomOrEnv(p, "needs");
+  const query = folderQuery(p.parent, optionalNonNegative("--count", p.count), optionalNonNegative("--offset", p.offset));
+  const path = `/api/v1/file-management.folders.channel/${pathSegment("room", room)}`;
+  await hubGetPath(p, stdout, fetchImpl, path, query, "folders", folderColumns);
+}
+
+function folderQuery(parent: string, count?: number, offset?: number): URLSearchParams {
+  const query = new URLSearchParams();
+  if (parent !== "") query.set("fatherId", parent);
+  if (count !== undefined) query.set("count", String(count));
+  if (offset !== undefined) query.set("offset", String(offset));
+  return query;
+}
+
+function record(value: unknown): Record<string, any> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, any>) : {};
+}
+
+function jsonOf(body: Buffer): Record<string, any> {
+  try {
+    return record(JSON.parse(body.toString("utf8")));
+  } catch {
+    return {};
+  }
+}
+
+/** The id of the folder called `name` directly under `parent` ("" = room root), or "" when there is none. */
+async function findFolder(client: Client, room: string, parent: string, name: string): Promise<string> {
+  const path = `/api/v1/file-management.folders.channel/${pathSegment("room", room)}`;
+  const page = 100;
+  for (let offset = 0; ; offset += page) {
+    const res = jsonOf(await client.get(path, folderQuery(parent, page, offset)));
+    const folders: unknown[] = Array.isArray(res.folders) ? res.folders : [];
+    const hit = folders.map(record).find((f) => f.name === name && (parent !== "" || !f.father));
+    if (hit) return String(hit._id);
+    if (folders.length < page || offset + page >= Number(res.total ?? 0)) return "";
+  }
+}
+
+/** Field types that hold file references; FILE holds one, the others a list. */
+const FILE_FIELD_TYPES = ["FILE", "FILE_MULTIPLE", "DOCUMENT"];
+
+/**
+ * A folder of the item path: a known id, or the index of the request that creates it, whose id only the
+ * response carries.
+ */
+type FolderRef = string | number;
+
+function folderId(ref: FolderRef, prior: unknown[]): string {
+  return typeof ref === "string" ? ref : String(record(record(prior[ref]).folder)._id ?? "");
+}
+
+function folderPlaceholder(ref: FolderRef): string {
+  return typeof ref === "string" ? ref : `<folder created by request ${ref + 1}>`;
+}
+
+/**
+ * Uploads a file into the item's folder (Uploads/list-items/ITEM_ID, created when missing, as the item panel does) and
+ * sets it on a FILE, FILE_MULTIPLE or DOCUMENT field. The room routes take a personal token and a bot key alike, and the
+ * single-field write leaves every other field as it is.
+ */
+export async function hubItemsAttach(p: Parsed, stdout: Out, stderr: Out, fetchImpl: typeof fetch): Promise<void> {
+  forbidUnknown(p, "hub items attach", [...HUB_AUTH, "id", "field", "file", "room", "duplicate"]);
+  const help = helpFor(["hub", "items", "attach"]);
+  requireFlag(p, "id", p.id, help);
+  requireFlag(p, "field", p.field, help);
+  requireFlag(p, "file", p.file, help);
+  const room = roomOrEnv(p, "needs");
+  const base = `${BOT_ROOMS}/${pathSegment("room", room)}`;
+  const itemPath = `${base}/items/${pathSegment("id", p.id)}`;
+  const fieldPath = `${itemPath}/customFields/${pathSegment("field", p.field)}`;
+  const file = readUpload(p.file, "files");
+  const dup = duplicateAction(p);
+
+  // Reads run in a dry run too, so the preview shows the real folders and the field's new value.
+  const client = hubClient(p, fetchImpl);
+  const item = record(jsonOf(await client.get(itemPath)).item);
+  const listId = String(item.listId ?? "");
+  if (listId === "") throw new Error(`GET ${itemPath}: the answer carries no listId`);
+  const list = record(jsonOf(await client.get(`${base}/lists/${pathSegment("list", listId)}`)).list);
+  const fields: unknown[] = Array.isArray(list.fieldDefinitions) ? list.fieldDefinitions : [];
+  const def = fields.map(record).find((f) => f._id === p.field);
+  if (!def) throw usage(`hub items attach: list ${listId} has no field ${JSON.stringify(p.field)}`);
+  if (!FILE_FIELD_TYPES.includes(def.type)) {
+    throw usage(`hub items attach: field ${p.field} (${def.name}) is ${def.type}; pick a FILE, FILE_MULTIPLE or DOCUMENT field`);
+  }
+
+  const plans: PlannedRequest[] = [];
+  const itemFolder = String(item._id ?? p.id);
+  let folder: FolderRef = "";
+  for (const name of ["Uploads", "list-items", itemFolder]) {
+    if (typeof folder === "string") {
+      const found = await findFolder(client, room, folder, name);
+      if (found !== "") {
+        folder = found;
+        continue;
+      }
+    }
+    const parent: FolderRef = folder;
+    const body = (fatherId: string) => ({
+      name,
+      channelId: room,
+      ...(fatherId !== "" ? { fatherId } : {}),
+      ...(name === itemFolder ? { itemId: itemFolder } : {}),
+    });
+    plans.push({
+      method: "POST",
+      path: FOLDERS_CREATE,
+      body: body(folderPlaceholder(parent)),
+      prepare: (prior) => ({ method: "POST", path: FOLDERS_CREATE, body: body(folderId(parent, prior)) }),
+    });
+    folder = plans.length - 1;
+  }
+
+  const target: FolderRef = folder;
+  const upload = (id: string): PlannedRequest => ({
+    method: "POST",
+    path: FILES_UPLOAD,
+    form: { file, fields: { channelId: room, folderId: id, ...dup } },
+  });
+  const uploadIndex = plans.length;
+  plans.push({ ...upload(folderPlaceholder(target)), prepare: (prior) => upload(folderId(target, prior)) });
+
+  // The presigned download URL comes from the file read, which the egress catalog does not open; over egress the field
+  // keeps the file id only, which the Hub resolves when the file is opened.
+  const readFile = egressOf(fetchImpl) === undefined;
+  const fileRead = (id: string): PlannedRequest => ({ method: "GET", path: `/api/v1/file-management.files/${id}` });
+  if (readFile) plans.push({ ...fileRead("<uploaded file>"), prepare: (prior) => fileRead(uploadedId(prior[uploadIndex])) });
+
+  const existing = record((Array.isArray(item.customFields) ? item.customFields : []).map(record).find((cf) => cf.fieldId === p.field));
+  const value = (ref: Record<string, unknown>) =>
+    def.type === "FILE" ? ref : [...(Array.isArray(existing.value) ? existing.value : []), ref];
+  const setField = (ref: Record<string, unknown>): PlannedRequest => ({ method: "PUT", path: fieldPath, body: { value: value(ref) } });
+  plans.push({
+    ...setField(fileRef(file.name, file.type, file.bytes.length, {}, {})),
+    prepare: (prior) =>
+      setField(fileRef(file.name, file.type, file.bytes.length, prior[uploadIndex], readFile ? prior[uploadIndex + 1] : {})),
+  });
+
+  await sendHub(p, plans, stdout, stderr, fetchImpl);
+}
+
+function uploadedId(uploadAnswer: unknown): string {
+  const id = String(record(record(uploadAnswer).file)._id ?? "");
+  if (id === "") throw new Error(`${FILES_UPLOAD}: the answer carries no file id`);
+  return pathSegment("file", id);
+}
+
+/** The reference the item panel stores for an uploaded file, so the Hub renders and opens it the same way. */
+function fileRef(name: string, type: string, size: number, uploadAnswer: unknown, fileAnswer: unknown): Record<string, unknown> {
+  const doc = record(record(uploadAnswer).file);
+  const read = record(fileAnswer);
+  const fileSize = Number(read.file_size ?? doc.file_size ?? size);
+  const fileType = String(read.file_type ?? doc.file_type ?? type);
+  const downloadUrl = typeof read.downloadUrl === "string" ? read.downloadUrl : "";
+  return {
+    _id: String(doc._id ?? "<uploaded file>"),
+    name: String(read.name ?? doc.name ?? name),
+    size: fileSize,
+    type: fileType,
+    url: downloadUrl,
+    file_size: fileSize,
+    file_type: fileType,
+    downloadUrl,
+    ...(read.created_at ?? doc.created_at ? { uploadedAt: read.created_at ?? doc.created_at } : {}),
+  };
 }
 
 function optionalBool(flagName: string, value: string): boolean | undefined {
