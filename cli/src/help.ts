@@ -41,6 +41,8 @@ Commands:
   hub messages send
   hub messages update
   hub messages delete
+  hub files upload         Upload a local file to a room's File Management
+  hub files folders        List a room's File Management folders
   hub lists list
   hub lists get
   hub lists create
@@ -55,6 +57,7 @@ Commands:
   hub items delete
   hub items move
   hub items reorder
+  hub items attach         Upload a local file and set it on an item's file field
   agents a2a send          Send a bot-to-bot message as an agent bot (--bot-key)
   agents a2a members       List the roster bots of a team
   agents a2a chain         Read every row of one bot-to-bot chain
@@ -390,8 +393,9 @@ Commands:
   get --route ROUTE [--param k=v]
   rooms list|members|create|update|delete|invite|kick|archive
   messages list|send|update|delete
+  files upload|folders
   lists list|get|create|update|delete
-  items list|get|search|find|create|update|delete|move|reorder
+  items list|get|search|find|create|update|delete|move|reorder|attach
   dm reply --room DM_ROOM_ID --text TEXT
   owner rooms|messages
   agents list
@@ -423,8 +427,9 @@ Bot mode (an agent bot, not a person):
 
 Sandbox egress (inside an agent VM):
   An agent VM holds no bot key. With PRIVOS_SANDBOX_MODE=true, PROXY_URL and PROXY_TOKEN set and
-  no credential of your own, the commands "hub rooms", "hub lists", "hub items", "hub dm", "hub owner",
-  "hub agents", "hub triggers" and "agents a2a" send every PrivOS Hub request through POST $PROXY_URL/egress, and the proxy
+  no credential of your own, the commands "hub rooms", "hub messages", "hub files", "hub lists",
+  "hub items", "hub dm", "hub owner", "hub agents", "hub triggers" and "agents a2a" send every
+  PrivOS Hub request through POST $PROXY_URL/egress, and the proxy
   attaches the bot key. The hub is --url, else PRIVOS_HUB_URL, else https://$PRIVOS_HUB_HOST.
   The proxy decides what an agent may call: a refusal prints its code first, for example
   "no-binding: no catalog entry for this domain". "hub get", "subscribe" and
@@ -665,6 +670,7 @@ const hubMessagesHelp = `Usage:
 Commands:
   list --room ROOM_ID [--kind channel|group|direct]
   send --room ROOM_ID --text TEXT
+  send --room ROOM_ID --file PATH [--text TEXT]
   update --room ROOM_ID --id MSG_ID --text TEXT
   delete --room ROOM_ID --id MSG_ID
 
@@ -696,10 +702,19 @@ PRIVOS_HUB_AUTH_TOKEN.
 
 const hubMessagesSendHelp = `Usage:
   privos hub messages send --room ROOM_ID --text TEXT
+  privos hub messages send --room ROOM_ID --file PATH [--text TEXT]
 
 POST /api/v1/chat.sendMessage with {"message":{"rid":ROOM_ID,"msg":TEXT}}.
 This is the user-token send method in the PrivOS API overview and in
 Rocket.Chat. It takes a room id, so --kind is not used. Dry run unless --confirm.
+
+--file posts a local file (image, video, audio, document, any type) as a chat
+attachment: one multipart POST /api/v1/rooms.upload/ROOM_ID with the file
+under "file" and --text, when set, as the message "msg". The content type comes
+from the file extension (application/octet-stream when unknown); images and
+videos are shown inline. The hub caps the size at its FileUpload_MaxFileSize
+setting. The dry run prints the file's name, type and size, never its bytes.
+Works with a personal token, a bot key, and over the sandbox egress.
 `;
 
 const hubMessagesUpdateHelp = `Usage:
@@ -713,6 +728,45 @@ const hubMessagesDeleteHelp = `Usage:
 
 POST /api/v1/chat.delete with {"roomId","msgId"}. asUser is omitted (server
 default false). Dry run unless --confirm.
+`;
+
+const hubFilesHelp = `Usage:
+  privos hub files <command>
+
+Commands:
+  upload --room ROOM_ID --file PATH [--folder FOLDER_ID] [--duplicate replace|keep_both|cancel]
+  folders --room ROOM_ID [--parent FOLDER_ID]
+
+The room's File Management (the Files tab), not chat attachments; post a file
+into the chat with "hub messages send --file". --room defaults to
+PRIVOS_ROOM_ID. Writes require --confirm.
+`;
+
+const hubFilesUploadHelp = `Usage:
+  privos hub files upload --room ROOM_ID --file PATH [--folder FOLDER_ID]
+         [--duplicate replace|keep_both|cancel]
+
+Multipart POST /api/v1/file-management.files.upload with the file under
+"files" and channelId, folderId and duplicateAction as fields. Without
+--folder the file goes to the room's top level; "hub files folders" lists
+folder ids. When the folder already holds a file of that name the hub refuses
+with DUPLICATE_FILE unless --duplicate says what to do: replace (same file id,
+new content), keep_both (the new file gets a numbered name) or cancel.
+
+Any file type; the content type comes from the extension. The room's Auto
+Parse setting decides whether the file is parsed. --room defaults to
+PRIVOS_ROOM_ID. Dry run unless --confirm; the dry run prints the file's name,
+type and size, never its bytes. Works with a personal token, a bot key, and
+over the sandbox egress.
+`;
+
+const hubFilesFoldersHelp = `Usage:
+  privos hub files folders --room ROOM_ID [--parent FOLDER_ID] [--count N] [--offset N]
+
+GET /api/v1/file-management.folders.channel/ROOM_ID: the folders at the room's
+top level, or under --parent (sent as fatherId). The hub pages by 50 unless
+--count is set. The table view prints ID, NAME and PATH. --room defaults to
+PRIVOS_ROOM_ID.
 `;
 
 const hubListsHelp = `Usage:
@@ -805,6 +859,7 @@ Commands:
   delete --id ITEM_ID
   move --id ITEM_ID --stage STAGE_ID
   reorder --id ITEM_ID --order N
+  attach --id ITEM_ID --field FIELD_ID --file PATH --room ROOM_ID
 
 Reads are GET /api/v1/items.*. Writes are POST and stay a dry run unless
 --confirm. stages.* and items.bulkUpdateOrder are not CLI commands.
@@ -871,6 +926,30 @@ const hubItemsUpdateHelp = `Usage:
 POST /api/v1/items.update with itemId plus at least one other field.
 --order here is the update body's "order" field, not items.updateOrder.
 Use "hub items reorder" for {"itemId","newOrder"}. Dry run unless --confirm.
+`;
+
+const hubItemsAttachHelp = `Usage:
+  privos hub items attach --id ITEM_ID --field FIELD_ID --file PATH --room ROOM_ID
+         [--duplicate replace|keep_both|cancel]
+
+Attaches a local file (image, video, document, any type) to a list item the
+way the item panel does. It reads the item and its list, then:
+  1. finds or creates the item folder Uploads/list-items/ITEM_ID in the room's
+     File Management (POST /api/v1/file-management.folders.create),
+  2. uploads the file there (multipart POST /api/v1/file-management.files.upload),
+  3. reads the uploaded file for its download URL
+     (GET /api/v1/file-management.files/FILE_ID; skipped over the sandbox
+     egress, which does not open it: the field then keeps the file id),
+  4. sets the field: PUT /api/v1/internal/rooms/ROOM_ID/items/ITEM_ID/customFields/FIELD_ID.
+A FILE field gets the file in place of its old one; a FILE_MULTIPLE or
+DOCUMENT field keeps its files and gets this one added. Other fields are left
+unchanged. Any other field type is refused before a write.
+
+--room is the item's room (default PRIVOS_ROOM_ID); "hub lists get" shows the
+field ids. --duplicate is passed to the upload (see "hub files upload").
+The reads run in a dry run too, so the preview shows the real folder ids and
+the field's new value. Dry run unless --confirm. Works with a personal token,
+a bot key, and over the sandbox egress.
 `;
 
 const hubItemsDeleteHelp = `Usage:
@@ -1167,6 +1246,9 @@ const HELP: Record<string, string> = {
   "hub messages send": hubMessagesSendHelp,
   "hub messages update": hubMessagesUpdateHelp,
   "hub messages delete": hubMessagesDeleteHelp,
+  "hub files": hubFilesHelp,
+  "hub files upload": hubFilesUploadHelp,
+  "hub files folders": hubFilesFoldersHelp,
   "hub lists": hubListsHelp,
   "hub lists list": hubListsListHelp,
   "hub lists get": hubListsGetHelp,
@@ -1183,6 +1265,7 @@ const HELP: Record<string, string> = {
   "hub items delete": hubItemsDeleteHelp,
   "hub items move": hubItemsMoveHelp,
   "hub items reorder": hubItemsReorderHelp,
+  "hub items attach": hubItemsAttachHelp,
   agents: agentsHelp,
   "agents a2a": agentsA2aHelp,
   "agents a2a send": agentsA2aSendHelp,

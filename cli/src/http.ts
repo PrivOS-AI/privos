@@ -1,4 +1,5 @@
 import { VERSION } from "./config.js";
+import { encodeForm, type UploadForm } from "./upload.js";
 
 const MAX_BODY = 8 << 20;
 
@@ -56,6 +57,8 @@ export function userAgent(): string {
 export interface SendOptions {
   query?: URLSearchParams;
   body?: unknown;
+  /** A multipart body; used instead of body. */
+  form?: UploadForm;
   extraHeaders?: Record<string, string>;
   /** Required for any method other than GET. */
   allowMutation?: boolean;
@@ -88,8 +91,12 @@ export class Client {
     for (const [key, value] of Object.entries(opts.extraHeaders ?? {})) {
       headers.set(key, value);
     }
-    let bodyText: string | undefined;
-    if (opts.body !== undefined) {
+    let bodyText: string | Uint8Array<ArrayBuffer> | undefined;
+    if (opts.form !== undefined) {
+      const encoded = await encodeForm(opts.form);
+      bodyText = encoded.body;
+      headers.set("content-type", encoded.contentType);
+    } else if (opts.body !== undefined) {
       bodyText = JSON.stringify(opts.body);
       if (!headers.has("content-type")) headers.set("content-type", "application/json");
     }
