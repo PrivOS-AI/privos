@@ -406,7 +406,7 @@ describe("privos", { concurrency: false }, () => {
         body,
       });
       res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ id: "t1", title: "Write", status: "todo" }));
+      res.end(JSON.stringify({ id: "t1", projectId: "p1", title: "Write", status: "todo" }));
     });
     try {
       let result = await runCLI([
@@ -444,16 +444,20 @@ describe("privos", { concurrency: false }, () => {
         "--chat-init", "true", "--status", "in_progress",
       ]);
       assert.equal(result.code, 0, result.stderr);
-      assert.equal(seen[1].method, "PATCH");
+      // The status change reads the task first to learn the project for the reorder header.
+      assert.equal(seen[1].method, "GET");
       assert.equal(seen[1].url, "/api/tasks/t1");
-      assert.deepEqual(JSON.parse(seen[1].body), {
+      assert.equal(seen[2].method, "PATCH");
+      assert.equal(seen[2].url, "/api/tasks/t1");
+      assert.deepEqual(JSON.parse(seen[2].body), {
         title: "Renamed",
         description: "More",
         chatInit: true,
       });
-      assert.equal(seen[2].method, "PUT");
-      assert.equal(seen[2].url, "/api/tasks/reorder");
-      const reorder = JSON.parse(seen[2].body);
+      assert.equal(seen[3].method, "PUT");
+      assert.equal(seen[3].url, "/api/tasks/reorder");
+      assert.equal(seen[3].project, "p1");
+      const reorder = JSON.parse(seen[3].body);
       assert.equal(reorder.taskId, "t1");
       assert.equal(reorder.status, "in_progress");
       assert.ok(reorder.position < 0);
@@ -466,15 +470,15 @@ describe("privos", { concurrency: false }, () => {
       ]);
       assert.equal(result.code, 2);
       assert.match(result.stderr, /--confirm/);
-      assert.equal(seen.length, 3);
+      assert.equal(seen.length, 4);
 
       result = await runCLI([
         "sandbox", "tasks", "delete", "--confirm",
         "--url", srv.url, "--api-key", "secret-key", "--id", "t1",
       ]);
       assert.equal(result.code, 0, result.stderr);
-      assert.equal(seen[3].method, "DELETE");
-      assert.equal(seen[3].url, "/api/tasks/t1");
+      assert.equal(seen[4].method, "DELETE");
+      assert.equal(seen[4].url, "/api/tasks/t1");
     } finally {
       await srv.close();
     }
@@ -1035,6 +1039,159 @@ describe("privos", { concurrency: false }, () => {
     }
   });
 
+  // The attempt body of a dry run (the POST is always the last planned request).
+  async function startBody(opts, ...flags) {
+    const b = await startBoard(opts);
+    try {
+      const r = await b.run(...flags);
+      assert.equal(r.code, 0, r.stderr);
+      const requests = JSON.parse(r.stdout).requests;
+      assert.deepEqual(b.writes(), []);
+      return requests[requests.length - 1].body;
+    } finally {
+      await b.srv.close();
+    }
+  }
+
+  const PREVIOUS = [
+    { id: "a0", status: "completed", createdAt: 1000, provider: "codex-cli", model: "old-model" },
+    {
+      id: "a1",
+      status: "completed",
+      createdAt: 2000,
+      provider: "privos-agent-sdk",
+      model: "gpt-x",
+      llmProviderId: "llm-1",
+    },
+    { id: "a2", status: "failed", createdAt: 3000, provider: null, model: null },
+  ];
+
+  test("tasks start reuses the newest attempt's provider, model and custom provider", async () => {
+    clearCreds();
+    const body = await startBody({ attempts: PREVIOUS }, "--effort", "high");
+    assert.deepEqual(body, {
+      taskId: "t1",
+      prompt: "Do it",
+      projectId: "p1",
+      provider: "privos-agent-sdk",
+      model: "gpt-x",
+      llmProviderId: "llm-1",
+      effort: "high",
+    });
+  });
+
+  test("tasks start --model keeps the inherited provider but not its custom provider id", async () => {
+    clearCreds();
+    const body = await startBody({ attempts: PREVIOUS }, "--model", "other");
+    assert.equal(body.provider, "privos-agent-sdk");
+    assert.equal(body.model, "other");
+    assert.equal("llmProviderId" in body, false);
+  });
+
+  test("tasks start --provider drops the inherited model", async () => {
+    clearCreds();
+    const body = await startBody({ attempts: PREVIOUS }, "--provider", "claude-cli");
+    assert.equal(body.provider, "claude-cli");
+    assert.equal("model" in body, false);
+    assert.equal("llmProviderId" in body, false);
+    const withModel = await startBody({ attempts: PREVIOUS }, "--provider", "claude-cli", "--model", "m");
+    assert.deepEqual([withModel.provider, withModel.model], ["claude-cli", "m"]);
+  });
+
+  test("tasks start --llm-provider sends no inherited provider", async () => {
+    clearCreds();
+    const body = await startBody({ attempts: PREVIOUS }, "--model", "m", "--llm-provider", "llm-2");
+    assert.equal(body.model, "m");
+    assert.equal(body.llmProviderId, "llm-2");
+    assert.equal("provider" in body, false);
+  });
+
+  test("tasks start inherits the task's last runtime when it has no attempt with a provider", async () => {
+    clearCreds();
+    const task = { lastProvider: "codex-cli", lastModel: "codex-m", lastLlmProviderId: null };
+    const body = await startBody({ task, attempts: [PREVIOUS[2]] });
+    assert.equal(body.provider, "codex-cli");
+    assert.equal(body.model, "codex-m");
+    assert.equal("llmProviderId" in body, false);
+  });
+
+  test("tasks start ignores an inherited provider the CLI does not know", async () => {
+    clearCreds();
+    const task = { lastProvider: "mystery-runtime", lastModel: "m" };
+    const body = await startBody({ task });
+    assert.equal(body.provider, "claude-cli");
+    assert.equal("model" in body, false);
+  });
+
+  test("tasks start falls back to claude-cli for a task that never ran", async () => {
+    clearCreds();
+    const body = await startBody({});
+    assert.equal(body.provider, "claude-cli");
+    assert.equal("model" in body, false);
+    const withModel = await startBody({}, "--model", "m");
+    assert.deepEqual([withModel.provider, withModel.model], ["claude-cli", "m"]);
+  });
+
+  test("tasks create --start sends claude-cli unless flags say otherwise", async () => {
+    clearCreds();
+    const plain = await createBoard();
+    try {
+      const r = await plain.run("--description", "Go", "--start", "--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      const attempt = plain.seen.find((x) => x.line === "POST /api/attempts");
+      assert.equal(attempt.body.provider, "claude-cli");
+      assert.equal("model" in attempt.body, false);
+    } finally {
+      await plain.srv.close();
+    }
+    const flagged = await createBoard();
+    try {
+      const r = await flagged.run("--description", "Go", "--start", "--provider", "codex-cli", "--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      const attempt = flagged.seen.find((x) => x.line === "POST /api/attempts");
+      assert.equal(attempt.body.provider, "codex-cli");
+    } finally {
+      await flagged.srv.close();
+    }
+  });
+
+  test("tasks start sends the project header on the reorder", async () => {
+    clearCreds();
+    const b = await startBoard();
+    try {
+      const r = await b.run("--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      const reorder = b.seen.find((x) => x.line === "PUT /api/tasks/reorder");
+      assert.equal(reorder.project, "p1");
+    } finally {
+      await b.srv.close();
+    }
+  });
+
+  test("tasks update --status prints a project-scope refusal and exits 1", async () => {
+    clearCreds();
+    const srv = await serve(async (req, res) => {
+      await readBody(req);
+      res.setHeader("content-type", "application/json");
+      if (req.method === "GET") {
+        res.end(JSON.stringify({ id: "t1", projectId: "p1" }));
+      } else {
+        res.writeHead(403);
+        res.end(JSON.stringify({ error: "project-scope", message: "this credential may only write to its own project" }));
+      }
+    });
+    try {
+      const r = await runCLI([
+        "sandbox", "tasks", "update", "--confirm", "--url", srv.url, "--api-key", "k",
+        "--id", "t1", "--status", "done",
+      ]);
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /HTTP 403: this credential may only write to its own project/);
+    } finally {
+      await srv.close();
+    }
+  });
+
   test("tasks start usage errors send nothing", async () => {
     clearCreds();
     const b = await startBoard();
@@ -1291,8 +1448,27 @@ describe("privos", { concurrency: false }, () => {
   });
 
   // A board with HTTP reads and a socket.io server that records question:answer.
-  async function answerBoard({ ack = true, clears = true, pending: initial, websocketOnly = false } = {}) {
+  const LEGACY_ANSWER = {
+    status: 400,
+    body: { error: "projectId, workspaceId, toolUseId, questions, and answers are required" },
+  };
+  const REST_ANSWER_OK = { status: 200, body: { success: true } };
+
+  // restAnswer is what POST /api/attempts/a1/answer returns; the default is an older board's 400,
+  // which sends the CLI to the socket. A 200 leaves the stored question in place, as a real board
+  // clears it only through its own state.
+  async function answerBoard({
+    ack = true,
+    clears = true,
+    pending: initial,
+    websocketOnly = false,
+    restAnswer = LEGACY_ANSWER,
+    task = {},
+    attempts = [{ id: "a1", status: "running" }],
+  } = {}) {
     const state = {
+      restBodies: [],
+      restProjects: [],
       pending: initial === undefined
         ? {
             attemptId: "a1",
@@ -1310,16 +1486,21 @@ describe("privos", { concurrency: false }, () => {
       transports: [],
     };
     const srv = await serve(async (req, res) => {
-      await readBody(req);
+      const raw = await readBody(req);
       state.seen.push({ method: req.method, url: req.url, requesterId: req.headers["x-privos-requester-id"] });
       res.setHeader("content-type", "application/json");
       if (req.method === "GET" && req.url === "/api/tasks/t1") {
-        res.end(JSON.stringify({ id: "t1", projectId: "p1" }));
+        res.end(JSON.stringify({ id: "t1", projectId: "p1", ...task }));
+      } else if (req.method === "GET" && req.url === "/api/tasks/t1/attempts") {
+        res.end(JSON.stringify({ attempts }));
       } else if (req.method === "GET" && req.url === "/api/tasks/t1/pending-question") {
         res.end(JSON.stringify({ question: state.pending }));
       } else if (req.method === "POST" && req.url === "/api/attempts/a1/answer") {
-        res.writeHead(400);
-        res.end(JSON.stringify({ error: "projectId, workspaceId, toolUseId, questions, and answers are required" }));
+        state.restBodies.push(JSON.parse(raw));
+        state.restProjects.push(req.headers["x-project-id"]);
+        state.onRestAnswer?.();
+        res.writeHead(restAnswer.status);
+        res.end(JSON.stringify(restAnswer.body));
       } else {
         res.writeHead(404);
         res.end("{}");
@@ -1356,9 +1537,17 @@ describe("privos", { concurrency: false }, () => {
       const r = await b.run("--api-key", "k", ...BOTH);
       assert.equal(r.code, 0, r.stderr);
       const plan = JSON.parse(r.stdout);
-      assert.deepEqual(plan.requests[0].payload.answers, WANT);
-      assert.equal(plan.requests[0].event, "question:answer");
+      assert.equal(plan.requests[0].method, "POST");
+      assert.match(plan.requests[0].url, /\/api\/attempts\/a1\/answer$/);
+      assert.equal(plan.requests[0].headers["x-project-id"], "p1");
+      assert.deepEqual(plan.requests[0].body.answers, WANT);
+      assert.equal(plan.requests[0].body.projectId, "p1");
+      assert.equal("workspaceId" in plan.requests[0].body, false);
+      assert.equal(plan.requests[1].event, "question:answer");
+      assert.deepEqual(plan.requests[1].payload.answers, WANT);
+      assert.match(plan.requests[1].note, /legacy 400 or a 404 with no pending question/);
       assert.equal(b.connections, 0);
+      assert.deepEqual(b.restBodies, []);
       assert.ok(b.seen.every((x) => x.method === "GET"));
       assert.match(r.stderr, /No write was sent/);
     } finally {
@@ -1366,7 +1555,59 @@ describe("privos", { concurrency: false }, () => {
     }
   });
 
-  test("tasks answer --confirm emits question:answer and ignores the REST log error", async () => {
+  test("tasks answer --confirm delivers over REST and opens no socket", async () => {
+    clearCreds();
+    const b = await answerBoard({ restAnswer: REST_ANSWER_OK });
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.deepEqual(JSON.parse(r.stdout), {
+        answered: true,
+        attemptId: "a1",
+        toolUseId: "tu1",
+        via: "rest",
+        confirmedBy: "rest",
+      });
+      assert.equal(b.connections, 0);
+      assert.equal(b.restBodies.length, 1);
+      assert.deepEqual(b.restBodies[0], {
+        projectId: "p1",
+        toolUseId: "tu1",
+        questions: b.restBodies[0].questions,
+        answers: WANT,
+      });
+      assert.deepEqual(b.restProjects, ["p1"]);
+      assert.ok(!r.stdout.includes("Postgres"));
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer sends the workspace of a hub attempt and falls back to the task's", async () => {
+    clearCreds();
+    let b = await answerBoard({
+      restAnswer: REST_ANSWER_OK,
+      attempts: [{ id: "a1", status: "running", workspaceId: "w-attempt" }],
+      task: { workspaceId: "w-task" },
+    });
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(b.restBodies[0].workspaceId, "w-attempt");
+    } finally {
+      await b.close();
+    }
+    b = await answerBoard({ restAnswer: REST_ANSWER_OK, task: { workspaceId: "w-task" } });
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(b.restBodies[0].workspaceId, "w-task");
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer falls back to the socket on an older board's 400", async () => {
     clearCreds();
     const b = await answerBoard();
     try {
@@ -1381,10 +1622,105 @@ describe("privos", { concurrency: false }, () => {
         answers: WANT,
       });
       const out = JSON.parse(r.stdout);
+      assert.equal(out.via, "socket");
       assert.equal(out.confirmedBy, "ack");
-      assert.equal(out.restLog, "not saved");
-      assert.match(r.stderr, /Answer log not saved \(ignored\)/);
-      assert.ok(b.seen.some((x) => x.method === "POST" && x.url === "/api/attempts/a1/answer"));
+      assert.equal("restLog" in out, false);
+      assert.equal(b.restBodies.length, 1);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer falls back to the socket when the board holds the question without a worker", async () => {
+    clearCreds();
+    for (const message of [
+      "No matching pending question for this attempt",
+      "No pending question for this attempt",
+    ]) {
+      const b = await answerBoard({ restAnswer: { status: 404, body: { error: message } } });
+      try {
+        const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+        assert.equal(r.code, 0, r.stderr);
+        assert.equal(JSON.parse(r.stdout).via, "socket");
+        assert.equal(b.emitted.length, 1);
+      } finally {
+        await b.close();
+      }
+    }
+  });
+
+  test("tasks answer does not fall back on any other REST failure", async () => {
+    clearCreds();
+    for (const restAnswer of [
+      { status: 404, body: { error: "Attempt not found" } },
+      { status: 400, body: { error: "something else is required" } },
+      { status: 403, body: { error: "project-scope", message: "this credential may only write to its own project" } },
+      { status: 500, body: { error: "boom" } },
+    ]) {
+      const b = await answerBoard({ restAnswer });
+      try {
+        const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+        assert.equal(r.code, 1, r.stderr);
+        assert.equal(r.stdout, "");
+        assert.equal(b.connections, 0);
+        assert.ok(!r.stderr.includes("Postgres"));
+      } finally {
+        await b.close();
+      }
+    }
+  });
+
+  test("tasks answer prints the project-scope refusal and exits 1", async () => {
+    clearCreds();
+    const b = await answerBoard({
+      restAnswer: { status: 403, body: { error: "project-scope", message: "this credential may only write to its own project" } },
+    });
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /HTTP 403: this credential may only write to its own project/);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer stops when the pending question changed before the socket emit", async () => {
+    clearCreds();
+    const b = await answerBoard();
+    try {
+      // The board swaps the question while the REST answer is refused.
+      const original = b.pending;
+      b.onRestAnswer = () => { b.pending = { ...original, toolUseId: "tu2" }; };
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /pending question changed while answering/);
+      assert.equal(b.emitted.length, 0);
+      assert.equal(b.connections, 0);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer refuses a credential question before sending or printing anything", async () => {
+    clearCreds();
+    const b = await answerBoard({
+      pending: {
+        attemptId: "a1",
+        toolUseId: "tu1",
+        questions: [{ question: "API key?", credential: { name: "stripe" } }],
+      },
+    });
+    try {
+      const r = await b.run("--api-key", "k", "--answer", "sk-typed-secret", "--confirm");
+      assert.equal(r.code, 2);
+      assert.equal(r.stdout, "");
+      assert.match(r.stderr, /secure vault form/);
+      assert.ok(!r.stderr.includes("sk-typed-secret"));
+      const dry = await b.run("--api-key", "k", "--answer", "sk-typed-secret");
+      assert.equal(dry.code, 2);
+      assert.equal(dry.stdout, "");
+      assert.deepEqual(b.restBodies, []);
+      assert.equal(b.connections, 0);
     } finally {
       await b.close();
     }
@@ -1531,7 +1867,7 @@ describe("privos", { concurrency: false }, () => {
 
   const CLAIM = ["--requester", "agent-7", "--requester-name", "Build Bot", "--requester-kind", "agent"];
 
-  test("tasks answer --confirm sends the requester claim on the socket and the REST log", async () => {
+  test("tasks answer --confirm sends the requester claim on the REST request and the socket", async () => {
     clearCreds();
     const b = await answerBoard();
     try {
@@ -1565,10 +1901,10 @@ describe("privos", { concurrency: false }, () => {
       const r = await b.run("--api-key", "secret-answer-key", ...BOTH, ...CLAIM);
       assert.equal(r.code, 0, r.stderr);
       const plan = JSON.parse(r.stdout);
-      assert.deepEqual(plan.requests[0].auth, { requester: { kind: "agent", id: "agent-7", name: "Build Bot" } });
-      assert.deepEqual(plan.requests[0].omittedAuthNames, ["auth.token"]);
-      assert.equal(plan.requests[1].headers["x-privos-requester-id"], "agent-7");
-      assert.deepEqual(plan.requests[1].omittedHeaderNames, ["x-api-key"]);
+      assert.deepEqual(plan.requests[1].auth, { requester: { kind: "agent", id: "agent-7", name: "Build Bot" } });
+      assert.deepEqual(plan.requests[1].omittedAuthNames, ["auth.token"]);
+      assert.equal(plan.requests[0].headers["x-privos-requester-id"], "agent-7");
+      assert.deepEqual(plan.requests[0].omittedHeaderNames, ["x-api-key"]);
       assert.equal(b.connections, 0);
       assert.ok(!r.stdout.includes("secret-answer-key"));
       assert.ok(!r.stderr.includes("secret-answer-key"));
