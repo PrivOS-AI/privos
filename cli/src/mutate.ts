@@ -17,6 +17,11 @@ export interface PlannedRequest {
   extraHeaders?: Record<string, string>;
   /** Rebuilds the request from earlier responses just before sending. The dry run shows the template. */
   prepare?: (prior: unknown[]) => PlannedRequest;
+  /**
+   * Judges the parsed response of a request that returned 2xx. When it throws, the response is
+   * still printed as for a success and the command then fails with the thrown message.
+   */
+  expect?: (body: unknown) => void;
 }
 
 export const DRY_RUN_NOTE = "Dry run only. No write was sent. Pass --confirm to send this request.\n";
@@ -72,7 +77,17 @@ export async function mutate(
       }
       throw err;
     }
+    try {
+      plan.expect?.(parseBody(bodies[bodies.length - 1]!));
+    } catch (err) {
+      printResults(p, bodies, stdout);
+      throw err;
+    }
   }
+  printResults(p, bodies, stdout);
+}
+
+function printResults(p: Parsed, bodies: Buffer[], stdout: Out): void {
   if (p.raw) {
     for (const body of bodies) {
       const text = body.toString("utf8").trim();

@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { resolveSandbox } from "./config.js";
 import { REQUESTER_FLAGS, requesterHeaders, resolveRequester, socketAuth, socketRequester, type Requester } from "./requester.js";
 import { helpFor } from "./help.js";
-import { Client } from "./http.js";
+import { Client, HTTPError } from "./http.js";
 import { DRY_RUN_NOTE, sandboxHeaders } from "./mutate.js";
 import { forbidUnknown, mutationMode, pathSegment, requireFlag, timeoutSeconds, type Parsed } from "./parse.js";
 import type { Out } from "./render.js";
@@ -11,13 +11,22 @@ import { usage } from "./usage.js";
 interface PendingQuestion {
   attemptId: string;
   toolUseId: string;
-  questions: { question: string }[];
+  questions: { question: string; credential?: unknown }[];
 }
 
+/** The 400 an older board gives when the REST answer route insists on a workspaceId. */
+const LEGACY_REST_MESSAGE = "projectId, workspaceId, toolUseId, questions, and answers are required";
+/** The 404s that mean the board holds the question but no live worker waits for it. */
+const NO_PENDING_MESSAGES = [
+  "No matching pending question for this attempt",
+  "No pending question for this attempt",
+];
+
 /**
- * Answers the agent's pending question over socket.io ("question:answer"), as the board UI does.
- * The REST answer route needs a workspaceId that this CLI does not send, so it is only a
- * best-effort log write here.
+ * Answers the agent's pending question. REST first: HTTP 200 from POST /api/attempts/:id/answer
+ * is delivery. The socket.io event ("question:answer") is used only when the board is older
+ * (the legacy 400) or holds the question without a live worker (the 404), because the socket
+ * path also restarts the agent for a stored question.
  */
 export async function sandboxTasksAnswer(
   p: Parsed,
@@ -43,6 +52,10 @@ export async function sandboxTasksAnswer(
   if (typeof projectId !== "string" || projectId === "") throw new Error("task has no projectId");
   const question = await pendingQuestion(client, id);
   if (question === null) throw new Error(`task ${p.id} has no pending question`);
+  // The board treats any non-null credential marker as a vault question.
+  if (question.questions.some((q) => q.credential !== undefined && q.credential !== null)) {
+    throw usage("this question is answered by the secure vault form, not by text (open it in the hub or the board)");
+  }
 
   const n = question.questions.length;
   if (p.answers.length !== n) {
@@ -51,27 +64,45 @@ export async function sandboxTasksAnswer(
   }
   const answers = Object.fromEntries(question.questions.map((q, i) => [q.question, p.answers[i]!]));
   const { attemptId, toolUseId, questions } = question;
-  const payload = { attemptId, projectId, toolUseId, questions, answers };
-  const logPath = `/api/attempts/${encodeURIComponent(attemptId)}/answer`;
-  const logBody = { projectId, toolUseId, questions, answers };
+
+  // A board-created attempt carries no workspace; a hub attempt does, on the row or on its task.
+  const attemptRows = readJSON(await client.get(`/api/tasks/${id}/attempts`)) as { attempts?: unknown } | null;
+  if (!Array.isArray(attemptRows?.attempts)) throw new Error("unexpected response from the board");
+  const attempt = (attemptRows.attempts as unknown[]).find(
+    (a) => a !== null && typeof a === "object" && (a as Record<string, unknown>).id === attemptId,
+  ) as Record<string, unknown> | undefined;
+  const attemptWorkspace = nonEmpty(attempt?.workspaceId);
+  const workspaceId = attemptWorkspace ?? nonEmpty(task?.workspaceId);
+
+  const path = `/api/attempts/${encodeURIComponent(attemptId)}/answer`;
+  const restBodyFor = (workspace: string | undefined) => ({
+    projectId,
+    ...(workspace === undefined ? {} : { workspaceId: workspace }),
+    toolUseId,
+    questions,
+    answers,
+  });
+  const restBody = restBodyFor(workspaceId);
+  const restHeaders = { "x-project-id": projectId };
+  const socketPayload = { attemptId, projectId, toolUseId, questions, answers };
 
   if (mode === "dry") {
     const requests = [
+      {
+        method: "POST",
+        url: `${cfg.baseURL}${path}`,
+        headers: { ...requesterHeaders(requester), ...restHeaders },
+        omittedHeaderNames: ["x-api-key"],
+        body: restBody,
+      },
       {
         transport: "socket.io",
         url: cfg.baseURL,
         event: "question:answer",
         omittedAuthNames: ["auth.token"],
         auth: requester === null ? {} : { requester: socketRequester(requester) },
-        payload,
-      },
-      {
-        method: "POST",
-        url: `${cfg.baseURL}${logPath}`,
-        headers: requesterHeaders(requester),
-        omittedHeaderNames: ["x-api-key"],
-        body: logBody,
-        note: "best effort; errors are ignored",
+        payload: socketPayload,
+        note: "sent only when the board answers the legacy 400 or a 404 with no pending question",
       },
     ];
     stdout.write(`${JSON.stringify({ dryRun: true, requests }, null, 2)}\n`);
@@ -79,40 +110,122 @@ export async function sandboxTasksAnswer(
     return;
   }
 
-  const ack = await emitAnswer(cfg.baseURL, cfg.apiKey, requester, payload, timeoutSeconds(p) * 1000);
-  let confirmedBy: string;
+  let via = "rest";
+  let confirmedBy = "rest";
+  const post = (body: unknown) => client.send("POST", path, { body, extraHeaders: restHeaders, allowMutation: true });
+  try {
+    try {
+      await post(restBody);
+    } catch (err) {
+      // An older board compares the workspace with the attempt row only, so a workspace that came
+      // from the task makes it answer "Attempt not found". Retry once without it; a current board
+      // answers the same 404 again and that stays final.
+      if (attemptWorkspace === undefined && workspaceId !== undefined && isAttemptNotFound(err)) {
+        await post(restBodyFor(undefined));
+      } else {
+        throw err;
+      }
+    }
+  } catch (err) {
+    if (!socketFallbackApplies(err)) throw err;
+    // The question may have been answered or replaced since it was read; never answer a newer one.
+    const again = await pendingQuestion(client, id);
+    if (again === null || again.toolUseId !== toolUseId) {
+      throw new Error(PENDING_CHANGED);
+    }
+    // With no live worker the stored copy can be stale while a live one waits on a newer question.
+    if (err instanceof HTTPError && err.status === 404) {
+      const live = await livePendingToolUseId(client, attemptId);
+      if (live !== null && live !== toolUseId) throw new Error(PENDING_CHANGED);
+    }
+    via = "socket";
+    confirmedBy = await answerOverSocket(
+      client,
+      id,
+      cfg.baseURL,
+      cfg.apiKey,
+      requester,
+      socketPayload,
+      toolUseId,
+      timeoutSeconds(p) * 1000,
+    );
+  }
+  stdout.write(`${JSON.stringify({ answered: true, attemptId, toolUseId, via, confirmedBy }, null, 2)}\n`);
+}
+
+const PENDING_CHANGED = "the pending question changed while answering; re-run privos sandbox tasks question";
+
+function isAttemptNotFound(err: unknown): boolean {
+  return err instanceof HTTPError && err.status === 404 && errorMessages(err.body).includes("Attempt not found");
+}
+
+/** The toolUseId of the question a live worker waits on, or null when none (or an older board lacks the route). */
+async function livePendingToolUseId(client: Client, attemptId: string): Promise<string | null> {
+  let body: Buffer;
+  try {
+    body = await client.get(`/api/attempts/${encodeURIComponent(attemptId)}/pending-question`);
+  } catch (err) {
+    if (err instanceof HTTPError && err.status === 404) return null;
+    throw err;
+  }
+  const question = (readJSON(body) as { question?: { toolUseId?: unknown } | null } | null)?.question;
+  return typeof question?.toolUseId === "string" ? question.toolUseId : null;
+}
+
+function nonEmpty(value: unknown): string | undefined {
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/** The two refusals the socket path handles better than REST. Anything else is final. */
+function socketFallbackApplies(err: unknown): boolean {
+  if (!(err instanceof HTTPError)) return false;
+  const messages = errorMessages(err.body);
+  if (err.status === 400) return messages.includes(LEGACY_REST_MESSAGE);
+  if (err.status === 404) return NO_PENDING_MESSAGES.some((m) => messages.includes(m));
+  return false;
+}
+
+function errorMessages(body: string): string[] {
+  try {
+    const rec = JSON.parse(body) as Record<string, unknown> | null;
+    if (rec === null || typeof rec !== "object") return [];
+    return [rec.error, rec.message].filter((v): v is string => typeof v === "string").map((v) => v.trim());
+  } catch {
+    return [];
+  }
+}
+
+/** Emits question:answer and returns how delivery was confirmed. */
+async function answerOverSocket(
+  client: Client,
+  taskId: string,
+  baseURL: string,
+  apiKey: string,
+  requester: Requester | null,
+  payload: unknown,
+  toolUseId: string,
+  timeoutMs: number,
+): Promise<string> {
+  const ack = await emitAnswer(baseURL, apiKey, requester, payload, timeoutMs);
   if (ack !== null && ack.success === false) {
     throw new Error(`question:answer rejected: ${typeof ack.error === "string" ? ack.error : "unknown error"}`);
-  } else if (ack !== null && ack.success === true) {
-    confirmedBy = "ack";
-  } else {
-    // Sandbox mode forwards the event without an ack and clears the question asynchronously,
-    // so poll until it is gone.
-    const deadline = Date.now() + timeoutSeconds(p) * 1000;
-    for (;;) {
-      // A failed read says nothing about delivery; keep polling until the deadline.
-      let state = "the question is still pending";
-      try {
-        const after = await pendingQuestion(client, id);
-        if (after === null || after.toolUseId !== toolUseId) break;
-      } catch (err) {
-        state = `the question could not be re-read (${err instanceof Error ? err.message : String(err)})`;
-      }
-      if (Date.now() >= deadline) throw new Error(`answer sent but not confirmed: ${state}`);
-      await sleep(500);
+  }
+  if (ack !== null && ack.success === true) return "ack";
+  // Sandbox mode forwards the event without an ack and clears the question asynchronously,
+  // so poll until it is gone.
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    // A failed read says nothing about delivery; keep polling until the deadline.
+    let state = "the question is still pending";
+    try {
+      const after = await pendingQuestion(client, taskId);
+      if (after === null || after.toolUseId !== toolUseId) return "question cleared";
+    } catch (err) {
+      state = `the question could not be re-read (${err instanceof Error ? err.message : String(err)})`;
     }
-    confirmedBy = "question cleared";
+    if (Date.now() >= deadline) throw new Error(`answer sent but not confirmed: ${state}`);
+    await sleep(500);
   }
-
-  // The socket answer goes first, so a REST answer for a hub attempt finds nothing left to resume.
-  let restLog = "saved";
-  try {
-    await client.send("POST", logPath, { body: logBody, allowMutation: true });
-  } catch (err) {
-    restLog = "not saved";
-    stderr.write(`Answer log not saved (ignored): ${err instanceof Error ? err.message : String(err)}\n`);
-  }
-  stdout.write(`${JSON.stringify({ answered: true, attemptId, toolUseId, confirmedBy, restLog }, null, 2)}\n`);
 }
 
 function readJSON(body: Buffer): unknown {
@@ -145,11 +258,22 @@ async function emitAnswer(
 ): Promise<Record<string, unknown> | null> {
   // Loaded here so commands that never answer do not load socket.io.
   const { io } = await import("socket.io-client");
-  const socket = io(baseURL, { auth: socketAuth(apiKey, requester), reconnection: false, timeout: timeoutMs });
+  // The board accepts websocket handshakes only, so skip the long-polling probe.
+  const socket = io(baseURL, {
+    auth: socketAuth(apiKey, requester),
+    transports: ["websocket"],
+    reconnection: false,
+    timeout: timeoutMs,
+  });
   try {
     return await new Promise((resolve, reject) => {
       socket.on("connect_error", (err: Error) => {
-        reject(new Error(`socket.io connect failed: ${err.message}`));
+        reject(
+          new Error(
+            `socket.io websocket connect to ${baseURL} failed: ${err.message}\n` +
+              "The board accepts websocket handshakes only; check --url, the proxy in front of it, and the API key.",
+          ),
+        );
       });
       // The sandbox bridge reports a rejected event this way instead of acking.
       socket.on("error", (err: { message?: unknown } | null) => {

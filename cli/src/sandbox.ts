@@ -1,10 +1,11 @@
 import { resolveSandbox } from "./config.js";
 import { REQUESTER_FLAGS, resolveRequester } from "./requester.js";
 import { helpFor } from "./help.js";
-import { Client } from "./http.js";
+import { Client, HTTPError } from "./http.js";
 import { mutate, sandboxHeaders, type PlannedRequest } from "./mutate.js";
 import {
   forbidUnknown,
+  isProvider,
   mutationMode,
   optionalNonNegative,
   parseAutopilot,
@@ -298,7 +299,8 @@ export async function sandboxTasksCreate(
     if (p.status !== "" && p.status !== "in_progress") {
       throw usage("--start creates the task in in_progress; drop --status");
     }
-    const selection = attemptSelection(p);
+    // A new task has no previous attempt to inherit from.
+    const selection = attemptRuntime(attemptSelection(p), { provider: "claude-cli" });
     body.status = "in_progress";
     const chatInit = (taskId: string): PlannedRequest => ({
       method: "PATCH",
@@ -396,10 +398,18 @@ export async function sandboxTasksUpdate(
   }
   if (p.status !== "") {
     const position = p.position === "" ? -Date.now() : parsePosition(p.position);
+    if (p.format === "table") {
+      throw usage("writes print JSON; --format table applies to list reads");
+    }
+    mutationMode(p);
+    // The reorder body names only the task, so the project travels in x-project-id. This read is
+    // a pure GET and also runs in a dry run.
+    const task = readObject(await sandboxClient(p, fetchImpl).get(`/api/tasks/${id}`));
     plans.push({
       method: "PUT",
       path: "/api/tasks/reorder",
       body: { taskId: p.id, status: p.status, position },
+      extraHeaders: { "x-project-id": taskProjectId(task) },
     });
   }
   await sendSandbox(p, plans, stdout, stderr, fetchImpl);
@@ -449,10 +459,9 @@ export async function sandboxTasksStart(
     throw usage("writes print JSON; --format table applies to list reads");
   }
   mutationMode(p);
-  const selection = attemptSelection(p);
+  const explicit = attemptSelection(p);
   // Both reads are pure GETs, so they run in a dry run too (Client.send blocks every write).
-  const cfg = resolveSandbox(p.url, p.apiKey);
-  const client = new Client(cfg.baseURL, sandboxHeaders(cfg.apiKey, resolveRequester(p)), timeoutSeconds(p) * 1000, fetchImpl);
+  const client = sandboxClient(p, fetchImpl);
   const task = JSON.parse((await client.get(`/api/tasks/${id}`)).toString("utf8")) as unknown;
   const attempts = (JSON.parse((await client.get(`/api/tasks/${id}/attempts`)).toString("utf8")) as {
     attempts?: unknown;
@@ -471,6 +480,7 @@ export async function sandboxTasksStart(
       `Warning: attempt ${String(running.id)} is still running; --force starts a second agent on the same task.\n`,
     );
   }
+  const selection = attemptRuntime(explicit, inheritRuntime(task as Record<string, unknown>, attempts));
   const plans = startPlans(task as Record<string, unknown>, p.id, id, selection, p.prompt);
   await sendSandbox(p, plans, stdout, stderr, fetchImpl);
 }
@@ -488,6 +498,55 @@ function attemptSelection(p: Parsed): Record<string, string> {
   if (p.provider !== "") out.provider = parseProvider(p.provider);
   if (p.llmProvider !== "") out.llmProviderId = p.llmProvider;
   if (p.effort !== "") out.effort = parseEffort(p.effort);
+  return out;
+}
+
+/**
+ * The runtime a task last ran with: the newest attempt that names a known provider, else the
+ * task's own last* fields, else claude-cli (the board's own default 500s without a provider).
+ */
+function inheritRuntime(task: Record<string, unknown>, attempts: unknown[]): Record<string, string> {
+  let latest: Record<string, unknown> | undefined;
+  for (const a of attempts) {
+    if (a === null || typeof a !== "object") continue;
+    const rec = a as Record<string, unknown>;
+    if (!isProvider(rec.provider)) continue;
+    if (latest === undefined || timeOf(rec.createdAt) > timeOf(latest.createdAt)) latest = rec;
+  }
+  const source =
+    latest !== undefined
+      ? { provider: latest.provider, model: latest.model, llmProviderId: latest.llmProviderId }
+      : isProvider(task.lastProvider)
+        ? { provider: task.lastProvider, model: task.lastModel, llmProviderId: task.lastLlmProviderId }
+        : undefined;
+  if (source === undefined) return { provider: "claude-cli" };
+  const out: Record<string, string> = { provider: source.provider as string };
+  if (typeof source.model === "string" && source.model !== "") {
+    out.model = source.model;
+    // A custom provider id belongs to the model it was recorded with.
+    if (typeof source.llmProviderId === "string" && source.llmProviderId !== "") out.llmProviderId = source.llmProviderId;
+  }
+  return out;
+}
+
+function timeOf(value: unknown): number {
+  if (typeof value === "number") return value;
+  const parsed = typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+/**
+ * Explicit flags win per field. An explicit provider or custom provider id takes only the model
+ * given with it, never one inherited from another runtime; an explicit model keeps the inherited
+ * provider but not its custom provider id.
+ */
+function attemptRuntime(explicit: Record<string, string>, inherited: Record<string, string>): Record<string, string> {
+  if (explicit.provider !== undefined || explicit.llmProviderId !== undefined) return explicit;
+  const out: Record<string, string> = { ...explicit, provider: inherited.provider ?? "claude-cli" };
+  if (explicit.model === undefined && inherited.model !== undefined) {
+    out.model = inherited.model;
+    if (inherited.llmProviderId !== undefined) out.llmProviderId = inherited.llmProviderId;
+  }
   return out;
 }
 
@@ -522,6 +581,7 @@ function startPlans(
       method: "PUT",
       path: "/api/tasks/reorder",
       body: { taskId, status: "in_progress", position: -Date.now() },
+      extraHeaders: { "x-project-id": projectId },
     });
   }
   if (task.chatInit !== true) {
@@ -534,6 +594,24 @@ function startPlans(
     extraHeaders: { "x-project-id": projectId },
   });
   return plans;
+}
+
+function sandboxClient(p: Parsed, fetchImpl: typeof fetch): Client {
+  const cfg = resolveSandbox(p.url, p.apiKey);
+  return new Client(cfg.baseURL, sandboxHeaders(cfg.apiKey, resolveRequester(p)), timeoutSeconds(p) * 1000, fetchImpl);
+}
+
+function readObject(body: Buffer): Record<string, unknown> {
+  const parsed = JSON.parse(body.toString("utf8")) as unknown;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("unexpected response from the board");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function taskProjectId(task: Record<string, unknown>): string {
+  if (typeof task.projectId !== "string" || task.projectId === "") throw new Error("task has no projectId");
+  return task.projectId;
 }
 
 async function sendSandbox(
@@ -555,4 +633,121 @@ async function sendSandbox(
     fetchImpl,
     timeoutSeconds(p) * 1000,
   );
+}
+
+interface AttemptIds {
+  taskId: string;
+  projectId: string;
+  workspaceId: string;
+  status: string;
+}
+
+/**
+ * The ids a cancel or steer body needs. The status route returns them on current boards; an
+ * older board returns only the status, so fall back to the full attempt row (which can be large
+ * and has no ids for an attempt stored with a non-json output format). Pure GETs, so they also
+ * run in a dry run.
+ */
+async function readAttemptIds(client: Client, id: string): Promise<AttemptIds> {
+  let row = readObject(await client.get(`/api/attempts/${id}/status`));
+  const status = typeof row.status === "string" ? row.status : "";
+  if (typeof row.projectId !== "string" || row.projectId === "") {
+    row = readObject(await client.get(`/api/attempts/${id}`));
+  }
+  if (typeof row.projectId !== "string" || row.projectId === "") {
+    throw new Error(
+      `attempt ${id}: the board did not return its project (older board, or an attempt with a stored output format); upgrade the board to a version whose status route returns the ids`,
+    );
+  }
+  const text = (v: unknown): string => (typeof v === "string" ? v : "");
+  return { taskId: text(row.taskId), projectId: row.projectId, workspaceId: text(row.workspaceId), status };
+}
+
+function attemptWriteBody(ids: AttemptIds): Record<string, string> {
+  return { projectId: ids.projectId, ...(ids.workspaceId === "" ? {} : { workspaceId: ids.workspaceId }) };
+}
+
+export async function sandboxAttemptsCancel(
+  p: Parsed,
+  stdout: Out,
+  stderr: Out,
+  fetchImpl: typeof fetch,
+  alias: "cancel" | "stop",
+): Promise<void> {
+  const cmd = `sandbox attempts ${alias}`;
+  forbidUnknown(p, cmd, ["url", "api-key", ...REQUESTER_FLAGS, "confirm", "dry-run", "id"]);
+  requireFlag(p, "id", p.id, helpFor(["sandbox", "attempts", alias]));
+  const id = pathSegment("id", p.id);
+  jsonOnly(p, cmd);
+  mutationMode(p);
+  const ids = await readAttemptIds(sandboxClient(p, fetchImpl), id);
+  const plan: PlannedRequest = {
+    method: "POST",
+    path: `/api/attempts/${id}/cancel`,
+    body: attemptWriteBody(ids),
+    extraHeaders: { "x-project-id": ids.projectId },
+    // A repeated stop of an attempt that already ended answers replayed, which is also success.
+    expect: (body) => {
+      const res = (body ?? {}) as Record<string, unknown>;
+      if (res.cancelled === true || res.replayed === true) return;
+      throw new Error(`attempt ${p.id} was not cancelled (status ${typeof res.status === "string" ? res.status : ids.status})`);
+    },
+  };
+  try {
+    await sendSandbox(p, [plan], stdout, stderr, fetchImpl);
+  } catch (err) {
+    if (err instanceof HTTPError && err.status === 400 && err.body.includes("projectId and workspaceId are required")) {
+      throw new Error(
+        `${err.message}\nthis board still requires a workspaceId for cancel; upgrade it to a version with the shared answer/cancel scope`,
+      );
+    }
+    throw err;
+  }
+}
+
+export async function sandboxAttemptsSteer(
+  p: Parsed,
+  stdout: Out,
+  stderr: Out,
+  fetchImpl: typeof fetch,
+): Promise<void> {
+  const cmd = "sandbox attempts steer";
+  forbidUnknown(p, cmd, ["url", "api-key", ...REQUESTER_FLAGS, "confirm", "dry-run", "id", "text"]);
+  requireFlag(p, "id", p.id, helpFor(["sandbox", "attempts", "steer"]));
+  const id = pathSegment("id", p.id);
+  requireFlag(p, "text", p.text, helpFor(["sandbox", "attempts", "steer"]));
+  jsonOnly(p, cmd);
+  mutationMode(p);
+  const client = sandboxClient(p, fetchImpl);
+  const ids = await readAttemptIds(client, id);
+  const answerHint = `privos sandbox tasks answer --id ${ids.taskId === "" ? "TASK_ID" : ids.taskId} --answer ...`;
+  // A steer cannot reach a paused agent; point at the answer command instead of posting.
+  if (ids.taskId !== "") {
+    const pending = readObject(await client.get(`/api/tasks/${encodeURIComponent(ids.taskId)}/pending-question`)).question;
+    if (pending !== null && typeof pending === "object" && (pending as Record<string, unknown>).attemptId === p.id) {
+      throw new Error(`attempt ${p.id} is waiting for an answer; answer it with: ${answerHint}`);
+    }
+  }
+  const plan: PlannedRequest = {
+    method: "POST",
+    path: `/api/attempts/${id}/steer`,
+    body: { ...attemptWriteBody(ids), text: p.text },
+    extraHeaders: { "x-project-id": ids.projectId },
+    expect: (body) => {
+      const res = (body ?? {}) as Record<string, unknown>;
+      switch (res.outcome) {
+        case "accepted":
+          return;
+        case "notRunning":
+          throw new Error(
+            `attempt ${p.id} is not running${res.blockedOnQuestion === true ? `; it is waiting for an answer, answer it with: ${answerHint}` : ""}`,
+          );
+        case "unsupported":
+          throw new Error("this runtime cannot take a mid-turn message; use answer or start a new attempt");
+        default:
+          throw new Error(`steer outcome ${JSON.stringify(res.outcome ?? null)}`);
+      }
+    },
+  };
+  await sendSandbox(p, [plan], stdout, stderr, fetchImpl);
 }

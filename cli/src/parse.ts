@@ -852,9 +852,13 @@ export function parseEffort(value: string): string {
   throw usage(`--effort must be one of ${EFFORTS.join(", ")}`);
 }
 
+export function isProvider(value: unknown): value is string {
+  return typeof value === "string" && (PROVIDERS as readonly string[]).includes(value);
+}
+
 /** The runtime providers the board can launch. */
 export function parseProvider(value: string): string {
-  if ((PROVIDERS as readonly string[]).includes(value)) return value;
+  if (isProvider(value)) return value;
   throw usage(`--provider must be one of ${PROVIDERS.join(", ")}`);
 }
 
