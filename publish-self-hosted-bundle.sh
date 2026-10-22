@@ -52,10 +52,6 @@ IMAGE_REFS=(
   "publisher|ghcr.io/privos-ai/privos-publisher|__PUBLISHER_DIGEST__"
   # Docker Desktop only (compose.desktop.yml): privos-netguard + privos-init.
   "netguard|ghcr.io/privos-ai/privos-netguard|__NETGUARD_DIGEST__"
-  # The self-host parser (compose.parser.yml) ships on its own release cadence,
-  # so its tag is pinned here like mongo's. Keep this tag, the one in
-  # compose.parser.yml and the one in versions.json equal.
-  "parser|ghcr.io/privos-ai/privos-parser:v1.0.0|__PARSER_DIGEST__"
 )
 
 # Images built by PrivOS (ghcr.io/privos-ai/*) must carry both platforms: amd64
@@ -67,9 +63,9 @@ REQUIRED_PLATFORMS=(linux/amd64 linux/arm64)
 ALLOW_AMD64_ONLY="false"
 
 SIGNED_FILES=(compose.yml compose.desktop.yml versions.json)
-HASHED_FILES=(compose.yml compose.desktop.yml compose.parser.yml compose.parser.same-host.yml env.parser.template install.sh install.ps1 rustfs-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md)
+HASHED_FILES=(compose.yml compose.desktop.yml install.sh install.ps1 rustfs-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md)
 # Files whose image placeholders are replaced with resolved digests.
-DIGEST_FILES=(compose.yml compose.desktop.yml compose.parser.yml)
+DIGEST_FILES=(compose.yml compose.desktop.yml)
 
 # OPEN-SOURCE-NOTICES ships with two release-time template tokens that must
 # never reach a published bundle unresolved (see fill_open_source_notices_tokens
@@ -377,8 +373,7 @@ apply_digests_and_sign() {
   cp "$BUNDLE_DIR/compose.yml" "$work/compose.yml"
   cp "$BUNDLE_DIR/compose.desktop.yml" "$work/compose.desktop.yml"
   cp "$BUNDLE_DIR/versions.json" "$work/versions.json"
-  for f in compose.parser.yml compose.parser.same-host.yml env.parser.template \
-    install.sh install.ps1 rustfs-init.sh docker-user-rules.sh env.template SIGNING.md \
+  for f in install.sh install.ps1 rustfs-init.sh docker-user-rules.sh env.template SIGNING.md \
     LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md; do
     cp "$BUNDLE_DIR/$f" "$work/$f"
   done
@@ -472,7 +467,6 @@ publish() {
     "$work/install.ps1"
     "$work/compose.yml" "$work/compose.yml.minisig"
     "$work/compose.desktop.yml" "$work/compose.desktop.yml.minisig"
-    "$work/compose.parser.yml" "$work/compose.parser.same-host.yml" "$work/env.parser.template"
     "$work/versions.json" "$work/versions.json.minisig"
     "$work/rustfs-init.sh"
     "$work/docker-user-rules.sh"
