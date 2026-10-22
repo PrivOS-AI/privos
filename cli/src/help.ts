@@ -21,6 +21,9 @@ Commands:
   sandbox tasks running
   sandbox tasks question
   sandbox tasks answer
+  sandbox attempts cancel   Stop a running attempt (alias: stop)
+  sandbox attempts stop
+  sandbox attempts steer    Send a message to a running attempt
   sandbox models list
   hub get                  Read any hub GET route with your own token
   hub rooms list
@@ -88,6 +91,7 @@ const sandboxHelp = `Usage:
 Commands:
   projects list|create|update|delete|start
   tasks list|create|update|delete|start|attempts|conversation|running|question|answer
+  attempts cancel|stop|steer
   models list
 
 Environment (flags override):
@@ -110,7 +114,7 @@ the environment. --requester-name and --requester-kind need --requester.
 The claim is self-declared unless the board binds the key to an identity.
 Dry runs print the claim headers and never the key.
 
-Writes (create, update, delete, start) print the request and send nothing
+Writes (create, update, delete, start, answer, cancel, steer) print the request and send nothing
 unless --confirm is set.
 
 Global flags:
@@ -239,7 +243,9 @@ in_progress, in_review, done, cancelled. Dry run unless --confirm.
 --description is required and becomes the agent prompt. The new id is only
 known after request 1, so the dry run shows {taskId from response 1} where
 it will go. --model, --provider, --llm-provider and --effort work as in
-"privos sandbox tasks start" and need --start.
+"privos sandbox tasks start" and need --start. A new task has no previous
+attempt, so the attempt is sent with "provider":"claude-cli" unless you pass
+--provider or --llm-provider.
 
 --callback-url-env and --callback-key-env name environment variables that hold the callback
 URL and secret printed by "privos agents a2a await"; the task then POSTs once when it leaves
@@ -256,7 +262,9 @@ sends {"title"}, {"description"}, or {"chatInit":true|false}.
 
 Status uses PUT /api/tasks/reorder with {"taskId","status","position"}. That
 is how the board moves a card. When --position is omitted, position is
--Date.now(), which is what the board client sends on a status change.
+-Date.now(), which is what the board client sends on a status change. The
+request carries the x-project-id header; the CLI reads GET /api/tasks/{id}
+first to learn the project (that read also runs in a dry run).
 
 Pass any combination. A title change and a status change are two requests,
 PATCH then PUT. Dry run unless --confirm.
@@ -275,7 +283,8 @@ const sandboxTasksStartHelp = `Usage:
 Start an agent on a task the way the board UI does. The CLI first reads
 GET /api/tasks/{id} and GET /api/tasks/{id}/attempts, then sends, in order:
   1. PUT /api/tasks/reorder {"taskId","status":"in_progress","position"}
-     only when the task is not already in_progress
+     with the x-project-id header, only when the task is not already
+     in_progress
   2. PATCH /api/tasks/{id} {"chatInit":true} only when chatInit is not true
   3. POST /api/attempts {"taskId","prompt","projectId",...} with the
      x-project-id header
@@ -301,8 +310,14 @@ Flags:
   --prompt TEXT        Prompt for the agent (default: the task description)
   --force              Start even while a recent attempt is running
 
-A task with no previous run should get --model and --provider; otherwise
-the board picks its default. Dry run unless --confirm.
+Runtime: --provider, --model and --llm-provider that you pass always win. For
+each one you leave out, the attempt reuses the runtime of the task's newest
+attempt that has a provider (provider, model, and the custom provider id that
+went with that model), else the task's last provider and model, else
+"provider":"claude-cli". Passing --provider drops the inherited model, since
+it belongs to another runtime; passing only --model keeps the inherited
+provider. The dry run shows the body that will be sent.
+Dry run unless --confirm.
 `;
 
 const sandboxTasksAttemptsHelp = `Usage:
@@ -348,23 +363,87 @@ const sandboxTasksAnswerHelp = `Usage:
 Answer the agent's pending question. Pass --answer once per question, in
 the order "privos sandbox tasks question" prints them.
 
-The CLI reads GET /api/tasks/{id} and GET /api/tasks/{id}/pending-question,
-then sends the socket.io event question:answer
-{"attemptId","projectId","toolUseId","questions","answers"} to the board,
-with the API key as the handshake auth token. "answers" maps each question
-text to its --answer. This is what the board UI sends.
+The CLI reads GET /api/tasks/{id}, GET /api/tasks/{id}/pending-question and
+GET /api/tasks/{id}/attempts, then sends
+POST /api/attempts/{attemptId}/answer
+{"projectId","workspaceId"?,"toolUseId","questions","answers"} with the
+x-project-id header. "answers" maps each question text to its --answer.
+workspaceId is sent only when the attempt or its task has one (hub tasks).
+HTTP 200 means the answer was delivered.
 
-The dry run reads the question and prints the payload; it opens no socket.
-With --confirm the answer counts as delivered when the board acks it, or,
-when no ack comes (sandbox mode), once a re-read shows the question gone.
-The board acks a repeat of the same answer within 30 seconds without
-applying it again.
+Only two board replies make the CLI fall back to the socket.io event
+question:answer (websocket, the API key as the handshake auth token):
+  - HTTP 400 "projectId, workspaceId, toolUseId, questions, and answers are
+    required" (an older board)
+  - HTTP 404 "No matching pending question for this attempt" or "No pending
+    question for this attempt" (the board kept the question but no agent is
+    waiting; the socket path restarts the agent)
+Right before the emit the CLI re-reads the pending question and stops if it
+changed. Any other reply is a failure (exit 1). The socket counts as delivered
+when the board acks it, or, when no ack comes (sandbox mode), once a re-read
+shows the question gone.
 
-After that the CLI also sends POST /api/attempts/{attemptId}/answer to save
-the answer log. This is best effort: the route requires a workspaceId in
-the body, which the CLI does not send, so today it answers HTTP 400. The
-error is printed and ignored.
-Dry run unless --confirm.
+A question that asks for a secret (the vault form) is refused with exit 2:
+answer it in the hub or the board, never through text.
+
+The dry run reads the question and prints both requests; it sends nothing.
+Output: {"answered","attemptId","toolUseId","via","confirmedBy"} with via
+"rest" or "socket". Dry run unless --confirm.
+`;
+
+const sandboxAttemptsHelp = `Usage:
+  privos sandbox attempts <command>
+
+Commands:
+  cancel --id ATTEMPT_ID    Stop a running attempt (alias: stop)
+  stop --id ATTEMPT_ID
+  steer --id ATTEMPT_ID --text TEXT
+
+Writes require --confirm. The default is a dry run.
+`;
+
+const sandboxAttemptsCancelHelp = `Usage:
+  privos sandbox attempts cancel --id ATTEMPT_ID
+  privos sandbox attempts stop --id ATTEMPT_ID
+
+Stop an attempt. "stop" is the same command as "cancel".
+
+The CLI first reads GET /api/attempts/{id}/status for the task, project and
+workspace ids (an older board returns only the status, so the CLI then reads
+GET /api/attempts/{id}, which is large and has no ids for an attempt stored
+with a non-json output format). Those reads also run in a dry run. Then it
+sends POST /api/attempts/{id}/cancel {"projectId","workspaceId"?} with the
+x-project-id header. Dry run unless --confirm.
+
+Output is the board's reply: {"attemptId","status","cancelled","replayed"}.
+Exit codes:
+  0  the attempt is no longer running ("cancelled": true, or "replayed": true
+     for an attempt that had already ended)
+  1  the board did not stop it (an HTTP 2xx reply with "cancelled": false is still
+     printed), or it answered an error status (only the error message is printed)
+  2  usage error, nothing was sent
+An older board answers HTTP 400 "projectId and workspaceId are required" for
+an attempt that has no workspace; upgrade the board.
+`;
+
+const sandboxAttemptsSteerHelp = `Usage:
+  privos sandbox attempts steer --id ATTEMPT_ID --text TEXT
+
+Send a message to a running attempt without stopping it.
+
+The CLI reads the attempt's ids as "privos sandbox attempts cancel --help"
+describes, then GET /api/tasks/{taskId}/pending-question. When that question
+belongs to this attempt the agent is waiting for an answer and a steer cannot
+reach it, so the CLI stops (exit 1) and prints the answer command. Otherwise it
+sends POST /api/attempts/{id}/steer {"projectId","workspaceId"?,"text"} with
+the x-project-id header. Dry run unless --confirm.
+
+Output is the board's reply: {"outcome","blockedOnQuestion","pendingQuestion"?}.
+Exit codes:
+  0  "outcome": "accepted"
+  1  "notRunning" (the attempt is not running), "unsupported" (the runtime
+     cannot take a mid-turn message), or any other outcome
+  2  usage error (for example a missing --text), nothing was sent
 `;
 
 const sandboxModelsHelp = `Usage:
@@ -1218,6 +1297,10 @@ const HELP: Record<string, string> = {
   "sandbox tasks running": sandboxTasksRunningHelp,
   "sandbox tasks question": sandboxTasksQuestionHelp,
   "sandbox tasks answer": sandboxTasksAnswerHelp,
+  "sandbox attempts": sandboxAttemptsHelp,
+  "sandbox attempts cancel": sandboxAttemptsCancelHelp,
+  "sandbox attempts stop": sandboxAttemptsCancelHelp,
+  "sandbox attempts steer": sandboxAttemptsSteerHelp,
   "sandbox models": sandboxModelsHelp,
   "sandbox models list": sandboxModelsListHelp,
   hub: hubHelp,

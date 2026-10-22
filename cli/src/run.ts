@@ -52,6 +52,8 @@ import {
 } from "./parse.js";
 import type { Out } from "./render.js";
 import {
+  sandboxAttemptsCancel,
+  sandboxAttemptsSteer,
   sandboxModelsList,
   sandboxProjectsCreate,
   sandboxProjectsDelete,
@@ -129,6 +131,7 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
     case "sandbox":
     case "sandbox projects":
     case "sandbox tasks":
+    case "sandbox attempts":
     case "sandbox models":
     case "hub":
     case "hub rooms":
@@ -220,6 +223,15 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
         resolveSandbox(p.url, p.apiKey),
       );
       await sandboxTasksAnswer(p, stdout, stderr, fetchImpl);
+      return;
+    case "sandbox attempts cancel":
+      await sandboxAttemptsCancel(p, stdout, stderr, fetchImpl, "cancel");
+      return;
+    case "sandbox attempts stop":
+      await sandboxAttemptsCancel(p, stdout, stderr, fetchImpl, "stop");
+      return;
+    case "sandbox attempts steer":
+      await sandboxAttemptsSteer(p, stdout, stderr, fetchImpl);
       return;
     case "sandbox models list":
       await sandboxModelsList(p, stdout, fetchImpl);
