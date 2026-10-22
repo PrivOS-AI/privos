@@ -3,6 +3,42 @@
 All notable changes to `@privos_ai/privos`. Full command notes live in
 [docs/cli/README.md](https://github.com/PrivOS-AI/privos/blob/main/docs/cli/README.md).
 
+## 0.12.0 — 2026-10-22
+
+### Added
+
+- `privos sandbox attempts cancel|stop|steer --id ATTEMPT_ID` stops a running attempt or
+  sends it a message. Both read the attempt's ids from `GET /api/attempts/ID/status`
+  (falling back to the full attempt on an older board), send `x-project-id`, and print the
+  board's reply. `cancel` exits 0 when the attempt is no longer running (`cancelled` or
+  `replayed`); `steer` exits 0 only for `outcome: "accepted"`. `steer` refuses, before
+  posting, an attempt that waits for an answer and prints the `tasks answer` command.
+
+### Changed
+
+- `tasks answer` sends `POST /api/attempts/ID/answer` first and treats HTTP 200 as
+  delivered. The workspace id is sent only when the attempt or its task has one. The socket
+  `question:answer` event is used only when an older board answers its legacy 400 or the
+  board answers 404 for a stored question with no live agent, after a re-read confirms the
+  same question. Output is now `{answered, attemptId, toolUseId, via, confirmedBy}`; the
+  `restLog` field is removed.
+- `tasks answer` refuses a question that asks for a secret (the vault form) with exit 2,
+  before printing or sending anything.
+- The socket connection uses the websocket transport only, and a connect error names the
+  transport and the URL.
+- `tasks start` reuses the task's previous runtime per field: the newest attempt with a
+  provider (provider, model, custom provider id), else the task's last provider and model,
+  else `claude-cli`. Explicit flags always win. `tasks create --start` sends `claude-cli`
+  unless `--provider` or `--llm-provider` is given.
+- `PUT /api/tasks/reorder` (from `tasks start` and `tasks update --status`) carries
+  `x-project-id`; `tasks update --status` reads the task first to learn its project.
+
+### Fixed
+
+- `tasks answer` could not reach a board that accepts websocket handshakes only (it failed
+  with `xhr poll error`).
+- A test now pins the process exit code (1 for a failed command, 2 for a usage error).
+
 ## 0.11.0 — 2026-10-19
 
 ### Added

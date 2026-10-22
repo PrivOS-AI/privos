@@ -45,7 +45,8 @@ The package name is `@privos_ai/privos`. That is the npm org already used by
 `@privos-ai` are not the published org.
 
 Requires Node.js 20 or newer. The only runtime dependency is socket.io-client,
-used by `tasks answer`.
+used by the `tasks answer` fallback. It connects over websocket only (the board
+refuses long-polling handshakes).
 
 ### Why this is not the Go binary
 
@@ -120,6 +121,10 @@ privos sandbox tasks conversation --id ID [--limit N] [--before MS]
 privos sandbox tasks running --id ID
 privos sandbox tasks question --id ID
 privos sandbox tasks answer --id ID --answer TEXT [--answer TEXT ...]
+
+privos sandbox attempts cancel --id ATTEMPT_ID
+privos sandbox attempts stop --id ATTEMPT_ID
+privos sandbox attempts steer --id ATTEMPT_ID --text TEXT
 
 privos sandbox models list
 
@@ -616,8 +621,8 @@ A dry run prints JSON to stdout:
 
 Credential header names are listed under `omittedHeaderNames`. Their values
 are not printed. stderr says that no write was sent. Exit code is 0.
-`tasks start` and `tasks answer` still send their `GET` reads in a dry run,
-so the preview holds real values.
+`tasks start`, `tasks answer`, `tasks update --status` and `attempts cancel|stop|steer` still send their
+`GET` reads in a dry run, so the preview holds real values.
 
 `--confirm` sends those requests in order. A task update that changes both
 text fields and status sends `PATCH /api/tasks/{id}` and then
@@ -641,8 +646,17 @@ reads are sent even in a dry run. Then, with `--confirm`, it sends:
 
 The prompt is the task description unless `--prompt` is set. `--model` and
 `--provider` (or `--llm-provider` with `--model` for a custom catalog model)
-pick the runtime; `privos sandbox models list` shows the choices. A task that
-has never run should get both, or the board uses its default.
+pick the runtime; `privos sandbox models list` shows the choices.
+
+Without those flags the attempt reuses the runtime the task last ran with, field
+by field: the newest attempt that has a provider gives its provider, model and
+custom provider id; if no attempt has one, the task's last provider and model
+are used; a task that has never run gets `"provider": "claude-cli"`, because the
+board answers HTTP 500 when no provider is sent. Flags always win. `--provider`
+drops the inherited model (it belongs to another runtime), and `--model` alone
+keeps the inherited provider. `tasks create --start` has no previous attempt, so
+it sends `claude-cli` unless you pass `--provider` or `--llm-provider`. The dry
+run shows the body that will be sent.
 
 `--effort` takes `low`, `medium`, `high`, `xhigh`, `max` or `ultra`. `ultra`
 only matters to Claude runtimes. The board passes effort to the runtime and
@@ -671,16 +685,62 @@ To follow a run:
   `tasks attempts` when you only want to look.
 - `tasks question` reads the question the agent is waiting on.
 
-`tasks answer` answers that question over socket.io, as the board UI does: it
-emits `question:answer` with the API key as the handshake `auth.token`. Pass
-one `--answer` per question, in the order `tasks question` prints them. The
-answer counts as delivered when the board acks it, or, when no ack comes
-(sandbox mode), once a re-read shows the question gone. The CLI then also
-sends `POST /api/attempts/{id}/answer` to save the answer log. That route
-requires a `workspaceId` in the body equal to the attempt's. The CLI does not
-send one (neither does the board UI), so today the call answers HTTP 400; the
-error is printed and ignored. `tasks cancel` is not available for the same
-reason.
+`tasks answer` answers that question. Pass one `--answer` per question, in the
+order `tasks question` prints them. It reads the task, its pending question and
+its attempts, then sends `POST /api/attempts/{id}/answer` with
+`{"projectId","workspaceId"?,"toolUseId","questions","answers"}` and the
+`x-project-id` header. `workspaceId` is sent only when the attempt or its task
+has one (hub tasks). HTTP 200 means the answer was delivered, and the output is
+`{"answered":true,"attemptId","toolUseId","via":"rest","confirmedBy":"rest"}`.
+
+The CLI falls back to the socket.io event `question:answer` (websocket, the API
+key as the handshake `auth.token`) in two cases only: an older board that
+answers HTTP 400 `projectId, workspaceId, toolUseId, questions, and answers are
+required`, and HTTP 404 `No matching pending question for this attempt` or
+`No pending question for this attempt` (the board kept the question but no
+agent is waiting; the socket path restarts the agent). Before the emit it
+re-reads the pending question and stops if the question changed. Any other
+reply is a failure with exit 1. After a socket answer the output has
+`"via":"socket"`; delivery counts when the board acks it, or, when no ack comes
+(sandbox mode), once a re-read shows the question gone. A question that asks for
+a secret (the vault form) is refused with exit 2: answer it in the hub or the
+board, never as text. The earlier `restLog` field is gone.
+
+### Cancelling and steering an attempt
+
+`attempts cancel` (alias `stop`) and `attempts steer` take an attempt id. They
+first read `GET /api/attempts/{id}/status` for the task, project and workspace
+ids, also in a dry run. An older board returns only the status; the CLI then
+reads the full `GET /api/attempts/{id}`, which can be large and has no ids for
+an attempt stored with a non-json output format, and fails with a hint if the
+project is still missing. Writes carry the `x-project-id` header, and a
+`workspaceId` only when there is one. Both print the board's reply as JSON.
+
+| Command | Request | Exit 0 | Exit 1 |
+|---|---|---|---|
+| `attempts cancel` / `stop` | `POST /api/attempts/{id}/cancel` | `"cancelled": true`, or `"replayed": true` for an attempt that already ended | the attempt was not stopped (reply still printed), or the board refused |
+| `attempts steer --text TEXT` | `POST /api/attempts/{id}/steer` | `"outcome": "accepted"` | `notRunning`, `unsupported`, any other outcome; or the attempt waits for an answer (see below) |
+
+Usage errors exit 2 and send nothing. `steer` reads
+`GET /api/tasks/{taskId}/pending-question` first: when the question belongs to
+that attempt the agent is paused and a steer cannot reach it, so the CLI stops
+and prints the `tasks answer` command instead of posting. A `notRunning` reply
+with `"blockedOnQuestion": true` gets the same hint. A board older than this
+version answers cancel with HTTP 400 `projectId and workspaceId are required`
+for an attempt without a workspace; upgrade the board (there is no socket
+fallback for cancel).
+
+### Running inside a board agent session
+
+Once the board carries attempt-scoped tokens, the `PRIVOS_SANDBOX_API_KEY` in an
+agent session is a project-scoped token: it reads every project on the board and
+writes only its own project (a write elsewhere answers HTTP 403
+`project-scope`, which the CLI prints and exits 1). Writing to another project
+from such a session needs a credential an operator places for it. Every CLI
+write carries `x-project-id`, including the `PUT /api/tasks/reorder` of
+`tasks start` and `tasks update --status`, which read the task first to learn
+its project. The token is not accepted on the socket handshake, so the socket
+fallback of `tasks answer` works only with an operator key.
 
 ```bash
 privos sandbox models list --format table
@@ -688,6 +748,8 @@ privos sandbox tasks start --id TASK_ID --model claude-opus-5-5 --provider claud
 privos sandbox tasks start --id TASK_ID --model claude-opus-5-5 --provider claude-cli --effort high --confirm
 privos sandbox tasks question --id TASK_ID
 privos sandbox tasks answer --id TASK_ID --answer 'Postgres' --confirm
+privos sandbox attempts steer --id ATTEMPT_ID --text 'Use the staging database' --confirm
+privos sandbox attempts stop --id ATTEMPT_ID --confirm
 ```
 
 Do not point CI at a live board or hub. The tests use a local mock server.
