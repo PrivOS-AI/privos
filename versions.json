@@ -66,11 +66,19 @@
       "tag": "PLACEHOLDER_STACK_VERSION",
       "digest": "__NETGUARD_DIGEST__",
       "desktopOnly": true
+    },
+    "parser": {
+      "repository": "ghcr.io/privos-ai/privos-parser",
+      "tag": "v1.0.0",
+      "digest": "__PARSER_DIGEST__"
     }
   },
   "files": {
     "compose.yml": { "sha256": null },
     "compose.desktop.yml": { "sha256": null },
+    "compose.parser.yml": { "sha256": null },
+    "compose.parser.same-host.yml": { "sha256": null },
+    "env.parser.template": { "sha256": null },
     "install.sh": { "sha256": null },
     "install.ps1": { "sha256": null },
     "rustfs-init.sh": { "sha256": null },

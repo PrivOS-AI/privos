@@ -10,6 +10,9 @@ set -uo pipefail
 TAG="${1:-latest}"                       # image tag to test for G3 (default: latest)
 INSTALL_URL="${PRIVOS_INSTALL_URL:-https://github.com/PrivOS-AI/privos/releases/latest/download/install.sh}"
 PKGS=(privos-hub privos-sandbox-board privos-sandbox-proxy privos-sandbox-vm privos-app-cluster privos-publisher privos-netguard)
+# The self-host parser has its own tag, recorded in versions.json ("name:tag" overrides TAG).
+PARSER_TAG="$(jq -r '.images.parser.tag // empty' "$(dirname "${BASH_SOURCE[0]}")/versions.json" 2>/dev/null)"
+[[ -z "$PARSER_TAG" ]] || PKGS+=("privos-parser:${PARSER_TAG}")
 # PRIVOS_ALLOW_AMD64_ONLY=1: a Linux/Windows-only release (no macOS); arm64 gaps become notes.
 ALLOW_AMD64_ONLY="${PRIVOS_ALLOW_AMD64_ONLY:-0}"
 ORG="privos-ai"
@@ -27,34 +30,35 @@ case "$code" in
 esac
 
 echo "== G3 — ghcr packages are public and multi-arch (anonymous manifest read) =="
-for p in "${PKGS[@]}"; do
+for entry in "${PKGS[@]}"; do
+  p="${entry%%:*}"; t="${entry#*:}"; [[ "$entry" == *:* ]] || t="$TAG"
   # anonymous pull token, then a HEAD on the manifest — no docker login, no local cred change
   tok="$(curl -fsS "https://ghcr.io/token?scope=repository:${ORG}/${p}:pull" 2>/dev/null | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
   mcode="$(curl -fsS -o /dev/null -w '%{http_code}' \
       -H "Authorization: Bearer ${tok:-anon}" \
       -H 'Accept: application/vnd.oci.image.index.v1+json' \
       -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
-      "https://ghcr.io/v2/${ORG}/${p}/manifests/${TAG}" 2>/dev/null || true)"
+      "https://ghcr.io/v2/${ORG}/${p}/manifests/${t}" 2>/dev/null || true)"
   case "$mcode" in
     200)
-      ok "ghcr.io/${ORG}/${p}:${TAG} readable anonymously (public)"
+      ok "ghcr.io/${ORG}/${p}:${t} readable anonymously (public)"
       # Both platforms under one tag: an OCI index / manifest list with an
       # amd64 and an arm64 child (attestation children report "unknown").
       archs="$(curl -fsS -H "Authorization: Bearer ${tok:-anon}" \
           -H 'Accept: application/vnd.oci.image.index.v1+json' \
           -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
-          "https://ghcr.io/v2/${ORG}/${p}/manifests/${TAG}" 2>/dev/null \
+          "https://ghcr.io/v2/${ORG}/${p}/manifests/${t}" 2>/dev/null \
         | jq -r '[.manifests[]?.platform | select(.os == "linux") | .architecture] | unique | join(",")' 2>/dev/null)"
       if [[ ",${archs}," == *",amd64,"* && ",${archs}," == *",arm64,"* ]]; then
-        ok "ghcr.io/${ORG}/${p}:${TAG} carries linux/amd64 + linux/arm64"
+        ok "ghcr.io/${ORG}/${p}:${t} carries linux/amd64 + linux/arm64"
       elif [[ "$ALLOW_AMD64_ONLY" == "1" ]]; then
-        info "ghcr.io/${ORG}/${p}:${TAG} platforms '${archs:-single-arch}' — no arm64 (allowed: PRIVOS_ALLOW_AMD64_ONLY=1, macOS not shipped)"
+        info "ghcr.io/${ORG}/${p}:${t} platforms '${archs:-single-arch}' — no arm64 (allowed: PRIVOS_ALLOW_AMD64_ONLY=1, macOS not shipped)"
       else
-        bad "ghcr.io/${ORG}/${p}:${TAG} platforms '${archs:-single-arch}' — linux/arm64 missing (run the arm64 workflows + merge; see self-hosted-release-runbook.md)"
+        bad "ghcr.io/${ORG}/${p}:${t} platforms '${archs:-single-arch}' — linux/arm64 missing (run the arm64 workflows + merge; see self-hosted-release-runbook.md)"
       fi
       ;;
     401|403) bad "ghcr.io/${ORG}/${p} -> $mcode (still PRIVATE — set visibility Public in the GitHub UI)" ;;
-    404) bad "ghcr.io/${ORG}/${p}:${TAG} -> 404 (GHCR hides PRIVATE packages from anonymous pulls — still private, or wrong tag; real tags look like v7.15.42-tenant.150)" ;;
+    404) bad "ghcr.io/${ORG}/${p}:${t} -> 404 (GHCR hides PRIVATE packages from anonymous pulls — still private, or wrong tag; real tags look like v7.15.42-tenant.150)" ;;
     *)   bad "ghcr.io/${ORG}/${p} -> '${mcode:-no-response}'" ;;
   esac
 done

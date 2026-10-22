@@ -69,6 +69,14 @@ Operator guides on the docs site:
 [Backup and restore](https://docs.privos.ai/guide/self-hosted/backup-restore) ·
 [Uninstall and FAQ](https://docs.privos.ai/guide/self-hosted/uninstall-faq)
 
+## Run the document parser yourself
+
+By default Community Edition parses uploaded documents with the PrivOS-hosted parser, billed in AI
+credit. To run the parser on your own host with a vision model you choose, and pay no parser credit,
+follow [docs/parser/README.md](docs/parser/README.md). It needs `compose.parser.yml`,
+`compose.parser.same-host.yml` and `env.parser.template` from the release assets, and the public image
+`ghcr.io/privos-ai/privos-parser`. Every PDF page is sent to your vision API, one call per page.
+
 ## Operator CLI
 
 `privos` is a separate client for a running sandbox board and hub (projects,
@@ -249,6 +257,7 @@ allowlisted and configured private endpoint — is promised for an air-gapped in
 | `compose.desktop.yml` | Docker Desktop overlay (macOS, Windows): named volumes, `privos-init` ownership step, `privos-netguard` firewall helper |
 | `netguard/Dockerfile` | The `privos-netguard` image: `docker-user-rules.sh --loop` inside the Docker Desktop VM |
 | `env.template` | Documented knobs; secrets generated locally by the installer |
+| `compose.parser.yml`, `compose.parser.same-host.yml`, `env.parser.template` | Optional self-hosted document parser (digest-pinned image, same-host network overlay, settings). Not used by `install.sh`; see [docs/parser/README.md](docs/parser/README.md) |
 | `rustfs-init.sh` | Bucket + scoped service account (mirrors the fleet provisioner) |
 | `docker-user-rules.sh` | Firewall rules so a later `ports:` edit can't expose the sandbox plane; `--loop` re-applies them on Docker Desktop |
 | `versions.json` | Bundle version + `@sha256` image digests + file hashes (resolved at publish) |
@@ -258,6 +267,7 @@ allowlisted and configured private endpoint — is promised for an air-gapped in
 | `tests/` | Bash unit tests (port-check, env render, signature/hash verify, license acceptance, activation gate) + CI |
 | `cli/` | `privos` npm CLI (`@privos_ai/privos`), MIT licensed (`cli/LICENSE`). Not part of the signed install bundle |
 | `docs/cli/`, `docs/api/` | CLI configuration and the REST calls the CLI makes |
+| `docs/parser/` | Guide for running the document parser yourself |
 
 ## Security
 
