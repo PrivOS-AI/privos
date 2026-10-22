@@ -145,11 +145,22 @@ async function emitAnswer(
 ): Promise<Record<string, unknown> | null> {
   // Loaded here so commands that never answer do not load socket.io.
   const { io } = await import("socket.io-client");
-  const socket = io(baseURL, { auth: socketAuth(apiKey, requester), reconnection: false, timeout: timeoutMs });
+  // The board accepts websocket handshakes only, so skip the long-polling probe.
+  const socket = io(baseURL, {
+    auth: socketAuth(apiKey, requester),
+    transports: ["websocket"],
+    reconnection: false,
+    timeout: timeoutMs,
+  });
   try {
     return await new Promise((resolve, reject) => {
       socket.on("connect_error", (err: Error) => {
-        reject(new Error(`socket.io connect failed: ${err.message}`));
+        reject(
+          new Error(
+            `socket.io websocket connect to ${baseURL} failed: ${err.message}\n` +
+              "The board accepts websocket handshakes only; check --url, the proxy in front of it, and the API key.",
+          ),
+        );
       });
       // The sandbox bridge reports a rejected event this way instead of acking.
       socket.on("error", (err: { message?: unknown } | null) => {

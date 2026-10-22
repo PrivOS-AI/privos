@@ -1291,7 +1291,7 @@ describe("privos", { concurrency: false }, () => {
   });
 
   // A board with HTTP reads and a socket.io server that records question:answer.
-  async function answerBoard({ ack = true, clears = true, pending: initial } = {}) {
+  async function answerBoard({ ack = true, clears = true, pending: initial, websocketOnly = false } = {}) {
     const state = {
       pending: initial === undefined
         ? {
@@ -1307,6 +1307,7 @@ describe("privos", { concurrency: false }, () => {
       emitted: [],
       auths: [],
       connections: 0,
+      transports: [],
     };
     const srv = await serve(async (req, res) => {
       await readBody(req);
@@ -1324,13 +1325,14 @@ describe("privos", { concurrency: false }, () => {
         res.end("{}");
       }
     });
-    const io = new Server(srv.server);
+    const io = new Server(srv.server, websocketOnly ? { transports: ["websocket"] } : {});
     io.use((socket, next) => {
       if (socket.handshake.auth.token === "k") next();
       else next(new Error("Unauthorized: valid API key required"));
     });
     io.on("connection", (socket) => {
       state.connections += 1;
+      state.transports.push(socket.conn.transport.name);
       state.auths.push(socket.handshake.auth);
       socket.on("question:answer", (payload, cb) => {
         state.emitted.push(payload);
@@ -1388,6 +1390,70 @@ describe("privos", { concurrency: false }, () => {
     }
   });
 
+  test("tasks answer --confirm connects to a websocket-only board", async () => {
+    clearCreds();
+    const b = await answerBoard({ websocketOnly: true });
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(b.emitted.length, 1);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer handshakes over websocket, never polling", async () => {
+    clearCreds();
+    const b = await answerBoard();
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.deepEqual(b.transports, ["websocket"]);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer against a board that refuses websocket upgrades fails with the transport in the message", async () => {
+    clearCreds();
+    const pending = {
+      attemptId: "a1",
+      toolUseId: "tu1",
+      questions: [{ question: "Which DB?" }],
+    };
+    const srv = await serve(async (req, res) => {
+      await readBody(req);
+      res.setHeader("content-type", "application/json");
+      if (req.url.startsWith("/socket.io/")) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ code: 0, message: "Transport unknown" }));
+      } else if (req.method === "GET" && req.url === "/api/tasks/t1") {
+        res.end(JSON.stringify({ id: "t1", projectId: "p1" }));
+      } else if (req.method === "GET" && req.url === "/api/tasks/t1/attempts") {
+        res.end(JSON.stringify({ attempts: [] }));
+      } else if (req.method === "GET" && req.url === "/api/tasks/t1/pending-question") {
+        res.end(JSON.stringify({ question: pending }));
+      } else if (req.method === "POST" && req.url === "/api/attempts/a1/answer") {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "projectId, workspaceId, toolUseId, questions, and answers are required" }));
+      } else {
+        res.writeHead(404);
+        res.end("{}");
+      }
+    });
+    try {
+      const r = await runCLI([
+        "sandbox", "tasks", "answer", "--url", srv.url, "--api-key", "k", "--timeout", "2",
+        "--id", "t1", "--answer", "Postgres", "--confirm",
+      ]);
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /websocket connect to http:\/\/127\.0\.0\.1:\d+ failed/);
+      assert.match(r.stderr, /websocket handshakes only/);
+    } finally {
+      await srv.close();
+    }
+  });
+
   test("tasks answer without an ack confirms by the cleared question", async () => {
     clearCreds();
     const b = await answerBoard({ ack: false });
@@ -1430,7 +1496,7 @@ describe("privos", { concurrency: false }, () => {
     try {
       const r = await b.run("--api-key", "bad-secret-value", ...BOTH, "--confirm");
       assert.equal(r.code, 1);
-      assert.match(r.stderr, /socket.io connect failed/);
+      assert.match(r.stderr, /websocket connect to http:\/\/127\.0\.0\.1:\d+ failed/);
       assert.ok(!r.stderr.includes("bad-secret-value"));
       assert.equal(b.emitted.length, 0);
     } finally {
