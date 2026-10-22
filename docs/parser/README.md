@@ -59,7 +59,7 @@ provider with that in mind, and check its price per call or per image.
 |---|---|
 | PDF (text, scanned or mixed), JPG, PNG, TIFF, BMP, GIF, WebP | yes. Every PDF page is rendered to an image and read by your vision model, so a text PDF costs one vision call per page like a scan does. A password-protected, damaged or empty PDF fails with `standalone_pdf_unreadable` or `standalone_pdf_has_no_pages` |
 | CSV, XLSX, TXT, Markdown, EML (with attachments of these types), ZIP and TAR archives of these | yes |
-| RAR | no: the image has no RAR extractor, and the job fails with the archive handler's error. Unpack the archive and upload its files, or re-pack it as ZIP |
+| RAR | no: the image has no RAR extractor, so a RAR archive fails with the archive handler's error (only an archive whose files were stored without compression can still be read). Unpack the archive and upload its files, or re-pack it as ZIP |
 | Word (DOCX, DOC), PowerPoint (PPTX, PPT), legacy Excel (XLS), HWP | no: they need the separately licensed Office runtime that is not part of this image, and the job fails with a typed error |
 
 The image reads PDFs with pypdfium2 (Apache-2.0 or BSD-3-Clause). It contains no
