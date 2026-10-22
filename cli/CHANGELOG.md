@@ -17,13 +17,15 @@ All notable changes to `@privos_ai/privos`. Full command notes live in
 ### Changed
 
 - `tasks answer` sends `POST /api/attempts/ID/answer` first and treats HTTP 200 as
-  delivered. The workspace id is sent only when the attempt or its task has one. The socket
-  `question:answer` event is used only when an older board answers its legacy 400 or the
-  board answers 404 for a stored question with no live agent, after a re-read confirms the
-  same question. Output is now `{answered, attemptId, toolUseId, via, confirmedBy}`; the
+  delivered. The workspace id is sent only when the attempt or its task has one; when it came
+  from the task and the board answers 404 `Attempt not found`, the post is retried once
+  without it (an older board then answers its legacy 400). The socket `question:answer`
+  event is used only when an older board answers its legacy 400 or the board answers 404 for
+  a stored question with no live agent, after a re-read confirms the same question (and, for
+  the 404, the attempt's live question has no different id). Output is now `{answered, attemptId, toolUseId, via, confirmedBy}`; the
   `restLog` field is removed.
-- `tasks answer` refuses a question that asks for a secret (the vault form) with exit 2,
-  before printing or sending anything.
+- `tasks answer` refuses a question that asks for a secret (any item with a `credential`
+  marker, the vault form) with exit 2, before printing or sending anything.
 - The socket connection uses the websocket transport only, and a connect error names the
   transport and the URL.
 - `tasks start` reuses the task's previous runtime per field: the newest attempt with a

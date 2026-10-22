@@ -419,7 +419,8 @@ Output is the board's reply: {"attemptId","status","cancelled","replayed"}.
 Exit codes:
   0  the attempt is no longer running ("cancelled": true, or "replayed": true
      for an attempt that had already ended)
-  1  the board did not stop it, or refused (the reply is still printed)
+  1  the board did not stop it (an HTTP 2xx reply with "cancelled": false is still
+     printed), or it answered an error status (only the error message is printed)
   2  usage error, nothing was sent
 An older board answers HTTP 400 "projectId and workspaceId are required" for
 an attempt that has no workspace; upgrade the board.

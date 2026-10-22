@@ -1463,6 +1463,7 @@ describe("privos", { concurrency: false }, () => {
     pending: initial,
     websocketOnly = false,
     restAnswer = LEGACY_ANSWER,
+    livePending,
     task = {},
     attempts = [{ id: "a1", status: "running" }],
   } = {}) {
@@ -1495,12 +1496,15 @@ describe("privos", { concurrency: false }, () => {
         res.end(JSON.stringify({ attempts }));
       } else if (req.method === "GET" && req.url === "/api/tasks/t1/pending-question") {
         res.end(JSON.stringify({ question: state.pending }));
+      } else if (req.method === "GET" && req.url === "/api/attempts/a1/pending-question" && livePending !== undefined) {
+        res.end(JSON.stringify({ question: livePending }));
       } else if (req.method === "POST" && req.url === "/api/attempts/a1/answer") {
         state.restBodies.push(JSON.parse(raw));
         state.restProjects.push(req.headers["x-project-id"]);
         state.onRestAnswer?.();
-        res.writeHead(restAnswer.status);
-        res.end(JSON.stringify(restAnswer.body));
+        const answer = typeof restAnswer === "function" ? restAnswer(state.restBodies.at(-1)) : restAnswer;
+        res.writeHead(answer.status);
+        res.end(JSON.stringify(answer.body));
       } else {
         res.writeHead(404);
         res.end("{}");
@@ -1573,7 +1577,7 @@ describe("privos", { concurrency: false }, () => {
       assert.deepEqual(b.restBodies[0], {
         projectId: "p1",
         toolUseId: "tu1",
-        questions: b.restBodies[0].questions,
+        questions: b.pending.questions,
         answers: WANT,
       });
       assert.deepEqual(b.restProjects, ["p1"]);
@@ -1723,6 +1727,106 @@ describe("privos", { concurrency: false }, () => {
       assert.equal(b.connections, 0);
     } finally {
       await b.close();
+    }
+  });
+
+  const NOT_FOUND = { status: 404, body: { error: "Attempt not found" } };
+
+  test("tasks answer retries without the task's workspace and falls back to the socket on an older board", async () => {
+    clearCreds();
+    const b = await answerBoard({
+      task: { workspaceId: "w-task" },
+      restAnswer: (body) => (body.workspaceId === undefined ? LEGACY_ANSWER : NOT_FOUND),
+    });
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).via, "socket");
+      assert.equal(b.restBodies.length, 2);
+      assert.equal(b.restBodies[0].workspaceId, "w-task");
+      assert.equal("workspaceId" in b.restBodies[1], false);
+      assert.equal(b.emitted.length, 1);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer retries once without the task's workspace and then fails on a current board", async () => {
+    clearCreds();
+    const b = await answerBoard({ task: { workspaceId: "w-task" }, restAnswer: NOT_FOUND });
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /HTTP 404: Attempt not found/);
+      assert.equal(b.restBodies.length, 2);
+      assert.equal(b.connections, 0);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer does not retry when the attempt's own workspace was sent", async () => {
+    clearCreds();
+    const b = await answerBoard({
+      attempts: [{ id: "a1", status: "running", workspaceId: "w-attempt" }],
+      task: { workspaceId: "w-task" },
+      restAnswer: NOT_FOUND,
+    });
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 1);
+      assert.equal(b.restBodies.length, 1);
+      assert.equal(b.connections, 0);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("tasks answer refuses any non-null credential marker", async () => {
+    clearCreds();
+    for (const credential of [true, "stripe", 1]) {
+      const b = await answerBoard({
+        pending: { attemptId: "a1", toolUseId: "tu1", questions: [{ question: "API key?", credential }] },
+      });
+      try {
+        for (const flags of [["--confirm"], []]) {
+          const r = await b.run("--api-key", "k", "--answer", "typed-value", ...flags);
+          assert.equal(r.code, 2, JSON.stringify(credential));
+          assert.equal(r.stdout, "");
+        }
+        assert.deepEqual(b.restBodies, []);
+        assert.equal(b.connections, 0);
+      } finally {
+        await b.close();
+      }
+    }
+  });
+
+  test("tasks answer stops when a live worker waits on a different question than the stored one", async () => {
+    clearCreds();
+    const NO_MATCH = { status: 404, body: { error: "No matching pending question for this attempt" } };
+    const b = await answerBoard({
+      restAnswer: NO_MATCH,
+      livePending: { attemptId: "a1", toolUseId: "tu2", questions: [{ question: "Which DB?" }] },
+    });
+    try {
+      const r = await b.run("--api-key", "k", ...BOTH, "--confirm");
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /pending question changed while answering/);
+      assert.equal(b.emitted.length, 0);
+      assert.equal(b.connections, 0);
+    } finally {
+      await b.close();
+    }
+    for (const livePending of [null, { attemptId: "a1", toolUseId: "tu1", questions: [{ question: "Which DB?" }] }]) {
+      const ok = await answerBoard({ restAnswer: NO_MATCH, livePending });
+      try {
+        const r = await ok.run("--api-key", "k", ...BOTH, "--confirm");
+        assert.equal(r.code, 0, r.stderr);
+        assert.equal(JSON.parse(r.stdout).via, "socket");
+      } finally {
+        await ok.close();
+      }
     }
   });
 

@@ -52,7 +52,8 @@ export async function sandboxTasksAnswer(
   if (typeof projectId !== "string" || projectId === "") throw new Error("task has no projectId");
   const question = await pendingQuestion(client, id);
   if (question === null) throw new Error(`task ${p.id} has no pending question`);
-  if (question.questions.some((q) => q.credential !== undefined && q.credential !== null && typeof q.credential === "object")) {
+  // The board treats any non-null credential marker as a vault question.
+  if (question.questions.some((q) => q.credential !== undefined && q.credential !== null)) {
     throw usage("this question is answered by the secure vault form, not by text (open it in the hub or the board)");
   }
 
@@ -70,10 +71,18 @@ export async function sandboxTasksAnswer(
   const attempt = (attemptRows.attempts as unknown[]).find(
     (a) => a !== null && typeof a === "object" && (a as Record<string, unknown>).id === attemptId,
   ) as Record<string, unknown> | undefined;
-  const workspaceId = nonEmpty(attempt?.workspaceId) ?? nonEmpty(task?.workspaceId);
+  const attemptWorkspace = nonEmpty(attempt?.workspaceId);
+  const workspaceId = attemptWorkspace ?? nonEmpty(task?.workspaceId);
 
   const path = `/api/attempts/${encodeURIComponent(attemptId)}/answer`;
-  const restBody = { projectId, ...(workspaceId === undefined ? {} : { workspaceId }), toolUseId, questions, answers };
+  const restBodyFor = (workspace: string | undefined) => ({
+    projectId,
+    ...(workspace === undefined ? {} : { workspaceId: workspace }),
+    toolUseId,
+    questions,
+    answers,
+  });
+  const restBody = restBodyFor(workspaceId);
   const restHeaders = { "x-project-id": projectId };
   const socketPayload = { attemptId, projectId, toolUseId, questions, answers };
 
@@ -103,14 +112,31 @@ export async function sandboxTasksAnswer(
 
   let via = "rest";
   let confirmedBy = "rest";
+  const post = (body: unknown) => client.send("POST", path, { body, extraHeaders: restHeaders, allowMutation: true });
   try {
-    await client.send("POST", path, { body: restBody, extraHeaders: restHeaders, allowMutation: true });
+    try {
+      await post(restBody);
+    } catch (err) {
+      // An older board compares the workspace with the attempt row only, so a workspace that came
+      // from the task makes it answer "Attempt not found". Retry once without it; a current board
+      // answers the same 404 again and that stays final.
+      if (attemptWorkspace === undefined && workspaceId !== undefined && isAttemptNotFound(err)) {
+        await post(restBodyFor(undefined));
+      } else {
+        throw err;
+      }
+    }
   } catch (err) {
     if (!socketFallbackApplies(err)) throw err;
     // The question may have been answered or replaced since it was read; never answer a newer one.
     const again = await pendingQuestion(client, id);
     if (again === null || again.toolUseId !== toolUseId) {
-      throw new Error("the pending question changed while answering; re-run privos sandbox tasks question");
+      throw new Error(PENDING_CHANGED);
+    }
+    // With no live worker the stored copy can be stale while a live one waits on a newer question.
+    if (err instanceof HTTPError && err.status === 404) {
+      const live = await livePendingToolUseId(client, attemptId);
+      if (live !== null && live !== toolUseId) throw new Error(PENDING_CHANGED);
     }
     via = "socket";
     confirmedBy = await answerOverSocket(
@@ -125,6 +151,25 @@ export async function sandboxTasksAnswer(
     );
   }
   stdout.write(`${JSON.stringify({ answered: true, attemptId, toolUseId, via, confirmedBy }, null, 2)}\n`);
+}
+
+const PENDING_CHANGED = "the pending question changed while answering; re-run privos sandbox tasks question";
+
+function isAttemptNotFound(err: unknown): boolean {
+  return err instanceof HTTPError && err.status === 404 && errorMessages(err.body).includes("Attempt not found");
+}
+
+/** The toolUseId of the question a live worker waits on, or null when none (or an older board lacks the route). */
+async function livePendingToolUseId(client: Client, attemptId: string): Promise<string | null> {
+  let body: Buffer;
+  try {
+    body = await client.get(`/api/attempts/${encodeURIComponent(attemptId)}/pending-question`);
+  } catch (err) {
+    if (err instanceof HTTPError && err.status === 404) return null;
+    throw err;
+  }
+  const question = (readJSON(body) as { question?: { toolUseId?: unknown } | null } | null)?.question;
+  return typeof question?.toolUseId === "string" ? question.toolUseId : null;
 }
 
 function nonEmpty(value: unknown): string | undefined {

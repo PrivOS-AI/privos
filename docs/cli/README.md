@@ -718,7 +718,7 @@ project is still missing. Writes carry the `x-project-id` header, and a
 
 | Command | Request | Exit 0 | Exit 1 |
 |---|---|---|---|
-| `attempts cancel` / `stop` | `POST /api/attempts/{id}/cancel` | `"cancelled": true`, or `"replayed": true` for an attempt that already ended | the attempt was not stopped (reply still printed), or the board refused |
+| `attempts cancel` / `stop` | `POST /api/attempts/{id}/cancel` | `"cancelled": true`, or `"replayed": true` for an attempt that already ended | the board answered 2xx but did not stop the attempt (reply still printed), or it answered an error status (only the error message is printed) |
 | `attempts steer --text TEXT` | `POST /api/attempts/{id}/steer` | `"outcome": "accepted"` | `notRunning`, `unsupported`, any other outcome; or the attempt waits for an answer (see below) |
 
 Usage errors exit 2 and send nothing. `steer` reads
@@ -737,9 +737,12 @@ agent session is a project-scoped token: it reads every project on the board and
 writes only its own project (a write elsewhere answers HTTP 403
 `project-scope`, which the CLI prints and exits 1). Writing to another project
 from such a session needs a credential an operator places for it. Every CLI
-write carries `x-project-id`, including the `PUT /api/tasks/reorder` of
-`tasks start` and `tasks update --status`, which read the task first to learn
-its project. The token is not accepted on the socket handshake, so the socket
+write the board cannot resolve from an id in the path carries `x-project-id`:
+`POST /api/tasks`, `POST /api/attempts`, the answer, cancel and steer posts, and
+the `PUT /api/tasks/reorder` of `tasks start` and `tasks update --status`
+(which read the task first to learn its project). The board resolves the
+project from the id for `PATCH` and `DELETE /api/tasks/{id}`; project creation
+and the other project writes are operator-only. The token is not accepted on the socket handshake, so the socket
 fallback of `tasks answer` works only with an operator key.
 
 ```bash
