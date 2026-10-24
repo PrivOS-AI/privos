@@ -62,6 +62,7 @@ export interface Parsed {
   field: string;
   fieldValue: string;
   fieldDefinitions: string;
+  stages: string;
   customFields: string;
   crossTeam: string;
   isolated: string;
@@ -178,6 +179,7 @@ const VALUE_FLAGS = new Set([
   "field",
   "value",
   "field-definitions",
+  "stages",
   "custom-fields",
   "cross-team",
   "isolated",
@@ -360,6 +362,7 @@ function emptyParsed(): Parsed {
     field: "",
     fieldValue: "",
     fieldDefinitions: "",
+    stages: "",
     customFields: "",
     crossTeam: "",
     isolated: "",
@@ -680,6 +683,9 @@ function assignValue(p: Parsed, name: string, value: string): void {
       break;
     case "field-definitions":
       p.fieldDefinitions = trimmed;
+      break;
+    case "stages":
+      p.stages = trimmed;
       break;
     case "custom-fields":
       p.customFields = trimmed;

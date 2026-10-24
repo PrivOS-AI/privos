@@ -662,6 +662,42 @@ describe("privos", { concurrency: false }, () => {
     }
   });
 
+  test("hub lists create --stages renames the default stage and adds the rest with colors", async () => {
+    clearCreds();
+    const seen = [];
+    const srv = await serve(async (req, res) => {
+      seen.push({ url: req.url, body: JSON.parse(await readBody(req)) });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ success: true, list: { _id: "list1" }, defaultStage: { _id: "stage0" } }));
+    });
+    const auth = ["--url", srv.url, "--user-id", "user-1", "--auth-token", "token-1"];
+    const args = ["hub", "lists", "create", ...auth, "--room", "room1", "--name", "Tasks", "--stages", "Đang làm, Chờ duyệt ,Done / Cancelled"];
+    try {
+      let result = await runCLI(args);
+      assert.equal(result.code, 0, result.stderr);
+      const plan = JSON.parse(result.stdout).requests;
+      assert.deepEqual(plan.map((r) => r.url.slice(srv.url.length)), [
+        "/api/v1/lists.create", "/api/v1/stages.update", "/api/v1/stages.create", "/api/v1/stages.create",
+      ]);
+      assert.deepEqual(plan[1].body, { stageId: "<default stage>", name: "Đang làm", color: "#3b82f6" });
+
+      result = await runCLI([...args, "--confirm"]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(seen.map((r) => r.body).slice(1), [
+        { stageId: "stage0", name: "Đang làm", color: "#3b82f6" },
+        { listId: "list1", name: "Chờ duyệt", color: "#8b5cf6", order: 1 },
+        { listId: "list1", name: "Done / Cancelled", color: "#ef4444", order: 2 },
+      ]);
+      assert.equal(JSON.parse(result.stdout).results.length, 4);
+
+      result = await runCLI(["hub", "lists", "create", ...auth, "--room", "room1", "--stages", "A,,B"]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /every stage needs a name/);
+    } finally {
+      await srv.close();
+    }
+  });
+
   test("hub list and item writes are dry-run until --confirm", async () => {
     clearCreds();
     const seen = [];
