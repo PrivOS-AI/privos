@@ -243,8 +243,8 @@ privos hub lists get --id LIST_ID
 `lists.create` responds with `{ list, defaultStage }`. Use `defaultStage` as
 `--stage` on item create when you do not already have a stage id.
 
-`--stages` is a JSON array of `{"name","color"}` (color `#RRGGBB`); give each
-stage a color that fits its state. `lists.create` always makes one "Ungroup"
+`--stages` is a JSON array of `{"name","color"}`, color optional (`#RRGGBB`). It is
+recommended to give each stage a color that fits its state. `lists.create` always makes one "Ungroup"
 stage, so the CLI renames it to the first stage with `POST /api/v1/stages.update`
 and creates the rest in order with `POST /api/v1/stages.create`. The dry run shows
 `<default stage>` and `<created list>` where those ids go.

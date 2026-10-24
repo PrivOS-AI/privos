@@ -610,15 +610,15 @@ function createdId(answer: unknown, key: "list" | "defaultStage"): string {
   return id;
 }
 
-/** --stages: a JSON array of {name, color}; the caller picks a color that fits each stage's state. */
-function parseStages(value: string): Array<{ name: string; color: string }> {
+/** --stages: a JSON array of {name, color?}. */
+function parseStages(value: string): Array<{ name: string; color?: string }> {
   const stages = parseJSONArray("stages", value).map((entry) => {
     const { name, color } = record(entry);
     if (typeof name !== "string" || name.trim() === "") throw usage("--stages: every stage needs a name");
-    if (typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color)) {
-      throw usage(`--stages: stage ${JSON.stringify(name)} needs a color #RRGGBB that fits its state`);
+    if (color !== undefined && (typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color))) {
+      throw usage(`--stages: color of ${JSON.stringify(name)} must be #RRGGBB`);
     }
-    return { name: name.trim(), color };
+    return color === undefined ? { name: name.trim() } : { name: name.trim(), color };
   });
   if (stages.length === 0) throw usage("--stages: pass at least one stage");
   return stages;

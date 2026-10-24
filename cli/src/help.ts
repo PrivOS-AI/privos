@@ -912,8 +912,8 @@ isolatedList. Omitted booleans are left to the server. Dry run unless --confirm.
 The response includes list and defaultStage. Pass defaultStage to
 "hub items create --stage" when you need a stage id.
 
---stages is a JSON array of {"name","color"} (#RRGGBB); give each stage a
-color that fits its state. Without --stages the hub makes one gray "Ungroup"
+--stages is a JSON array of {"name","color"}, color optional (#RRGGBB). It is
+recommended to give each stage a color that fits its state. Without --stages the hub makes one gray "Ungroup"
 stage. With --stages the CLI renames that stage to the first one
 (POST /api/v1/stages.update) and adds the rest in order (POST /api/v1/stages.create).
 `;

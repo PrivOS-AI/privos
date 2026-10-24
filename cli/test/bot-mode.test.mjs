@@ -170,14 +170,14 @@ describe("bot key mode", { concurrency: false }, () => {
       assert.equal(created.authorization, "Bearer bot-key-1");
       assert.deepEqual(JSON.parse(created.body), { name: "Roadmap", fieldDefinitions: [], description: "d" });
 
-      // --stages goes in the body's stages; every stage needs a color.
-      const stages = [{ name: "Doing", color: "#3b82f6" }, { name: "Done", color: "#10b981" }];
+      // --stages goes in the body's stages; color is optional.
+      const stages = [{ name: "Doing", color: "#3b82f6" }, { name: "Done" }];
       result = await runCLI(["hub", "lists", "create", ...auth, "--name", "Tasks", "--stages", JSON.stringify(stages)]);
       assert.equal(result.code, 0, result.stderr);
       assert.deepEqual(JSON.parse(result.stdout).requests[0].body.stages, stages);
-      result = await runCLI(["hub", "lists", "create", ...auth, "--name", "Tasks", "--stages", '[{"name":"X"}]']);
+      result = await runCLI(["hub", "lists", "create", ...auth, "--name", "Tasks", "--stages", '[{"name":"X","color":"red"}]']);
       assert.equal(result.code, 2);
-      assert.match(result.stderr, /needs a color #RRGGBB/);
+      assert.match(result.stderr, /must be #RRGGBB/);
 
       result = await runCLI(["hub", "lists", "update", ...auth, "--id", "L1", "--name", "New", "--confirm"]);
       assert.equal(result.code, 0, result.stderr);
