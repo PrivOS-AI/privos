@@ -610,30 +610,15 @@ function createdId(answer: unknown, key: "list" | "defaultStage"): string {
   return id;
 }
 
-// Stage colors by state, first match wins; the privos-list skill documents the same palette.
-const STAGE_COLORS: Array<[RegExp, string]> = [
-  [/cancel|reject|fail|block|drop|abandon|lost|hủy|huỷ|từ chối/i, "#ef4444"],
-  [/done|complete|finish|closed|approved|accepted|resolved|shipped|published|won|xong|hoàn thành/i, "#10b981"],
-  [/review|qa|test|verif|duyệt|kiểm tra/i, "#8b5cf6"],
-  [/wait|hold|pending|paused|chờ|tạm dừng/i, "#f59e0b"],
-  [/doing|progress|active|working|ongoing|đang/i, "#3b82f6"],
-];
-const DEFAULT_STAGE_COLOR = "#6b7280";
-
-export function stageColor(name: string): string {
-  return STAGE_COLORS.find(([re]) => re.test(name))?.[1] ?? DEFAULT_STAGE_COLOR;
-}
-
-/** --stages: comma-separated names, or a JSON array of names or {name, color}. A missing color comes from the name. */
+/** --stages: a JSON array of {name, color}; the caller picks a color that fits each stage's state. */
 function parseStages(value: string): Array<{ name: string; color: string }> {
-  const entries: unknown[] = value.startsWith("[") ? parseJSONArray("stages", value) : value.split(",");
-  const stages = entries.map((entry) => {
-    const { name, color } = typeof entry === "string" ? { name: entry, color: undefined } : record(entry);
+  const stages = parseJSONArray("stages", value).map((entry) => {
+    const { name, color } = record(entry);
     if (typeof name !== "string" || name.trim() === "") throw usage("--stages: every stage needs a name");
-    if (color !== undefined && (typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color))) {
-      throw usage(`--stages: color of ${JSON.stringify(name)} must be #RRGGBB`);
+    if (typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color)) {
+      throw usage(`--stages: stage ${JSON.stringify(name)} needs a color #RRGGBB that fits its state`);
     }
-    return { name: name.trim(), color: color ?? stageColor(name) };
+    return { name: name.trim(), color };
   });
   if (stages.length === 0) throw usage("--stages: pass at least one stage");
   return stages;

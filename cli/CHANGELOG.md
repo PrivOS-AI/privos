@@ -7,11 +7,10 @@ All notable changes to `@privos_ai/privos`. Full command notes live in
 
 ### Added
 
-- `privos hub lists create --stages` names the list's stages, as comma-separated names or
-  a JSON array of names or `{name, color}`. A stage without a color gets one from its name
-  (gray inbox or to do, blue doing, orange waiting, purple review, green done, red blocked
-  or cancelled). Bot mode sends them in the room route's `stages`; a personal token renames
-  the default "Ungroup" stage to the first one and creates the rest with `stages.create`.
+- `privos hub lists create --stages '[{"name","color"}]'` creates the list's stages, each
+  with a color that fits its state. Bot mode sends them in the room route's `stages`; a
+  personal token renames the default "Ungroup" stage to the first one and creates the rest
+  with `stages.create`.
 
 ## 0.12.0 — 2026-10-22
 

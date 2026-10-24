@@ -243,25 +243,11 @@ privos hub lists get --id LIST_ID
 `lists.create` responds with `{ list, defaultStage }`. Use `defaultStage` as
 `--stage` on item create when you do not already have a stage id.
 
-`--stages` names the list's stages: comma-separated names, or a JSON array of
-names or `{"name","color"}` objects (color `#RRGGBB`). A stage without a color
-gets one from its name:
-
-| Stage state (name contains) | Color |
-|---|---|
-| Inbox, backlog, to do, anything not below | gray `#6b7280` |
-| Doing, in progress, active | blue `#3b82f6` |
-| Waiting, on hold, pending | orange `#f59e0b` |
-| Review, QA, testing | purple `#8b5cf6` |
-| Done, completed, approved, closed | green `#10b981` |
-| Blocked, cancelled, rejected, failed | red `#ef4444` |
-
-The first matching row from the bottom up wins, so "Done / Cancelled" is red and
-"Pending review" is purple. Vietnamese names (chờ, đang, duyệt, xong, hủy) map the
-same way. `lists.create` always makes one "Ungroup" stage, so the CLI renames it
-to the first stage with `POST /api/v1/stages.update` and creates the rest in order
-with `POST /api/v1/stages.create`. The dry run shows `<default stage>` and
-`<created list>` where those ids go.
+`--stages` is a JSON array of `{"name","color"}` (color `#RRGGBB`); give each
+stage a color that fits its state. `lists.create` always makes one "Ungroup"
+stage, so the CLI renames it to the first stage with `POST /api/v1/stages.update`
+and creates the rest in order with `POST /api/v1/stages.create`. The dry run shows
+`<default stage>` and `<created list>` where those ids go.
 
 ```text
 privos hub lists create --room ROOM_ID --name Tasks

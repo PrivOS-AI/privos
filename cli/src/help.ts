@@ -912,15 +912,10 @@ isolatedList. Omitted booleans are left to the server. Dry run unless --confirm.
 The response includes list and defaultStage. Pass defaultStage to
 "hub items create --stage" when you need a stage id.
 
---stages is a comma-separated list of names ("Inbox,Doing,Review,Done") or a
-JSON array of names or {"name","color"} objects, color as #RRGGBB. A stage
-without a color gets one from its name: gray #6b7280 for inbox, backlog or to
-do; blue #3b82f6 for doing or in progress; orange #f59e0b for waiting, on hold
-or pending; purple #8b5cf6 for review or testing; green #10b981 for done or
-approved; red #ef4444 for blocked, cancelled, rejected or failed. Without
---stages the hub makes one gray "Ungroup" stage. With --stages the CLI renames
-that stage to the first one (POST /api/v1/stages.update) and adds the rest in
-order (POST /api/v1/stages.create).
+--stages is a JSON array of {"name","color"} (#RRGGBB); give each stage a
+color that fits its state. Without --stages the hub makes one gray "Ungroup"
+stage. With --stages the CLI renames that stage to the first one
+(POST /api/v1/stages.update) and adds the rest in order (POST /api/v1/stages.create).
 `;
 
 const hubListsUpdateHelp = `Usage:
