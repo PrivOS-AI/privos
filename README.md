@@ -239,6 +239,80 @@ described under "LAN / private LLM endpoints" in `env.template`.
 Nothing beyond exactly that path — an explicitly
 allowlisted and configured private endpoint — is promised for an air-gapped install.
 
+## Board-only mode with Claude Code, Codex or Antigravity
+
+You can run the published sandbox board image without the hub, so the Kanban board drives an
+agent CLI you sign in to yourself: Claude Code (`claude`), Codex (`codex`) or Antigravity (`agy`).
+This mode needs no installer and no activation. It runs one container that stores its data in
+SQLite. It has no hub, no rooms, no proxy and no VM pool. Each agent runs inside the board
+container and can only reach the folders you mount into it.
+
+The published image does not include the CLIs, so build a small image on top of it. Use the image
+tag of a release, which is the release name without `self-hosted-`, for example
+`v7.15.42-tenant.369`. Leave out any CLI you don't need:
+
+```bash
+mkdir -p ~/privos-board && cd ~/privos-board
+cat > Dockerfile <<'EOF'
+ARG PRIVOS_VERSION=v7.15.42-tenant.369
+FROM ghcr.io/privos-ai/privos-sandbox-board:${PRIVOS_VERSION}
+USER root
+RUN apk add --no-cache bash git ripgrep curl gcompat libgcc libstdc++ \
+ && npm install -g @anthropic-ai/claude-code @openai/codex \
+ && npm cache clean --force \
+ && curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /usr/local/bin
+USER appuser
+EOF
+docker build -t privos-board-local .
+```
+
+Then run it. It listens on loopback only, writes files as your own user, and keeps its data in
+`~/privos-board`. Mount your code folders under `/workspace`:
+
+```bash
+mkdir -p ~/privos-board/data ~/privos-board/home ~/privos-workspace
+docker run -d --name privos-board --restart unless-stopped \
+  --user "$(id -u):$(id -g)" \
+  -p 127.0.0.1:8556:8556 \
+  -e PORT=8556 \
+  -e API_ACCESS_KEY="$(openssl rand -hex 24 | tee ~/privos-board/api-key)" \
+  -v ~/privos-board/data:/app/data \
+  -v ~/privos-board/home:/home/appuser \
+  -v ~/privos-workspace:/workspace \
+  privos-board-local
+```
+
+Sign each CLI in once. The logins are saved in `~/privos-board/home`, so they survive restarts
+and upgrades:
+
+```bash
+docker exec -it privos-board claude                        # then /login
+docker exec -it privos-board codex login --device-auth
+docker exec -it privos-board agy                           # follow its sign-in prompt
+```
+
+You can pass an API key instead of signing in: add `-e ANTHROPIC_API_KEY=...` or
+`-e OPENAI_API_KEY=...` to `docker run`.
+
+Open `http://127.0.0.1:8556` and enter the key from `~/privos-board/api-key`. Create a project whose
+path is inside `/workspace` (for example `/workspace/my-app`), add a task, and pick a model from the
+**Claude Code CLI**, **Codex CLI** or **Antigravity CLI** group. The [`privos` CLI](#operator-cli)
+does the same from a terminal:
+
+```bash
+export PRIVOS_SANDBOX_URL=http://127.0.0.1:8556 PRIVOS_SANDBOX_API_KEY="$(cat ~/privos-board/api-key)"
+privos sandbox projects create --name my-app --path /workspace/my-app --confirm
+privos sandbox models list    # model ids per provider
+privos sandbox tasks create --project PROJECT_ID --title "First task" --description "Add a README" \
+  --start --provider claude-cli --model MODEL_ID --confirm   # or codex-cli, antigravity-cli
+```
+
+To upgrade, change `PRIVOS_VERSION`, rebuild with `docker build --pull -t privos-board-local .`,
+then remove the container and run it again with the same command. The commands above are for
+Linux and macOS. The Antigravity binary needs a CPU with AES-NI.
+
+The fleet feature that lets a room owner run their turns on a CLI inside a dedicated sandbox VM does not apply to Community Edition; this board-only recipe is the CE route.
+
 ## Contents
 
 | File | Purpose |
