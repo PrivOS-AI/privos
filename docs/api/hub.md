@@ -236,12 +236,18 @@ privos hub lists get --id LIST_ID
 
 | CLI | Method | Body |
 |---|---|---|
-| `hub lists create --room ROOM_ID` | `POST /api/v1/lists.create` | `roomId` required. `fieldDefinitions` required; the CLI sends `[]` unless `--field-definitions` is a JSON array. Optional `name`, `description`, `crossTeamWorkflow` (`--cross-team true\|false`), `isolatedList` (`--isolated true\|false`). |
+| `hub lists create --room ROOM_ID` | `POST /api/v1/lists.create` | `roomId` required. `fieldDefinitions` required; the CLI sends `[]` unless `--field-definitions` is a JSON array. Optional `name`, `description`, `crossTeamWorkflow` (`--cross-team true\|false`), `isolatedList` (`--isolated true\|false`). `--stages` adds `stages.update` and `stages.create` calls, see below. |
 | `hub lists update --id LIST_ID` | `POST /api/v1/lists.update` | `listId` required. Optional `name`, `description`, `roomId`, `crossTeamWorkflow`, `isolatedList`. At least one optional field is required. |
 | `hub lists delete --id LIST_ID` | `POST /api/v1/lists.delete` | `{"listId":"LIST_ID"}` |
 
 `lists.create` responds with `{ list, defaultStage }`. Use `defaultStage` as
 `--stage` on item create when you do not already have a stage id.
+
+`--stages` is a JSON array of `{"name","color"}`, color optional (`#RRGGBB`). It is
+recommended to give each stage a color that fits its state. `lists.create` always makes one "Ungroup"
+stage, so the CLI renames it to the first stage with `POST /api/v1/stages.update`
+and creates the rest in order with `POST /api/v1/stages.create`. The dry run shows
+`<default stage>` and `<created list>` where those ids go.
 
 ```text
 privos hub lists create --room ROOM_ID --name Tasks
@@ -343,7 +349,7 @@ a dry run until `--confirm`. `--raw` prints the hub's bytes unchanged.
 |---|---|
 | `hub lists list` | `GET .../lists` |
 | `hub lists get --id L` | `GET .../lists/L` (prints `list`, `stages`, `itemCount`) |
-| `hub lists create --name N` | `POST .../lists` |
+| `hub lists create --name N` | `POST .../lists` (`--stages` goes in the body's `stages`) |
 | `hub lists update --id L` | `PUT .../lists/L` |
 | `hub lists delete --id L` | `DELETE .../lists/L` |
 | `hub items list --list L` or `--stage S` | `GET .../items?listId=L` or `?stageId=S` |

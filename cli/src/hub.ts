@@ -558,7 +558,9 @@ export async function hubListsCreate(
     "field-definitions",
     "cross-team",
     "isolated",
+    "stages",
   ]);
+  const stages = p.stages === "" ? [] : parseStages(p.stages);
   if (bot) {
     botUnsupported(p, ["isolated"]);
     requireFlag(p, "name", p.name, helpFor(["hub", "lists", "create"]));
@@ -569,6 +571,7 @@ export async function hubListsCreate(
     if (p.description !== "") body.description = p.description;
     const crossTeam = optionalBool("cross-team", p.crossTeam);
     if (crossTeam !== undefined) body.crossTeamWorkflow = crossTeam;
+    if (stages.length > 0) body.stages = stages;
     await sendHub(p, [{ method: "POST", path: `${botRoomBase(p)}/lists`, body }], stdout, stderr, fetchImpl);
     return;
   }
@@ -583,7 +586,42 @@ export async function hubListsCreate(
   const isolated = optionalBool("isolated", p.isolated);
   if (crossTeam !== undefined) body.crossTeamWorkflow = crossTeam;
   if (isolated !== undefined) body.isolatedList = isolated;
-  await sendHub(p, [{ method: "POST", path: "/api/v1/lists.create", body }], stdout, stderr, fetchImpl);
+  const plans: PlannedRequest[] = [{ method: "POST", path: "/api/v1/lists.create", body }];
+  // lists.create always makes one "Ungroup" stage; it becomes the first stage, the rest are added after it.
+  const [first, ...rest] = stages;
+  if (first) {
+    const rename = (stageId: string): PlannedRequest => ({ method: "POST", path: "/api/v1/stages.update", body: { stageId, ...first } });
+    plans.push({ ...rename("<default stage>"), prepare: (prior) => rename(createdId(prior[0], "defaultStage")) });
+  }
+  rest.forEach((stage, i) => {
+    const create = (listId: string): PlannedRequest => ({
+      method: "POST",
+      path: "/api/v1/stages.create",
+      body: { listId, ...stage, order: i + 1 },
+    });
+    plans.push({ ...create("<created list>"), prepare: (prior) => create(createdId(prior[0], "list")) });
+  });
+  await sendHub(p, plans, stdout, stderr, fetchImpl);
+}
+
+function createdId(answer: unknown, key: "list" | "defaultStage"): string {
+  const id = String(record(record(answer)[key])._id ?? "");
+  if (id === "") throw new Error(`/api/v1/lists.create: the answer carries no ${key} id`);
+  return id;
+}
+
+/** --stages: a JSON array of {name, color?}. */
+function parseStages(value: string): Array<{ name: string; color?: string }> {
+  const stages = parseJSONArray("stages", value).map((entry) => {
+    const { name, color } = record(entry);
+    if (typeof name !== "string" || name.trim() === "") throw usage("--stages: every stage needs a name");
+    if (color !== undefined && (typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color))) {
+      throw usage(`--stages: color of ${JSON.stringify(name)} must be #RRGGBB`);
+    }
+    return color === undefined ? { name: name.trim() } : { name: name.trim(), color };
+  });
+  if (stages.length === 0) throw usage("--stages: pass at least one stage");
+  return stages;
 }
 
 export async function hubListsUpdate(

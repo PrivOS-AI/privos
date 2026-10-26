@@ -869,7 +869,8 @@ Bot mode (bot key or egress): the commands call the room routes
 GET|POST /api/v1/internal/rooms/ROOM_ID/lists and GET|PUT|DELETE
 /api/v1/internal/rooms/ROOM_ID/lists/LIST_ID. --room names the room and is
 required (default PRIVOS_ROOM_ID); "update --room" does not move a list there.
-"create" needs --name. --isolated is refused. "get" prints list, stages and
+"create" needs --name and sends --stages as the body's stages, so no stage
+"Ungroup" is made. --isolated is refused. "get" prints list, stages and
 itemCount like personal-token mode. Structure changes still need the room's
 owner, admin or leader role.
 `;
@@ -902,6 +903,7 @@ GET /api/v1/lists.info?listId=LIST_ID. Prints JSON.
 const hubListsCreateHelp = `Usage:
   privos hub lists create --room ROOM_ID [--name NAME] [--description TEXT]
          [--field-definitions JSON] [--cross-team true|false] [--isolated true|false]
+         [--stages STAGES]
 
 POST /api/v1/lists.create. roomId is required. fieldDefinitions is always
 sent and defaults to []. --field-definitions replaces that default and must
@@ -909,6 +911,11 @@ be a JSON array. --cross-team sets crossTeamWorkflow. --isolated sets
 isolatedList. Omitted booleans are left to the server. Dry run unless --confirm.
 The response includes list and defaultStage. Pass defaultStage to
 "hub items create --stage" when you need a stage id.
+
+--stages is a JSON array of {"name","color"}, color optional (#RRGGBB). It is
+recommended to give each stage a color that fits its state. Without --stages the hub makes one gray "Ungroup"
+stage. With --stages the CLI renames that stage to the first one
+(POST /api/v1/stages.update) and adds the rest in order (POST /api/v1/stages.create).
 `;
 
 const hubListsUpdateHelp = `Usage:
