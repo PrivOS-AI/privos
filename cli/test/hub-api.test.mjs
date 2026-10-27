@@ -71,7 +71,7 @@ describe("hub api", () => {
       ["hub", "api", "GET", "/api/v1/x", "--body", "{}"],
       ["hub", "api", "POST", "/api/v1/x", "--body", "not json", "--confirm"],
       ["hub", "api", "GET", "/api/v1/x", "--query", "novalue"],
-      ["hub", "api", "GET", "/api/v1/x", "--room", "R2"],
+      ["hub", "api", "GET", "/api/v1/x", "--list", "L2"],
     ]) {
       const r = await cli(args, rec);
       assert.equal(r.code, 2, `${args.join(" ")} → ${r.code} ${r.stderr}`);
@@ -83,5 +83,34 @@ describe("hub api", () => {
     const r = await cli(["hub", "api", "--help"], recorder());
     assert.equal(r.code, 0);
     assert.match(r.stdout, /privos hub api METHOD/);
+  });
+});
+
+describe("hub api {room}", () => {
+  test("{room} in path, query and body is the agent room, or --room", async () => {
+    const rec = recorder();
+    const r = await cli(
+      ["hub", "api", "POST", "/api/v1/internal/rooms/{room}/items/batch-move", "--query", "r={room}", "--body", '{"roomId":"{room}"}', "--confirm"],
+      rec,
+    );
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(rec.calls[0].envelope.url, "https://hub.test/api/v1/internal/rooms/R1/items/batch-move?r=R1");
+    assert.deepEqual(JSON.parse(rec.calls[0].envelope.body), { roomId: "R1" });
+    const other = await cli(["hub", "api", "GET", "/api/v1/internal/rooms/{room}/stages", "--room", "R7"], rec);
+    assert.equal(other.code, 0, other.stderr);
+    assert.match(rec.calls[1].envelope.url, /\/rooms\/R7\/stages$/);
+    const bad = await cli(["hub", "api", "GET", "/api/v1/internal/rooms/{room}/stages", "--room", "a/b"], rec);
+    assert.equal(bad.code, 2);
+    const none = await cli(["hub", "api", "GET", "/api/v1/internal/rooms/{room}/stages"], rec, { ...VM, PRIVOS_ROOM_ID: "" });
+    assert.equal(none.code, 2);
+    assert.equal(rec.calls.length, 2);
+  });
+
+  test("message commands default to the agent room over egress", async () => {
+    const rec = recorder();
+    const r = await cli(["hub", "messages", "send", "--text", "hi", "--confirm"], rec);
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(rec.calls[0].envelope.url, /\/api\/v1\/chat\.sendMessage$/);
+    assert.deepEqual(JSON.parse(rec.calls[0].envelope.body), { message: { rid: "R1", msg: "hi" } });
   });
 });

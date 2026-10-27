@@ -379,7 +379,8 @@ With a personal token `hub stages` uses `stages.listByListId`, `stages.create`, 
 **Raw call.** `hub api METHOD /api/v1/PATH [--body JSON] [--query k=v ...]` sends one request to any hub route, for
 the routes with no named command (batch item and list routes, `lists/byTemplateKey`, `admin.lists.recover`, the other
 skills' endpoints). PATH must start with `/api/v1/` and holds only letters, digits, `.`, `_`, `-` and `/`; `--body` is
-for POST and PUT. GET prints the answer as it came; any other method is a dry run until `--confirm`. It uses the same
+for POST and PUT. `{room}` in PATH, a `--query` value or `--body` is replaced by the room (`--room`, else
+`PRIVOS_ROOM_ID`), so an agent can write `/api/v1/internal/rooms/{room}/items/batch-move`. GET prints the answer as it came; any other method is a dry run until `--confirm`. It uses the same
 credentials as every hub command (personal token, bot key, or the egress).
 
 The room routes leave some options out, so these are refused with a usage error before

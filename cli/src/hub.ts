@@ -174,10 +174,15 @@ export function botRoomBase(p: Parsed): string {
 }
 
 /** --room, else the agent VM's PRIVOS_ROOM_ID; `needs` says who asks when both are empty. */
-function roomOrEnv(p: Parsed, needs: string): string {
+export function roomOrEnv(p: Parsed, needs: string): string {
   const room = p.room !== "" ? p.room : getenv(p.env, "PRIVOS_ROOM_ID");
   if (room === "") throw usage(`${commandOf(p)}: ${needs} --room ROOM_ID (PRIVOS_ROOM_ID is not set)`);
   return room;
+}
+
+/** Inside an agent VM a message command defaults to the agent's own room, like the lists and items commands. */
+function egressRoomDefault(p: Parsed, fetchImpl: typeof fetch): void {
+  if (p.room === "" && egressOf(fetchImpl) !== undefined) p.room = getenv(p.env, "PRIVOS_ROOM_ID");
 }
 
 /** The room routes ignore fields they do not read and still answer success, so these flags must fail here. */
@@ -422,6 +427,7 @@ export async function hubMessagesSend(
   fetchImpl: typeof fetch,
 ): Promise<void> {
   forbidUnknown(p, "hub messages send", [...HUB_AUTH, "room", "text", "file"]);
+  egressRoomDefault(p, fetchImpl);
   requireFlag(p, "room", p.room, helpFor(["hub", "messages", "send"]));
   if (p.file !== "") {
     // One request uploads the file and posts it with --text as its message; a bot key and the egress catalog take it too.
@@ -453,6 +459,7 @@ export async function hubMessagesUpdate(
   fetchImpl: typeof fetch,
 ): Promise<void> {
   forbidUnknown(p, "hub messages update", [...HUB_AUTH, "room", "id", "text"]);
+  egressRoomDefault(p, fetchImpl);
   requireFlag(p, "room", p.room, helpFor(["hub", "messages", "update"]));
   requireFlag(p, "id", p.id, helpFor(["hub", "messages", "update"]));
   requireFlag(p, "text", p.text, helpFor(["hub", "messages", "update"]));
@@ -478,6 +485,7 @@ export async function hubMessagesDelete(
   fetchImpl: typeof fetch,
 ): Promise<void> {
   forbidUnknown(p, "hub messages delete", [...HUB_AUTH, "room", "id"]);
+  egressRoomDefault(p, fetchImpl);
   requireFlag(p, "room", p.room, helpFor(["hub", "messages", "delete"]));
   requireFlag(p, "id", p.id, helpFor(["hub", "messages", "delete"]));
   await sendHub(

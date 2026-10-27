@@ -1,10 +1,11 @@
-import { HUB_AUTH, hubClient, sendHub } from "./hub.js";
+import { HUB_AUTH, hubClient, roomOrEnv, sendHub } from "./hub.js";
 import { helpFor } from "./help.js";
-import { forbidUnknown, type Parsed } from "./parse.js";
+import { forbidUnknown, pathSegment, type Parsed } from "./parse.js";
 import { render, type Out } from "./render.js";
 import { usage } from "./usage.js";
 
 const METHODS = ["GET", "POST", "PUT", "DELETE"];
+const ROOM = "{room}";
 
 /** /api/v1/ then word, dot and dash segments: no query, fragment, space, backslash, "." or ".." segment. */
 function apiPath(raw: string): string {
@@ -25,25 +26,34 @@ function apiPath(raw: string): string {
  * command. Reads print the answer as it came; writes are a dry run unless --confirm, like every other write.
  */
 export async function hubApi(p: Parsed, stdout: Out, stderr: Out, fetchImpl: typeof fetch): Promise<void> {
-  forbidUnknown(p, "hub api", [...HUB_AUTH, "body", "query"]);
-  const [, , rawMethod = "", rawPath = "", ...extra] = p.positionals;
-  if (rawMethod === "" || rawPath === "" || extra.length > 0) {
+  forbidUnknown(p, "hub api", [...HUB_AUTH, "body", "query", "room"]);
+  const [, , rawMethod = "", pathArg = "", ...extra] = p.positionals;
+  if (rawMethod === "" || pathArg === "" || extra.length > 0) {
     throw usage(`hub api: expected METHOD and PATH\n\n${helpFor(["hub", "api"])}`);
   }
+  // {room} in the path, a --query value or --body is the room: --room, else the agent VM's PRIVOS_ROOM_ID.
+  let roomId: string | undefined;
+  const withRoom = (text: string): string => {
+    if (!text.includes(ROOM)) return text;
+    roomId ??= pathSegment("room", roomOrEnv(p, "{room} needs"));
+    return text.replaceAll(ROOM, roomId);
+  };
+  const rawPath = withRoom(pathArg);
   const method = rawMethod.toUpperCase();
   if (!METHODS.includes(method)) throw usage(`hub api: METHOD must be one of ${METHODS.join(", ")}`);
   const query = new URLSearchParams();
   for (const pair of p.queries) {
     const eq = pair.indexOf("=");
     if (eq < 1) throw usage(`--query must be key=value, got ${JSON.stringify(pair)}`);
-    query.append(pair.slice(0, eq), pair.slice(eq + 1));
+    query.append(pair.slice(0, eq), withRoom(pair.slice(eq + 1)));
   }
   const path = apiPath(rawPath);
   let body: unknown;
   if (p.body !== "") {
     if (method !== "POST" && method !== "PUT") throw usage("hub api: --body is for POST and PUT only");
+    const text = withRoom(p.body);
     try {
-      body = JSON.parse(p.body) as unknown;
+      body = JSON.parse(text) as unknown;
     } catch {
       throw usage("--body must be JSON");
     }

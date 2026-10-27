@@ -1211,16 +1211,17 @@ A SELECT value is the option's _id; MULTI_SELECT is an array of ids. Bot mode on
 `;
 
 const hubApiHelp = `Usage:
-  privos hub api METHOD /api/v1/PATH [--body JSON] [--query key=value ...]
+  privos hub api METHOD /api/v1/PATH [--body JSON] [--query key=value ...] [--room ROOM_ID]
 
 One raw hub call for routes that have no named command, for example
-  privos hub api POST /api/v1/internal/rooms/ROOM_ID/items/batch-move --body '{"itemIds":["a"],"stageId":"s"}' --confirm
-  privos hub api GET /api/v1/internal/rooms/ROOM_ID/lists/byTemplateKey --query templateKey=crm
+  privos hub api POST /api/v1/internal/rooms/{room}/items/batch-move --body '{"itemIds":["a"],"stageId":"s"}' --confirm
+  privos hub api GET /api/v1/internal/rooms/{room}/lists/byTemplateKey --query templateKey=crm
 
 METHOD is GET, POST, PUT or DELETE. PATH starts with /api/v1/ and holds only
 letters, digits, ".", "_", "-" and "/" (no query string, fragment, space or
 ".."); pass query values with --query (repeatable). --body (JSON) is for POST
-and PUT. GET prints the answer as it came. Every other method is a dry run
+and PUT. {room} anywhere in PATH, a --query value or --body stands for the room:
+--room, else PRIVOS_ROOM_ID (inside an agent VM, the agent's own room). GET prints the answer as it came. Every other method is a dry run
 unless --confirm. Auth is the same as the other hub commands; inside an agent
 VM the call goes through the sandbox egress and the proxy decides what is allowed.
 `;

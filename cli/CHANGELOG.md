@@ -19,7 +19,13 @@ All notable changes to `@privos_ai/privos`. Full command notes live in
 - `privos hub items fields get|set|clear`: an item's custom-field values (bot mode); `set --value` takes JSON,
   `set --custom-fields` several fields at once.
 - `privos hub api METHOD /api/v1/... [--body JSON] [--query k=v]`: one raw hub call for routes with no named command;
-  writes are a dry run unless `--confirm`. `hub stages|fields|api` use the sandbox egress like the other bot commands.
+  writes are a dry run unless `--confirm`. `{room}` in the path, a `--query` value or `--body` is the room (`--room`,
+  else `PRIVOS_ROOM_ID`). `hub stages|fields|api` use the sandbox egress like the other bot commands.
+
+### Changed
+
+- Over the sandbox egress, `hub messages send|update|delete` default `--room` to the agent's own room
+  (`PRIVOS_ROOM_ID`), like `hub lists`, `hub items` and `hub files`.
 
 - `privos hub lists create --stages '[{"name","color"}]'` creates the list's stages (color
   optional; a color that fits each stage's state is recommended). Bot mode sends them in the room route's `stages`; a
