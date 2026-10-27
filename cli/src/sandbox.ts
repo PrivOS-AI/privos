@@ -122,8 +122,8 @@ async function sandboxGet(
   unwrap: string,
   cols: Column[],
 ): Promise<void> {
-  const cfg = resolveSandbox(p.url, p.apiKey);
-  const client = new Client(cfg.baseURL, sandboxHeaders(cfg.apiKey, resolveRequester(p)), timeoutSeconds(p) * 1000, fetchImpl);
+  const cfg = resolveSandbox(p.env, p.url, p.apiKey);
+  const client = new Client(cfg.baseURL, sandboxHeaders(cfg.apiKey, resolveRequester(p, p.env)), timeoutSeconds(p) * 1000, fetchImpl);
   const body = await client.get(path, query);
   render(stdout, body, p.format, p.raw, unwrap, cols);
 }
@@ -334,8 +334,8 @@ function resolveCallback(p: Parsed): { url: string; secret: string; host: string
   }
   const urlEnv = envName("callback-url-env", p.callbackURLEnv, "");
   const keyEnv = envName("callback-key-env", p.callbackKeyEnv, "");
-  const url = (process.env[urlEnv] ?? "").trim();
-  const secret = (process.env[keyEnv] ?? "").trim();
+  const url = (p.env[urlEnv] ?? "").trim();
+  const secret = (p.env[keyEnv] ?? "").trim();
   if (url === "") throw usage(`--callback-url-env: ${urlEnv} is not set`);
   if (secret === "") throw usage(`--callback-key-env: ${keyEnv} is not set`);
   let host: string;
@@ -597,8 +597,8 @@ function startPlans(
 }
 
 function sandboxClient(p: Parsed, fetchImpl: typeof fetch): Client {
-  const cfg = resolveSandbox(p.url, p.apiKey);
-  return new Client(cfg.baseURL, sandboxHeaders(cfg.apiKey, resolveRequester(p)), timeoutSeconds(p) * 1000, fetchImpl);
+  const cfg = resolveSandbox(p.env, p.url, p.apiKey);
+  return new Client(cfg.baseURL, sandboxHeaders(cfg.apiKey, resolveRequester(p, p.env)), timeoutSeconds(p) * 1000, fetchImpl);
 }
 
 function readObject(body: Buffer): Record<string, unknown> {
@@ -621,12 +621,12 @@ async function sendSandbox(
   stderr: Out,
   fetchImpl: typeof fetch,
 ): Promise<void> {
-  const cfg = resolveSandbox(p.url, p.apiKey);
+  const cfg = resolveSandbox(p.env, p.url, p.apiKey);
   await mutate(
     p,
     plans,
     cfg.baseURL,
-    sandboxHeaders(cfg.apiKey, resolveRequester(p)),
+    sandboxHeaders(cfg.apiKey, resolveRequester(p, p.env)),
     ["x-api-key"],
     stdout,
     stderr,

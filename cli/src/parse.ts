@@ -1,6 +1,10 @@
 import { usage } from "./usage.js";
 
+/** The environment a command reads. The binary passes process.env; a library caller passes its own. */
+export type Env = Readonly<Record<string, string | undefined>>;
+
 export interface Parsed {
+  env: Env;
   help: boolean;
   version: boolean;
   raw: boolean;
@@ -104,6 +108,14 @@ export interface Parsed {
   file: string;
   folder: string;
   duplicate: string;
+  body: string;
+  queries: string[];
+  color: string;
+  fieldType: string;
+  options: string;
+  option: string;
+  displayFormat: string;
+  moveTo: string;
   positionals: string[];
   seen: Set<string>;
 }
@@ -215,9 +227,17 @@ const VALUE_FLAGS = new Set([
   "file",
   "folder",
   "duplicate",
+  "body",
+  "query",
+  "color",
+  "type",
+  "options",
+  "option",
+  "display-format",
+  "move-to",
 ]);
 
-const REPEATABLE = new Set(["project", "member", "answer", "file-id", "param"]);
+const REPEATABLE = new Set(["project", "member", "answer", "file-id", "param", "query"]);
 
 export function commandOf(p: Parsed): string {
   return p.positionals.join(" ");
@@ -299,8 +319,9 @@ function looksLikeFlag(s: string): boolean {
   return true;
 }
 
-function emptyParsed(): Parsed {
+function emptyParsed(env: Env): Parsed {
   return {
+    env,
     help: false,
     version: false,
     raw: false,
@@ -404,13 +425,21 @@ function emptyParsed(): Parsed {
     file: "",
     folder: "",
     duplicate: "",
+    body: "",
+    queries: [],
+    color: "",
+    fieldType: "",
+    options: "",
+    option: "",
+    displayFormat: "",
+    moveTo: "",
     positionals: [],
     seen: new Set(),
   };
 }
 
-export function parseArgs(args: string[]): Parsed {
-  const p = emptyParsed();
+export function parseArgs(args: string[], env: Env): Parsed {
+  const p = emptyParsed(env);
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a === "--") {
@@ -584,6 +613,30 @@ function assignValue(p: Parsed, name: string, value: string): void {
       break;
     case "duplicate":
       p.duplicate = trimmed;
+      break;
+    case "body":
+      p.body = trimmed;
+      break;
+    case "query":
+      p.queries.push(trimmed);
+      break;
+    case "color":
+      p.color = trimmed;
+      break;
+    case "type":
+      p.fieldType = trimmed;
+      break;
+    case "options":
+      p.options = trimmed;
+      break;
+    case "option":
+      p.option = trimmed;
+      break;
+    case "display-format":
+      p.displayFormat = trimmed;
+      break;
+    case "move-to":
+      p.moveTo = trimmed;
       break;
     case "route":
       p.route = trimmed;

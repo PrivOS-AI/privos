@@ -358,6 +358,29 @@ a dry run until `--confirm`. `--raw` prints the hub's bytes unchanged.
 | `hub items update --id I` | `PUT .../items/I` |
 | `hub items delete --id I` | `DELETE .../items/I` |
 | `hub items move --id I --stage S` | `POST .../items/I/move` |
+| `hub stages list --list L` | `GET .../stages?listId=L` |
+| `hub stages create --list L --name N [--color] [--order]` | `POST .../stages` |
+| `hub stages update --id S [--name] [--color] [--order]` | `PUT .../stages/S` |
+| `hub stages delete --id S [--move-to S2]` | `DELETE .../stages/S` (body `moveItemsToStageId`) |
+| `hub fields list --list L` | `GET .../lists/L/fields` (prints `_id`, `type`, `options[]._id`) |
+| `hub fields get --list L --field F` | `GET .../lists/L/fields/F` |
+| `hub fields add --list L --name N --type T [--options JSON]` | `POST .../lists/L/fields` with `{"field":{...}}`; SELECT/MULTI_SELECT options need `_id` |
+| `hub fields update --list L --field F ...` | reads the field, then `PUT .../lists/L/fields/F` with `{"data":{...}}` (name and type kept unless given) |
+| `hub fields delete --list L --field F` | `DELETE .../lists/L/fields/F` |
+| `hub fields options add\|update\|delete --list L --field F [--option O]` | `POST\|PUT\|DELETE .../lists/L/fields/F/options[/O]` (`--name` is the option's `value`) |
+| `hub items fields get --id I` | `GET .../items/I/customFields` |
+| `hub items fields set --id I --field F --value JSON` | `PUT .../items/I/customFields/F` with `{"value": ...}` |
+| `hub items fields set --id I --custom-fields JSON` | `PUT .../items/I/customFields` with `{"fields":[...]}` |
+| `hub items fields clear --id I --field F` | `DELETE .../items/I/customFields/F` |
+
+With a personal token `hub stages` uses `stages.listByListId`, `stages.create`, `stages.update` (no `--order`) and
+`stages.delete`; `hub fields` and `hub items fields` are bot mode only.
+
+**Raw call.** `hub api METHOD /api/v1/PATH [--body JSON] [--query k=v ...]` sends one request to any hub route, for
+the routes with no named command (batch item and list routes, `lists/byTemplateKey`, `admin.lists.recover`, the other
+skills' endpoints). PATH must start with `/api/v1/` and holds only letters, digits, `.`, `_`, `-` and `/`; `--body` is
+for POST and PUT. GET prints the answer as it came; any other method is a dry run until `--confirm`. It uses the same
+credentials as every hub command (personal token, bot key, or the egress).
 
 The room routes leave some options out, so these are refused with a usage error before
 any request: `--isolated`; on `items update` `--archived`, `--order` and

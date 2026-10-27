@@ -67,8 +67,12 @@ export function mimeOf(name: string): string {
 }
 
 /** Reads --file before any request, so a wrong path fails as a usage error and nothing is sent. */
-export function readUpload(flagValue: string, field: string): UploadFile {
-  const file = flagValue.startsWith("~/") ? path.join(process.env.HOME ?? "", flagValue.slice(2)) : flagValue;
+/** `~/` expands against `home`; without one (a library caller) it is refused, so no path depends on the host user. */
+export function readUpload(flagValue: string, field: string, home?: string): UploadFile {
+  if (flagValue.startsWith("~/") && (home ?? "") === "") {
+    throw usage(`--file ${JSON.stringify(flagValue)}: "~/" needs HOME; pass an absolute path`);
+  }
+  const file = flagValue.startsWith("~/") ? path.join(home!, flagValue.slice(2)) : flagValue;
   let bytes: Buffer;
   try {
     if (!fs.statSync(file).isFile()) throw usage(`--file ${JSON.stringify(flagValue)} is not a regular file`);

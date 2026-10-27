@@ -103,7 +103,7 @@ describe("privos", { concurrency: false }, () => {
     const { code, stdout, stderr } = await runCLI(["version"]);
     assert.equal(code, 0);
     assert.equal(stderr, "");
-    assert.equal(stdout, "privos 0.12.0\n");
+    assert.equal(stdout, "privos 0.13.0\n");
   });
 
   test("negative limit and unknown command", async () => {

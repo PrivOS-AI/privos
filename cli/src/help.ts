@@ -61,6 +61,22 @@ Commands:
   hub items move
   hub items reorder
   hub items attach         Upload a local file and set it on an item's file field
+  hub items fields get     Read an item's custom-field values (bot mode)
+  hub items fields set     Set one custom-field value, or several (bot mode)
+  hub items fields clear   Remove one custom-field value (bot mode)
+  hub stages list          List the stages of a list
+  hub stages create
+  hub stages update
+  hub stages delete
+  hub fields list          List a list's field definitions with option ids (bot mode)
+  hub fields get
+  hub fields add
+  hub fields update
+  hub fields delete
+  hub fields options add   Add, update or delete a SELECT / MULTI_SELECT option (bot mode)
+  hub fields options update
+  hub fields options delete
+  hub api                  One raw hub call: METHOD /api/v1/... (writes need --confirm)
   agents a2a send          Send a bot-to-bot message as an agent bot (--bot-key)
   agents a2a members       List the roster bots of a team
   agents a2a chain         Read every row of one bot-to-bot chain
@@ -475,6 +491,11 @@ Commands:
   files upload|folders
   lists list|get|create|update|delete
   items list|get|search|find|create|update|delete|move|reorder|attach
+  items fields get|set|clear
+  stages list|create|update|delete
+  fields list|get|add|update|delete
+  fields options add|update|delete
+  api METHOD /api/v1/... [--body JSON] [--query k=v]
   dm reply --room DM_ROOM_ID --text TEXT
   owner rooms|messages
   agents list
@@ -507,7 +528,8 @@ Bot mode (an agent bot, not a person):
 Sandbox egress (inside an agent VM):
   An agent VM holds no bot key. With PRIVOS_SANDBOX_MODE=true, PROXY_URL and PROXY_TOKEN set and
   no credential of your own, the commands "hub rooms", "hub messages", "hub files", "hub lists",
-  "hub items", "hub dm", "hub owner", "hub agents", "hub triggers" and "agents a2a" send every
+  "hub items", "hub stages", "hub fields", "hub api", "hub dm", "hub owner", "hub agents",
+  "hub triggers" and "agents a2a" send every
   PrivOS Hub request through POST $PROXY_URL/egress, and the proxy
   attaches the bot key. The hub is --url, else PRIVOS_HUB_URL, else https://$PRIVOS_HUB_HOST.
   The proxy decides what an agent may call: a refusal prints its code first, for example
@@ -946,9 +968,11 @@ Commands:
   move --id ITEM_ID --stage STAGE_ID
   reorder --id ITEM_ID --order N
   attach --id ITEM_ID --field FIELD_ID --file PATH --room ROOM_ID
+  fields get|set|clear --id ITEM_ID     Custom-field values (bot mode)
 
 Reads are GET /api/v1/items.*. Writes are POST and stay a dry run unless
---confirm. stages.* and items.bulkUpdateOrder are not CLI commands.
+--confirm. items.bulkUpdateOrder is not a CLI command; "hub stages" covers
+stages and "hub items fields" an item's custom-field values.
 See docs/api/hub.md.
 
 Bot mode (bot key or egress): list, get, create, update, delete and move call
@@ -999,9 +1023,9 @@ const hubItemsCreateHelp = `Usage:
          [--custom-fields JSON]
 
 POST /api/v1/items.create. listId and stageId are required.
---custom-fields must be a JSON array. There is no stages list command;
-use the defaultStage from "hub lists create", or a stage id you already
-have. Dry run unless --confirm.
+--custom-fields must be a JSON array of {"fieldId","value"}; a SELECT value
+is the option's _id ("hub fields list" shows both). "hub stages list --list
+LIST_ID" shows the stage ids. Dry run unless --confirm.
 `;
 
 const hubItemsUpdateHelp = `Usage:
@@ -1055,6 +1079,151 @@ const hubItemsReorderHelp = `Usage:
 
 POST /api/v1/items.updateOrder with {"itemId","newOrder"}. --order is an
 integer. Dry run unless --confirm. items.bulkUpdateOrder is not a command.
+`;
+
+const hubStagesHelp = `Usage:
+  privos hub stages <command>
+
+Commands:
+  list --list LIST_ID
+  create --list LIST_ID --name NAME [--color #RRGGBB] [--order N]
+  update --id STAGE_ID [--name NAME] [--color #RRGGBB] [--order N]
+  delete --id STAGE_ID [--move-to STAGE_ID]
+
+Bot mode (bot key or egress) calls /api/v1/internal/rooms/ROOM_ID/stages...
+(--room, default PRIVOS_ROOM_ID). A personal token calls stages.listByListId,
+stages.create, stages.update and stages.delete. Writes are a dry run unless --confirm.
+`;
+
+const hubStagesListHelp = `Usage:
+  privos hub stages list --list LIST_ID
+
+GET /api/v1/internal/rooms/ROOM_ID/stages?listId=LIST_ID in bot mode, else
+GET /api/v1/stages.listByListId. --format table shows ID, NAME, ORDER, COLOR.
+`;
+
+const hubStagesCreateHelp = `Usage:
+  privos hub stages create --list LIST_ID --name NAME [--color #RRGGBB] [--order N]
+
+POST /api/v1/internal/rooms/ROOM_ID/stages with {"listId","name","color","order"}
+in bot mode, else POST /api/v1/stages.create. Without --order the stage goes last.
+Dry run unless --confirm.
+`;
+
+const hubStagesUpdateHelp = `Usage:
+  privos hub stages update --id STAGE_ID [--name NAME] [--color #RRGGBB] [--order N]
+
+PUT /api/v1/internal/rooms/ROOM_ID/stages/STAGE_ID in bot mode, else POST
+/api/v1/stages.update (no --order there). Dry run unless --confirm.
+`;
+
+const hubStagesDeleteHelp = `Usage:
+  privos hub stages delete --id STAGE_ID [--move-to STAGE_ID]
+
+DELETE /api/v1/internal/rooms/ROOM_ID/stages/STAGE_ID in bot mode, else POST
+/api/v1/stages.delete. A stage that still has items is refused unless
+--move-to names the stage (same list) that receives them. Dry run unless --confirm.
+`;
+
+const hubFieldsHelp = `Usage:
+  privos hub fields <command>
+
+Commands:
+  list --list LIST_ID
+  get --list LIST_ID --field FIELD_ID
+  add --list LIST_ID --name NAME --type TYPE [--options JSON] [--display-format JSON] [--order N]
+  update --list LIST_ID --field FIELD_ID [--name] [--type] [--options] [--display-format] [--order]
+  delete --list LIST_ID --field FIELD_ID
+  options add --list LIST_ID --field FIELD_ID --name LABEL [--color #RRGGBB] [--order N]
+  options update --list LIST_ID --field FIELD_ID --option OPTION_ID [--name] [--color] [--order]
+  options delete --list LIST_ID --field FIELD_ID --option OPTION_ID
+
+Field definitions of a list, through /api/v1/internal/rooms/ROOM_ID/lists/LIST_ID/fields...
+Bot mode only (a bot key or the sandbox egress); --room defaults to PRIVOS_ROOM_ID.
+TYPE is one of TEXT, TEXTAREA, NUMBER, DATE, DATE_TIME, SELECT, MULTI_SELECT,
+USER, CHECKBOX, URL, FILE, FILE_MULTIPLE, DOCUMENT, ASSIGNEE, DEADLINE,
+DEPENDENCIES, RECURRING. Writes are a dry run unless --confirm.
+`;
+
+const hubFieldsListHelp = `Usage:
+  privos hub fields list --list LIST_ID
+
+GET .../lists/LIST_ID/fields: every field definition with its _id, type and,
+for SELECT and MULTI_SELECT, its options[]._id. An item's SELECT value is the
+option's _id, never its label. --format table shows ID, NAME, TYPE, ORDER.
+`;
+
+const hubFieldsGetHelp = `Usage:
+  privos hub fields get --list LIST_ID --field FIELD_ID
+
+GET .../lists/LIST_ID/fields/FIELD_ID.
+`;
+
+const hubFieldsAddHelp = `Usage:
+  privos hub fields add --list LIST_ID --name NAME --type TYPE
+         [--options JSON] [--display-format JSON] [--order N]
+
+POST .../lists/LIST_ID/fields with {"field":{...}}. A SELECT or MULTI_SELECT
+field needs --options, a JSON array where every option has its own "_id" and
+a "value", e.g. [{"_id":"opt_high","value":"High","color":"#ef4444"}]. Bot mode
+only. Dry run unless --confirm.
+`;
+
+const hubFieldsUpdateHelp = `Usage:
+  privos hub fields update --list LIST_ID --field FIELD_ID [--name NAME] [--type TYPE]
+         [--options JSON] [--display-format JSON] [--order N]
+
+Reads the field (also in a dry run), keeps its name and type unless you pass
+new ones, then PUT .../lists/LIST_ID/fields/FIELD_ID with {"data":{...}}.
+--options replaces the whole option list. Bot mode only. Dry run unless --confirm.
+`;
+
+const hubFieldsDeleteHelp = `Usage:
+  privos hub fields delete --list LIST_ID --field FIELD_ID
+
+DELETE .../lists/LIST_ID/fields/FIELD_ID. Bot mode only. Dry run unless --confirm.
+`;
+
+const hubFieldOptionsHelp = `Usage:
+  privos hub fields options add --list LIST_ID --field FIELD_ID --name LABEL [--color #RRGGBB] [--order N]
+  privos hub fields options update --list LIST_ID --field FIELD_ID --option OPTION_ID
+         [--name LABEL] [--color #RRGGBB] [--order N]
+  privos hub fields options delete --list LIST_ID --field FIELD_ID --option OPTION_ID
+
+One option of a SELECT or MULTI_SELECT field: POST, PUT or DELETE
+.../lists/LIST_ID/fields/FIELD_ID/options[/OPTION_ID]. --name is the option's
+label (the hub's "value"); the hub picks the new option's _id. Bot mode only.
+Dry run unless --confirm.
+`;
+
+const hubItemsFieldsHelp = `Usage:
+  privos hub items fields get --id ITEM_ID
+  privos hub items fields set --id ITEM_ID --field FIELD_ID --value JSON
+  privos hub items fields set --id ITEM_ID --custom-fields JSON
+  privos hub items fields clear --id ITEM_ID --field FIELD_ID
+
+An item's custom-field values through
+/api/v1/internal/rooms/ROOM_ID/items/ITEM_ID/customFields[/FIELD_ID].
+"set --field" sends {"value": VALUE}; --value is JSON (a string, number,
+boolean, array, object or null), and text that is not JSON is sent as a
+string. A SELECT value is the option's _id; MULTI_SELECT is an array of ids.
+"set --custom-fields" sends {"fields":[{"fieldId","value"}...]} and changes
+only those fields. Bot mode only. Writes are a dry run unless --confirm.
+`;
+
+const hubApiHelp = `Usage:
+  privos hub api METHOD /api/v1/PATH [--body JSON] [--query key=value ...]
+
+One raw hub call for routes that have no named command, for example
+  privos hub api POST /api/v1/internal/rooms/ROOM_ID/items/batch-move --body '{"itemIds":["a"],"stageId":"s"}' --confirm
+  privos hub api GET /api/v1/internal/rooms/ROOM_ID/lists/byTemplateKey --query templateKey=crm
+
+METHOD is GET, POST, PUT or DELETE. PATH starts with /api/v1/ and holds only
+letters, digits, ".", "_", "-" and "/" (no query string, fragment, space or
+".."); pass query values with --query (repeatable). --body (JSON) is for POST
+and PUT. GET prints the answer as it came. Every other method is a dry run
+unless --confirm. Auth is the same as the other hub commands; inside an agent
+VM the call goes through the sandbox egress and the proxy decides what is allowed.
 `;
 
 const agentsHelp = `Usage:
@@ -1356,6 +1525,26 @@ const HELP: Record<string, string> = {
   "hub items move": hubItemsMoveHelp,
   "hub items reorder": hubItemsReorderHelp,
   "hub items attach": hubItemsAttachHelp,
+  "hub items fields": hubItemsFieldsHelp,
+  "hub items fields get": hubItemsFieldsHelp,
+  "hub items fields set": hubItemsFieldsHelp,
+  "hub items fields clear": hubItemsFieldsHelp,
+  "hub stages": hubStagesHelp,
+  "hub stages list": hubStagesListHelp,
+  "hub stages create": hubStagesCreateHelp,
+  "hub stages update": hubStagesUpdateHelp,
+  "hub stages delete": hubStagesDeleteHelp,
+  "hub fields": hubFieldsHelp,
+  "hub fields list": hubFieldsListHelp,
+  "hub fields get": hubFieldsGetHelp,
+  "hub fields add": hubFieldsAddHelp,
+  "hub fields update": hubFieldsUpdateHelp,
+  "hub fields delete": hubFieldsDeleteHelp,
+  "hub fields options": hubFieldOptionsHelp,
+  "hub fields options add": hubFieldOptionsHelp,
+  "hub fields options update": hubFieldOptionsHelp,
+  "hub fields options delete": hubFieldOptionsHelp,
+  "hub api": hubApiHelp,
   agents: agentsHelp,
   "agents a2a": agentsA2aHelp,
   "agents a2a send": agentsA2aSendHelp,

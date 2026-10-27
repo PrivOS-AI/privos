@@ -1,5 +1,5 @@
-import { normalizeBaseURL, type HubConfig } from "./config.js";
-import type { Parsed } from "./parse.js";
+import { getenv, normalizeBaseURL, type HubConfig } from "./config.js";
+import type { Env, Parsed } from "./parse.js";
 import { usage } from "./usage.js";
 
 /**
@@ -16,7 +16,7 @@ export interface EgressConfig {
 const adapters = new WeakMap<object, EgressConfig>();
 
 /** Hub commands that run as the agent bot. Everything else keeps its own credentials and transport. */
-const EGRESS_COMMANDS = /^(hub (rooms|messages|files|lists|items|dm|owner|agents|triggers)|agents a2a) \S/;
+const EGRESS_COMMANDS = /^(hub (rooms|messages|files|lists|items|stages|fields|api|dm|owner|agents|triggers)|agents a2a) \S/;
 
 /** Headers the envelope may carry. Credentials are never forwarded: the proxy strips them and adds the key. */
 const FORWARDED_HEADERS = ["accept", "content-type", "user-agent"];
@@ -30,15 +30,11 @@ const OWN_CREDENTIAL_ENV = [
   "PRIVOS_PAT",
 ];
 
-function env(key: string): string {
-  return (process.env[key] ?? "").trim();
-}
-
 /** The VM contract: PRIVOS_SANDBOX_MODE=true with PROXY_URL and PROXY_TOKEN. Null anywhere else. */
-export function egressConfig(): EgressConfig | null {
-  if (env("PRIVOS_SANDBOX_MODE") !== "true") return null;
-  const proxy = env("PROXY_URL");
-  const token = env("PROXY_TOKEN");
+export function egressConfig(env: Env): EgressConfig | null {
+  if (getenv(env, "PRIVOS_SANDBOX_MODE") !== "true") return null;
+  const proxy = getenv(env, "PROXY_URL");
+  const token = getenv(env, "PROXY_TOKEN");
   if (proxy === "" || token === "") return null;
   if (/[\r\n]/.test(token)) throw usage("PROXY_TOKEN contains a newline");
   let proxyURL: string;
@@ -47,17 +43,17 @@ export function egressConfig(): EgressConfig | null {
   } catch (err) {
     throw usage(`PROXY_URL: ${err instanceof Error ? err.message : String(err)}`);
   }
-  return { proxyURL, token, hubHost: env("PRIVOS_HUB_HOST") };
+  return { proxyURL, token, hubHost: getenv(env, "PRIVOS_HUB_HOST") };
 }
 
 function hasOwnCredentials(p: Parsed): boolean {
-  return [p.botKey, p.userId, p.authToken, ...OWN_CREDENTIAL_ENV.map(env)].some((v) => v !== "");
+  return [p.botKey, p.userId, p.authToken, ...OWN_CREDENTIAL_ENV.map((key) => getenv(p.env, key))].some((v) => v !== "");
 }
 
 /** The fetch a hub command should use: the egress adapter for bot commands in a VM without credentials of their own. */
 export function transportFor(p: Parsed, cmd: string, base: typeof fetch): typeof fetch {
   if (!EGRESS_COMMANDS.test(cmd) || hasOwnCredentials(p)) return base;
-  const cfg = egressConfig();
+  const cfg = egressConfig(p.env);
   return cfg === null ? base : egressFetch(cfg, base);
 }
 
@@ -106,8 +102,8 @@ export function egressFetch(cfg: EgressConfig, base: typeof fetch): typeof fetch
 }
 
 /** Hub base URL for egress calls: --url or PRIVOS_HUB_URL, else https://$PRIVOS_HUB_HOST. No credentials. */
-export function resolveEgressHub(flagURL: string, cfg: EgressConfig): HubConfig {
-  const raw = flagURL.trim() !== "" ? flagURL : env("PRIVOS_HUB_URL");
+export function resolveEgressHub(env: Env, flagURL: string, cfg: EgressConfig): HubConfig {
+  const raw = flagURL.trim() !== "" ? flagURL : getenv(env, "PRIVOS_HUB_URL");
   let baseURL: string;
   if (raw.trim() !== "") {
     try {
@@ -129,8 +125,8 @@ export function resolveEgressHub(flagURL: string, cfg: EgressConfig): HubConfig 
  * A command that cannot use egress (a direct hub or board connection, or a socket). In a VM it fails
  * with a clear message when it has no configuration of its own, instead of a misleading "token required".
  */
-export function refuseEgress(cmd: string, needs: string, configured: () => unknown): void {
-  if (egressConfig() === null) return;
+export function refuseEgress(env: Env, cmd: string, needs: string, configured: () => unknown): void {
+  if (egressConfig(env) === null) return;
   try {
     configured();
   } catch {

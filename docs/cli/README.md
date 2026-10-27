@@ -175,6 +175,26 @@ privos hub items delete --id ITEM_ID
 privos hub items move --id ITEM_ID --stage STAGE_ID
 privos hub items reorder --id ITEM_ID --order N
 privos hub items attach --room ROOM_ID --id ITEM_ID --field FIELD_ID --file PATH [--duplicate replace|keep_both|cancel]
+privos hub items fields get --id ITEM_ID                                      # bot mode
+privos hub items fields set --id ITEM_ID --field FIELD_ID --value JSON
+privos hub items fields set --id ITEM_ID --custom-fields '[{"fieldId":"F","value":"opt_id"}]'
+privos hub items fields clear --id ITEM_ID --field FIELD_ID
+
+privos hub stages list --list LIST_ID
+privos hub stages create --list LIST_ID --name NAME [--color #RRGGBB] [--order N]
+privos hub stages update --id STAGE_ID [--name NAME] [--color #RRGGBB] [--order N]
+privos hub stages delete --id STAGE_ID [--move-to STAGE_ID]
+
+privos hub fields list --list LIST_ID                                         # bot mode
+privos hub fields get --list LIST_ID --field FIELD_ID
+privos hub fields add --list LIST_ID --name NAME --type TYPE [--options JSON] [--display-format JSON] [--order N]
+privos hub fields update --list LIST_ID --field FIELD_ID [--name] [--type] [--options JSON] [--display-format JSON] [--order N]
+privos hub fields delete --list LIST_ID --field FIELD_ID
+privos hub fields options add --list LIST_ID --field FIELD_ID --name LABEL [--color #RRGGBB] [--order N]
+privos hub fields options update --list LIST_ID --field FIELD_ID --option OPTION_ID [--name] [--color] [--order]
+privos hub fields options delete --list LIST_ID --field FIELD_ID --option OPTION_ID
+
+privos hub api GET|POST|PUT|DELETE /api/v1/PATH [--body JSON] [--query key=value ...]
 
 privos hub inbox --since ISO|EPOCH_MS [--events dm,mention,message,notification] [--rooms LIST] [--include-text]
 
@@ -216,8 +236,9 @@ List and item reads are `GET /api/v1/lists.*` and `GET /api/v1/items.*`.
 List and item writes are `POST` and stay a dry run until `--confirm`.
 `lists.create` sends `fieldDefinitions: []` unless `--field-definitions` is
 a JSON array, and its response includes `defaultStage` for
-`hub items create --stage`. Field CRUD (`lists.addField`, `lists.fields.*`),
-`items.bulkUpdateOrder`, and `stages.*` are not commands. The CLI does not
+`hub items create --stage`. `hub stages` covers stages; in bot mode `hub fields`
+and `hub items fields` cover field definitions and item values through the room
+routes. `items.bulkUpdateOrder` is not a command; `hub api` reaches any other route. The CLI does not
 call `/api/v1/bot/lists` or MCP `privos.lists.*`. See [Hub API](../api/hub.md).
 
 ### Attachments
@@ -291,7 +312,7 @@ Route-by-route detail: [Hub API](../api/hub.md#bot-mode-agent-bots). Personal-to
 
 **Sandbox egress.** An agent VM never holds the bot key. When `PRIVOS_SANDBOX_MODE=true` and both `PROXY_URL`
 and `PROXY_TOKEN` are set, and the command has no credential of its own (no flag, none of `PRIVOS_BOT_KEY`,
-`PRIVOS_HUB_USER_ID`, `PRIVOS_USER_ID`, `PRIVOS_HUB_AUTH_TOKEN`, `PRIVOS_PAT`), the commands `hub rooms|messages|files|lists|items|dm|owner|agents|triggers`
+`PRIVOS_HUB_USER_ID`, `PRIVOS_USER_ID`, `PRIVOS_HUB_AUTH_TOKEN`, `PRIVOS_PAT`), the commands `hub rooms|messages|files|lists|items|stages|fields|api|dm|owner|agents|triggers`
 and `agents a2a` send each request as `POST $PROXY_URL/egress` with an `x-proxy-token` header, and the proxy
 attaches the key. The hub is `--url`, else `PRIVOS_HUB_URL`, else `https://$PRIVOS_HUB_HOST`. The proxy decides what
 the agent may call: a refusal prints its code first, for example `HTTP 403: no-binding: ...`, and an unreachable proxy
@@ -786,6 +807,27 @@ privos hub items move --id ITEM_ID --stage STAGE_ID --confirm
 The hub token is a personal access token, or the `authToken` from
 `POST /api/v1/login`. This CLI does not ask for a password and does not call
 login.
+
+## Library use
+
+The package also exports the command runner, so another Node process can run a command without a shell or a
+child process:
+
+```ts
+import { run, VERSION, type Env, type Out } from "@privos_ai/privos";
+
+const out: Out = { write: (chunk) => { /* collect */ } };
+const code = await run(["hub", "lists", "list"], out, out, { env, fetch });
+```
+
+`run(args, stdout, stderr, deps?)` returns the exit code (0, 1 failure, 2 usage error) and never calls
+`process.exit`. `deps.env` replaces `process.env` for that call only: every flag default, credential and egress
+setting (`PRIVOS_SANDBOX_MODE`, `PROXY_URL`, `PROXY_TOKEN`, `PRIVOS_HUB_HOST`, `PRIVOS_ROOM_ID`, `PRIVOS_BOT_ID`,
+`PRIVOS_BOT_KEY`, the `PRIVOS_HUB_*` and `PRIVOS_SANDBOX_*` keys, `HOME` for `--file ~/...`) is read from it, so two
+calls with different `env` in one process never share identity. Without `HOME` in `env`, `--file ~/...` is a usage
+error. `deps.fetch` replaces the global fetch; over the egress it must reach `PROXY_URL`. Relative `--file` paths
+resolve against the process working directory, so a library caller should pass absolute paths. `subscribe` installs
+signal handlers and runs until stopped; it is not meant for library use.
 
 ## Further reading
 

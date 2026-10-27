@@ -44,8 +44,8 @@ export async function sandboxTasksAnswer(
   if (p.answers.length === 0) {
     throw usage("sandbox tasks answer: pass --answer TEXT once per question, in order");
   }
-  const cfg = resolveSandbox(p.url, p.apiKey);
-  const requester = resolveRequester(p);
+  const cfg = resolveSandbox(p.env, p.url, p.apiKey);
+  const requester = resolveRequester(p, p.env);
   const client = new Client(cfg.baseURL, sandboxHeaders(cfg.apiKey, requester), timeoutSeconds(p) * 1000, fetchImpl);
   const task = readJSON(await client.get(`/api/tasks/${id}`)) as Record<string, unknown> | null;
   const projectId = task?.projectId;
