@@ -1,8 +1,16 @@
 {
   "name": "@privos_ai/privos",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "PrivOS operator CLI for the sandbox board and the hub",
   "type": "module",
+  "types": "./dist/lib.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/lib.d.ts",
+      "default": "./dist/lib.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "privos": "./dist/main.js"
   },

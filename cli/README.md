@@ -67,6 +67,15 @@ fingerprint, never in full. With a bot key an agent reads its own triggers only.
 notifications, list items, room files, and board tasks into JSON events on
 stdout or a webhook. `privos hub inbox --since` does one poll for cron jobs.
 
+`privos hub stages|fields|items fields` read and change stages, field definitions
+and item custom-field values (fields are bot mode only), and `privos hub api
+METHOD /api/v1/...` sends one raw hub call for any other route (writes need
+`--confirm`).
+
+Library use: `import { run } from "@privos_ai/privos"` runs a command in-process
+with `run(args, stdout, stderr, { env, fetch })`; `env` replaces `process.env`
+for that call only. See "Library use" in docs/cli/README.md.
+
 This package is not part of the signed self-hosted install bundle. Full
 command and endpoint notes live in the repository:
 [docs/cli/README.md](https://github.com/PrivOS-AI/privos/blob/main/docs/cli/README.md).

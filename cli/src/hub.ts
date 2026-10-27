@@ -1,4 +1,4 @@
-import { resolveHub, type HubConfig } from "./config.js";
+import { getenv, resolveHub, type HubConfig } from "./config.js";
 import { egressOf, resolveEgressHub } from "./egress.js";
 import { helpFor } from "./help.js";
 import { Client } from "./http.js";
@@ -57,7 +57,7 @@ const itemColumns: Column[] = [
 ];
 
 export const HUB_READ = ["url", "user-id", "auth-token", "bot-key"];
-const HUB_AUTH = [...HUB_READ, "confirm", "dry-run"];
+export const HUB_AUTH = [...HUB_READ, "confirm", "dry-run"];
 
 export async function hubRoomsList(p: Parsed, stdout: Out, fetchImpl: typeof fetch): Promise<void> {
   forbidUnknown(p, "hub rooms list", [...HUB_READ, "updated-since"]);
@@ -127,7 +127,7 @@ export async function hubGet(p: Parsed, stdout: Out, fetchImpl: typeof fetch): P
     if (eq < 1) throw usage(`--param must be key=value, got ${JSON.stringify(pair)}`);
     query.append(pair.slice(0, eq), pair.slice(eq + 1));
   }
-  const cfg = resolveHub(p.url, p.userId, p.authToken);
+  const cfg = resolveHub(p.env, p.url, p.userId, p.authToken);
   const client = new Client(
     cfg.baseURL,
     hubHeaders(cfg.userId, cfg.authToken),
@@ -141,7 +141,7 @@ export async function hubGet(p: Parsed, stdout: Out, fetchImpl: typeof fetch): P
 /** Over egress the config carries no credentials: the proxy attaches the bot key. */
 function hubConfig(p: Parsed, fetchImpl: typeof fetch): HubConfig {
   const egress = egressOf(fetchImpl);
-  return egress ? resolveEgressHub(p.url, egress) : resolveHub(p.url, p.userId, p.authToken, p.botKey);
+  return egress ? resolveEgressHub(p.env, p.url, egress) : resolveHub(p.env, p.url, p.userId, p.authToken, p.botKey);
 }
 
 export function hubClient(p: Parsed, fetchImpl: typeof fetch): Client {
@@ -162,22 +162,27 @@ export function hubClient(p: Parsed, fetchImpl: typeof fetch): Client {
  */
 export function botMode(p: Parsed, fetchImpl: typeof fetch): boolean {
   return (
-    egressOf(fetchImpl) !== undefined || p.botKey !== "" || (process.env.PRIVOS_BOT_KEY ?? "").trim() !== ""
+    egressOf(fetchImpl) !== undefined || p.botKey !== "" || getenv(p.env, "PRIVOS_BOT_KEY") !== ""
   );
 }
 
 const BOT_ROOMS = "/api/v1/internal/rooms";
 
 /** Room of a bot-mode lists or items command: --room, else the agent VM's PRIVOS_ROOM_ID. */
-function botRoomBase(p: Parsed): string {
+export function botRoomBase(p: Parsed): string {
   return `${BOT_ROOMS}/${pathSegment("room", roomOrEnv(p, "bot mode needs"))}`;
 }
 
 /** --room, else the agent VM's PRIVOS_ROOM_ID; `needs` says who asks when both are empty. */
-function roomOrEnv(p: Parsed, needs: string): string {
-  const room = p.room !== "" ? p.room : (process.env.PRIVOS_ROOM_ID ?? "").trim();
+export function roomOrEnv(p: Parsed, needs: string): string {
+  const room = p.room !== "" ? p.room : getenv(p.env, "PRIVOS_ROOM_ID");
   if (room === "") throw usage(`${commandOf(p)}: ${needs} --room ROOM_ID (PRIVOS_ROOM_ID is not set)`);
   return room;
+}
+
+/** Inside an agent VM a message command defaults to the agent's own room, like the lists and items commands. */
+function egressRoomDefault(p: Parsed, fetchImpl: typeof fetch): void {
+  if (p.room === "" && egressOf(fetchImpl) !== undefined) p.room = getenv(p.env, "PRIVOS_ROOM_ID");
 }
 
 /** The room routes ignore fields they do not read and still answer success, so these flags must fail here. */
@@ -422,10 +427,11 @@ export async function hubMessagesSend(
   fetchImpl: typeof fetch,
 ): Promise<void> {
   forbidUnknown(p, "hub messages send", [...HUB_AUTH, "room", "text", "file"]);
+  egressRoomDefault(p, fetchImpl);
   requireFlag(p, "room", p.room, helpFor(["hub", "messages", "send"]));
   if (p.file !== "") {
     // One request uploads the file and posts it with --text as its message; a bot key and the egress catalog take it too.
-    const form: UploadForm = { file: readUpload(p.file, "file"), fields: p.text !== "" ? { msg: p.text } : {} };
+    const form: UploadForm = { file: readUpload(p.file, "file", p.env.HOME), fields: p.text !== "" ? { msg: p.text } : {} };
     const path = `/api/v1/rooms.upload/${pathSegment("room", p.room)}`;
     await sendHub(p, [{ method: "POST", path, form }], stdout, stderr, fetchImpl);
     return;
@@ -453,6 +459,7 @@ export async function hubMessagesUpdate(
   fetchImpl: typeof fetch,
 ): Promise<void> {
   forbidUnknown(p, "hub messages update", [...HUB_AUTH, "room", "id", "text"]);
+  egressRoomDefault(p, fetchImpl);
   requireFlag(p, "room", p.room, helpFor(["hub", "messages", "update"]));
   requireFlag(p, "id", p.id, helpFor(["hub", "messages", "update"]));
   requireFlag(p, "text", p.text, helpFor(["hub", "messages", "update"]));
@@ -478,6 +485,7 @@ export async function hubMessagesDelete(
   fetchImpl: typeof fetch,
 ): Promise<void> {
   forbidUnknown(p, "hub messages delete", [...HUB_AUTH, "room", "id"]);
+  egressRoomDefault(p, fetchImpl);
   requireFlag(p, "room", p.room, helpFor(["hub", "messages", "delete"]));
   requireFlag(p, "id", p.id, helpFor(["hub", "messages", "delete"]));
   await sendHub(
@@ -489,7 +497,7 @@ export async function hubMessagesDelete(
   );
 }
 
-async function sendHub(
+export async function sendHub(
   p: Parsed,
   plans: PlannedRequest[],
   stdout: Out,
@@ -973,7 +981,7 @@ export async function hubFilesUpload(p: Parsed, stdout: Out, stderr: Out, fetchI
   const room = roomOrEnv(p, "needs");
   requireFlag(p, "file", p.file, helpFor(["hub", "files", "upload"]));
   const fields = { channelId: room, ...(p.folder !== "" ? { folderId: p.folder } : {}), ...duplicateAction(p) };
-  const form: UploadForm = { file: readUpload(p.file, "files"), fields };
+  const form: UploadForm = { file: readUpload(p.file, "files", p.env.HOME), fields };
   await sendHub(p, [{ method: "POST", path: FILES_UPLOAD, form }], stdout, stderr, fetchImpl);
 }
 
@@ -993,7 +1001,7 @@ function folderQuery(parent: string, count?: number, offset?: number): URLSearch
   return query;
 }
 
-function record(value: unknown): Record<string, any> {
+export function record(value: unknown): Record<string, any> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, any>) : {};
 }
 
@@ -1050,7 +1058,7 @@ export async function hubItemsAttach(p: Parsed, stdout: Out, stderr: Out, fetchI
   const base = `${BOT_ROOMS}/${pathSegment("room", room)}`;
   const itemPath = `${base}/items/${pathSegment("id", p.id)}`;
   const fieldPath = `${itemPath}/customFields/${pathSegment("field", p.field)}`;
-  const file = readUpload(p.file, "files");
+  const file = readUpload(p.file, "files", p.env.HOME);
   const dup = duplicateAction(p);
 
   // Reads run in a dry run too, so the preview shows the real folders and the field's new value.
@@ -1365,7 +1373,7 @@ function a2aEnvelope(p: Parsed, kind: string, to: string): Record<string, unknow
   return body;
 }
 
-function parseJSONObject(flagName: string, value: string): Record<string, unknown> {
+export function parseJSONObject(flagName: string, value: string): Record<string, unknown> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value) as unknown;

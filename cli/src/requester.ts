@@ -1,4 +1,4 @@
-import type { Parsed } from "./parse.js";
+import type { Env, Parsed } from "./parse.js";
 import { usage } from "./usage.js";
 
 /** Who is asking, as a claim the board records. The board decides how far to trust it. */
@@ -28,7 +28,7 @@ function field(label: string, value: string): string {
  */
 export function resolveRequester(
   flags: Pick<Parsed, "requester" | "requesterName" | "requesterKind"> = { requester: "", requesterName: "", requesterKind: "" },
-  env: NodeJS.ProcessEnv = process.env,
+  env: Env,
 ): Requester | null {
   const pick = (flag: string, key: string) => (flag.trim() !== "" ? flag : (env[key] ?? "")).trim();
   const id = pick(flags.requester, "PRIVOS_REQUESTER_ID");

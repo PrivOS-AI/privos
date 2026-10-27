@@ -43,11 +43,28 @@ import {
   hubRoomsMembers,
   hubRoomsUpdate,
 } from "./hub.js";
+import { hubApi } from "./hub-api.js";
+import {
+  hubFieldOptions,
+  hubFieldsAdd,
+  hubFieldsDelete,
+  hubFieldsGet,
+  hubFieldsList,
+  hubFieldsUpdate,
+  hubItemsFieldsClear,
+  hubItemsFieldsGet,
+  hubItemsFieldsSet,
+  hubStagesCreate,
+  hubStagesDelete,
+  hubStagesList,
+  hubStagesUpdate,
+} from "./list-schema.js";
 import { hubAgentsList, hubTriggersGet, hubTriggersList } from "./triggers.js";
 import {
   commandOf,
   forbidUnknown,
   parseArgs,
+  type Env,
   type Parsed,
 } from "./parse.js";
 import type { Out } from "./render.js";
@@ -73,14 +90,12 @@ import {
 import { hubInbox, subscribe, subscribeStatus, type SubscribeDeps } from "./subscribe.js";
 import { isUsage, usage } from "./usage.js";
 
-export async function run(
-  args: string[],
-  stdout: Out,
-  stderr: Out,
-  deps?: Partial<SubscribeDeps>,
-): Promise<number> {
+/** Optional seams for tests and library callers. `env` defaults to process.env, `fetch` to the global fetch. */
+export type RunDeps = Partial<SubscribeDeps> & { env?: Env };
+
+export async function run(args: string[], stdout: Out, stderr: Out, deps?: RunDeps): Promise<number> {
   try {
-    const parsed = parseArgs(args);
+    const parsed = parseArgs(args, deps?.env ?? process.env);
     await dispatch(parsed, stdout, stderr, { ...deps, fetch: deps?.fetch ?? globalThis.fetch });
     return 0;
   } catch (err) {
@@ -108,7 +123,10 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
     stdout.write(rootHelp);
     return;
   }
-  const text = helpFor(p.positionals);
+  // `hub api METHOD PATH` carries its arguments as positionals; the command is the first two words.
+  const rawAPI = p.positionals[0] === "hub" && p.positionals[1] === "api";
+  const words = rawAPI ? p.positionals.slice(0, 2) : p.positionals;
+  const text = helpFor(words);
   if (text === "") {
     throw usage(`unknown command ${JSON.stringify(commandOf(p))}\n\nRun privos --help`);
   }
@@ -120,9 +138,9 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
     throw usage('pass --version or "privos version" on its own');
   }
 
-  const cmd = commandOf(p);
+  const cmd = words.join(" ");
   // Bot commands inside an agent VM go through the proxy egress; every other command keeps the plain fetch.
-  const fetchImpl = transportFor(p, cmd, deps.fetch);
+  const fetchImpl = transportFor(p, commandOf(p), deps.fetch);
   switch (cmd) {
     case "version":
       forbidUnknown(p, "privos version", []);
@@ -139,6 +157,10 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
     case "hub files":
     case "hub lists":
     case "hub items":
+    case "hub items fields":
+    case "hub stages":
+    case "hub fields":
+    case "hub fields options":
     case "hub dm":
     case "hub owner":
     case "hub agents":
@@ -147,8 +169,8 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
     case "agents a2a":
       throw usage(`${text.trimEnd()}\nRun privos ${cmd} --help`);
     case "subscribe":
-      refuseEgress(cmd, "it needs a direct hub connection (--url with a user id and token)", () =>
-        resolveHub(p.url, "", ""),
+      refuseEgress(p.env, cmd, "it needs a direct hub connection (--url with a user id and token)", () =>
+        resolveHub(p.env, p.url, "", ""),
       );
       await subscribe(p, stdout, stderr, deps);
       return;
@@ -219,8 +241,8 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
       await sandboxTasksQuestion(p, stdout, fetchImpl);
       return;
     case "sandbox tasks answer":
-      refuseEgress(cmd, "it talks to the sandbox board over a direct socket (--url and --api-key)", () =>
-        resolveSandbox(p.url, p.apiKey),
+      refuseEgress(p.env, cmd, "it talks to the sandbox board over a direct socket (--url and --api-key)", () =>
+        resolveSandbox(p.env, p.url, p.apiKey),
       );
       await sandboxTasksAnswer(p, stdout, stderr, fetchImpl);
       return;
@@ -238,8 +260,8 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
       return;
     case "hub get":
       // hub get never sends a bot key; the proxy would attach one, so it needs its own user credentials.
-      refuseEgress(cmd, "it never sends a bot key and needs a direct hub connection (--url, --user-id, --auth-token)", () =>
-        resolveHub(p.url, p.userId, p.authToken),
+      refuseEgress(p.env, cmd, "it never sends a bot key and needs a direct hub connection (--url, --user-id, --auth-token)", () =>
+        resolveHub(p.env, p.url, p.userId, p.authToken),
       );
       await hubGet(p, stdout, fetchImpl);
       return;
@@ -344,6 +366,55 @@ async function dispatch(p: Parsed, stdout: Out, stderr: Out, deps: SubscribeDeps
       return;
     case "hub items move":
       await hubItemsMove(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub api":
+      if (p.positionals.length === 2) throw usage(`${text.trimEnd()}\nRun privos hub api --help`);
+      await hubApi(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub stages list":
+      await hubStagesList(p, stdout, fetchImpl);
+      return;
+    case "hub stages create":
+      await hubStagesCreate(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub stages update":
+      await hubStagesUpdate(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub stages delete":
+      await hubStagesDelete(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub fields list":
+      await hubFieldsList(p, stdout, fetchImpl);
+      return;
+    case "hub fields get":
+      await hubFieldsGet(p, stdout, fetchImpl);
+      return;
+    case "hub fields add":
+      await hubFieldsAdd(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub fields update":
+      await hubFieldsUpdate(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub fields delete":
+      await hubFieldsDelete(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub fields options add":
+      await hubFieldOptions(p, stdout, stderr, fetchImpl, "add");
+      return;
+    case "hub fields options update":
+      await hubFieldOptions(p, stdout, stderr, fetchImpl, "update");
+      return;
+    case "hub fields options delete":
+      await hubFieldOptions(p, stdout, stderr, fetchImpl, "delete");
+      return;
+    case "hub items fields get":
+      await hubItemsFieldsGet(p, stdout, fetchImpl);
+      return;
+    case "hub items fields set":
+      await hubItemsFieldsSet(p, stdout, stderr, fetchImpl);
+      return;
+    case "hub items fields clear":
+      await hubItemsFieldsClear(p, stdout, stderr, fetchImpl);
       return;
     case "hub items reorder":
       await hubItemsReorder(p, stdout, stderr, fetchImpl);
