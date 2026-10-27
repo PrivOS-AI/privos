@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import { normalizeBaseURL, resolveHub, resolveSandbox, VERSION, type HubConfig } from "./config.js";
+import { getenv, normalizeBaseURL, resolveHub, resolveSandbox, VERSION, type HubConfig } from "./config.js";
 import { DDPClient, ddpURL, type DDPMessage, type WebSocketCtor } from "./ddp.js";
 import { helpFor } from "./help.js";
 import { Client, HTTPError, userAgent } from "./http.js";
 import { hubHeaders, sandboxHeaders } from "./mutate.js";
-import { forbidUnknown, mutationMode, requireFlag, timeoutSeconds, type Parsed } from "./parse.js";
+import { forbidUnknown, mutationMode, requireFlag, timeoutSeconds, type Env, type Parsed } from "./parse.js";
 import type { Out } from "./render.js";
 import {
   classifyMessage,
@@ -44,7 +44,7 @@ import {
   writePrivate,
   type SubscribeState,
 } from "./subscribe-state.js";
-import { resolveRequester } from "./requester.js";
+import { resolveRequester, type Requester } from "./requester.js";
 import { usage } from "./usage.js";
 
 export interface SubscribeDeps {
@@ -73,10 +73,6 @@ const LIVE_BOUNDARY_MS = 10 * 60 * 1000;
 const STALE_HEARTBEAT_SEC = 600;
 
 type Sink = "stdout" | "dry-run" | "post";
-
-function getenv(key: string): string {
-  return (process.env[key] ?? "").trim();
-}
 
 function splitList(value: string): string[] {
   return value
@@ -120,7 +116,7 @@ function buildFilters(p: Parsed, events: Set<EventType>, hub: HubConfig, usernam
 }
 
 /** `td:<pid>,tvibe:<pid>`. `td` is the default board (PRIVOS_SANDBOX_URL); alias X reads X_URL and X_API_ACCESS_KEY. */
-export function parseBoards(spec: string): BoardHost[] {
+export function parseBoards(env: Env, spec: string): BoardHost[] {
   const byAlias = new Map<string, string[]>();
   for (const token of splitList(spec)) {
     const m = /^([A-Za-z0-9][A-Za-z0-9_-]*):([\w.-]+)$/.exec(token);
@@ -131,13 +127,13 @@ export function parseBoards(spec: string): BoardHost[] {
   const hosts: BoardHost[] = [];
   for (const [alias, projects] of byAlias) {
     if (alias === "td") {
-      const cfg = resolveSandbox("", "");
+      const cfg = resolveSandbox(env, "", "");
       hosts.push({ alias, baseURL: cfg.baseURL, apiKey: cfg.apiKey, projects });
       continue;
     }
     const prefix = alias.toUpperCase().replaceAll("-", "_");
-    const rawURL = getenv(`${prefix}_URL`);
-    const key = getenv(`${prefix}_API_ACCESS_KEY`);
+    const rawURL = getenv(env, `${prefix}_URL`);
+    const key = getenv(env, `${prefix}_API_ACCESS_KEY`);
     if (rawURL === "") throw usage(`--projects ${alias}: set ${prefix}_URL to the board base URL`);
     if (key === "") throw usage(`--projects ${alias}: set ${prefix}_API_ACCESS_KEY to the board API key`);
     if (/[\r\n]/.test(key)) throw usage(`${prefix}_API_ACCESS_KEY contains a newline`);
@@ -164,8 +160,8 @@ export function envName(flag: string, value: string, fallback: string): string {
 function resolveWebhook(p: Parsed, required: boolean): Webhook | undefined {
   const urlEnv = envName("webhook-url-env", p.webhookURLEnv, "GROK_MASTER_WEBHOOK_URL");
   const keyEnv = envName("webhook-key-env", p.webhookKeyEnv, "GROK_MASTER_WEBHOOK_KEY");
-  const header = p.webhookHeader !== "" ? p.webhookHeader : getenv("GROK_MASTER_WEBHOOK_HEADER");
-  const raw = getenv(urlEnv);
+  const header = p.webhookHeader !== "" ? p.webhookHeader : getenv(p.env, "GROK_MASTER_WEBHOOK_HEADER");
+  const raw = getenv(p.env, urlEnv);
   if (raw === "") {
     if (required) throw usage(`--confirm needs the webhook URL in ${urlEnv} (or pass --stdout)`);
     return undefined;
@@ -182,7 +178,7 @@ function resolveWebhook(p: Parsed, required: boolean): Webhook | undefined {
   }
   if (url.username !== "" || url.password !== "") throw usage(`${urlEnv} must not include userinfo`);
   url.hash = "";
-  const key = getenv(keyEnv);
+  const key = getenv(p.env, keyEnv);
   if (/[\r\n]/.test(key)) throw usage(`${keyEnv} contains a newline`);
   if (key !== "" && header === "") {
     throw usage(`${keyEnv} is set; pass --webhook-header or GROK_MASTER_WEBHOOK_HEADER to name the header`);
@@ -244,6 +240,8 @@ interface Options {
   /** `--lists all`: every list in the rooms the user belongs to, re-read every 15 min. */
   allLists: boolean;
   boards: BoardHost[];
+  /** The env requester claim board reads carry (subscribe has no --requester flag). */
+  requester: Requester | null;
   webhook?: Webhook;
   timeoutMs: number;
 }
@@ -300,10 +298,8 @@ class Subscriber {
     // One capture for hub and boards: requests run one at a time, so the last 429 is the one that failed.
     this.hubRetry = retryAfterCapture(deps.fetch);
     this.hubClient = new Client(o.hub.baseURL, hubHeaders(o.hub.userId, o.hub.authToken), o.timeoutMs, this.hubRetry.fetch);
-    // Board reads carry the env claim too (subscribe has no --requester flag).
-    const envRequester = resolveRequester();
     for (const b of o.boards) {
-      this.boardClients.set(b.alias, new Client(b.baseURL, sandboxHeaders(b.apiKey, envRequester), o.timeoutMs, this.hubRetry.fetch));
+      this.boardClients.set(b.alias, new Client(b.baseURL, sandboxHeaders(b.apiKey, o.requester), o.timeoutMs, this.hubRetry.fetch));
     }
     this.webhookRetry = retryAfterCapture(deps.fetch);
     if (o.webhook && o.sink === "post") {
@@ -778,8 +774,8 @@ export async function subscribe(p: Parsed, stdout: Out, stderr: Out, deps: Subsc
   if (p.projectsSpec !== "" && !events.has("task")) throw usage("--projects needs task in --events");
   const sink = sinkOf(p);
   const webhook = resolveWebhook(p, sink === "post");
-  const hub = resolveHub(p.url, "", "");
-  const boards = events.has("task") ? parseBoards(p.projectsSpec) : [];
+  const hub = resolveHub(p.env, p.url, "", "");
+  const boards = events.has("task") ? parseBoards(p.env, p.projectsSpec) : [];
   // Dry and stdout runs mark events seen, so by default each keeps its own state and the
   // --confirm daemon on state.json still delivers them.
   const statePath = expandHome(
@@ -794,6 +790,7 @@ export async function subscribe(p: Parsed, stdout: Out, stderr: Out, deps: Subsc
     lists: allLists ? [] : lists,
     allLists: allLists && events.has("item"),
     boards,
+    requester: resolveRequester(undefined, p.env),
     webhook,
     timeoutMs: timeoutSeconds(p) * 1000,
   };
@@ -882,7 +879,7 @@ export async function hubInbox(p: Parsed, stdout: Out, stderr: Out, fetchImpl: t
   requireFlag(p, "since", p.since, helpFor(["hub", "inbox"]));
   const sinceMs = parseSince(p.since);
   const events = parseEvents(p.events === "" ? DEFAULT_EVENTS : p.events, INBOX_EVENTS);
-  const hub = resolveHub(p.url, "", "");
+  const hub = resolveHub(p.env, p.url, "", "");
   const client = new Client(hub.baseURL, hubHeaders(hub.userId, hub.authToken), timeoutSeconds(p) * 1000, fetchImpl);
   const hubGet = async (path: string, query?: Record<string, string>) => {
     const body = await client.get(path, query ? new URLSearchParams(query) : undefined);

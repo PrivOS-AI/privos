@@ -3,9 +3,29 @@
 All notable changes to `@privos_ai/privos`. Full command notes live in
 [docs/cli/README.md](https://github.com/PrivOS-AI/privos/blob/main/docs/cli/README.md).
 
-## Unreleased
+## 0.13.0 — 2026-10-27
 
 ### Added
+
+- Library entry: `import { run, VERSION } from "@privos_ai/privos"` (with type declarations).
+  `run(args, stdout, stderr, { env, fetch })` takes the environment as an argument, so a host process can run
+  commands for several identities at once. Nothing outside the binary's `main` reads `process.env`; `--file ~/...`
+  needs `HOME` in that `env`.
+- `privos hub stages list|create|update|delete` (room routes in bot mode, `stages.*` with a personal token;
+  `delete --move-to` moves the stage's items first).
+- `privos hub fields list|get|add|update|delete` and `hub fields options add|update|delete`: field definitions of a
+  list through the room routes (bot mode). `add` requires an `_id` on every SELECT/MULTI_SELECT option; `update`
+  keeps the current name and type unless given.
+- `privos hub items fields get|set|clear`: an item's custom-field values (bot mode); `set --value` takes JSON,
+  `set --custom-fields` several fields at once.
+- `privos hub api METHOD /api/v1/... [--body JSON] [--query k=v]`: one raw hub call for routes with no named command;
+  writes are a dry run unless `--confirm`. `{room}` in the path, a `--query` value or `--body` is the room (`--room`,
+  else `PRIVOS_ROOM_ID`). `hub stages|fields|api` use the sandbox egress like the other bot commands.
+
+### Changed
+
+- Over the sandbox egress, `hub messages send|update|delete` default `--room` to the agent's own room
+  (`PRIVOS_ROOM_ID`), like `hub lists`, `hub items` and `hub files`.
 
 - `privos hub lists create --stages '[{"name","color"}]'` creates the list's stages (color
   optional; a color that fits each stage's state is recommended). Bot mode sends them in the room route's `stages`; a

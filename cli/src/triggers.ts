@@ -247,7 +247,7 @@ async function loadTriggers(p: Parsed, cmd: string, stderr: Out, fetchImpl: type
 
   if (botMode(p, fetchImpl)) {
     if (p.all) throw usage(`${cmd}: --all is not available in bot mode; it needs an administrator's personal token`);
-    let own = (process.env.PRIVOS_BOT_ID ?? "").trim();
+    let own = (p.env.PRIVOS_BOT_ID ?? "").trim();
     let target = own;
     if (own === "") {
       // Without PRIVOS_BOT_ID the id is unverifiable here; the hub refuses a wrong one with HTTP 400.

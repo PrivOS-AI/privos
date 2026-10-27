@@ -1,7 +1,8 @@
+import type { Env } from "./parse.js";
 import { usage } from "./usage.js";
 
 /** Printed by `privos version`. */
-export const VERSION = "0.12.0";
+export const VERSION = "0.13.0";
 
 export interface SandboxConfig {
   baseURL: string;
@@ -16,8 +17,8 @@ export interface HubConfig {
   botKey: string;
 }
 
-function getenv(key: string): string {
-  return (process.env[key] ?? "").trim();
+export function getenv(env: Env, key: string): string {
+  return (env[key] ?? "").trim();
 }
 
 function first(...values: string[]): string {
@@ -60,8 +61,8 @@ function rejectNewlines(label: string, value: string): void {
  * URL: --url, then PRIVOS_SANDBOX_URL.
  * Key: --api-key, then PRIVOS_SANDBOX_API_KEY, API_ACCESS_KEY, SANDBOX_API_KEY.
  */
-export function resolveSandbox(flagURL: string, flagKey: string): SandboxConfig {
-  const rawURL = first(flagURL, getenv("PRIVOS_SANDBOX_URL"));
+export function resolveSandbox(env: Env, flagURL: string, flagKey: string): SandboxConfig {
+  const rawURL = first(flagURL, getenv(env, "PRIVOS_SANDBOX_URL"));
   if (rawURL === "") {
     throw usage(
       "sandbox base URL is required.\nSet --url or PRIVOS_SANDBOX_URL.\nA default self-hosted board listens on http://127.0.0.1:8556",
@@ -76,9 +77,9 @@ export function resolveSandbox(flagURL: string, flagKey: string): SandboxConfig 
   }
   const key = first(
     flagKey,
-    getenv("PRIVOS_SANDBOX_API_KEY"),
-    getenv("API_ACCESS_KEY"),
-    getenv("SANDBOX_API_KEY"),
+    getenv(env, "PRIVOS_SANDBOX_API_KEY"),
+    getenv(env, "API_ACCESS_KEY"),
+    getenv(env, "SANDBOX_API_KEY"),
   );
   if (key === "") {
     throw usage(
@@ -97,12 +98,13 @@ export function resolveSandbox(flagURL: string, flagKey: string): SandboxConfig 
  * replaces the user id and token, because agent bots cannot mint personal access tokens.
  */
 export function resolveHub(
+  env: Env,
   flagURL: string,
   flagUser: string,
   flagToken: string,
   flagBotKey?: string,
 ): HubConfig {
-  const rawURL = first(flagURL, getenv("PRIVOS_HUB_URL"), getenv("PRIVOS_ROOT_URL"));
+  const rawURL = first(flagURL, getenv(env, "PRIVOS_HUB_URL"), getenv(env, "PRIVOS_ROOT_URL"));
   if (rawURL === "") {
     throw usage(
       "hub base URL is required.\nSet --url, PRIVOS_HUB_URL, or PRIVOS_ROOT_URL.\nA default self-hosted hub listens on http://127.0.0.1:3000",
@@ -115,7 +117,7 @@ export function resolveHub(
     const msg = err instanceof Error ? err.message : String(err);
     throw usage(msg.startsWith("hub ") ? msg : `hub ${msg}`);
   }
-  const botKey = flagBotKey === undefined ? "" : first(flagBotKey, getenv("PRIVOS_BOT_KEY"));
+  const botKey = flagBotKey === undefined ? "" : first(flagBotKey, getenv(env, "PRIVOS_BOT_KEY"));
   if (botKey !== "") {
     if (flagBotKey !== "" && (flagUser !== "" || flagToken !== "")) {
       throw usage("--bot-key cannot be combined with --user-id or --auth-token");
@@ -123,13 +125,13 @@ export function resolveHub(
     rejectNewlines("hub bot key", botKey);
     return { baseURL: base, userId: "", authToken: "", botKey };
   }
-  const user = first(flagUser, getenv("PRIVOS_HUB_USER_ID"), getenv("PRIVOS_USER_ID"));
+  const user = first(flagUser, getenv(env, "PRIVOS_HUB_USER_ID"), getenv(env, "PRIVOS_USER_ID"));
   if (user === "") {
     throw usage(
       "hub user id is required.\nSet --user-id, PRIVOS_HUB_USER_ID, or PRIVOS_USER_ID.\nSend it as the X-User-Id header.",
     );
   }
-  const token = first(flagToken, getenv("PRIVOS_HUB_AUTH_TOKEN"), getenv("PRIVOS_PAT"));
+  const token = first(flagToken, getenv(env, "PRIVOS_HUB_AUTH_TOKEN"), getenv(env, "PRIVOS_PAT"));
   if (token === "") {
     throw usage(
       "hub auth token is required.\nSet --auth-token, PRIVOS_HUB_AUTH_TOKEN, or PRIVOS_PAT.\nSend it as the X-Auth-Token header.",
