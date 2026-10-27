@@ -176,8 +176,8 @@ describe("hub items fields", () => {
     const base = `${ROOM}/items/i1/customFields`;
     assert.deepEqual(h.seen, [
       { method: "GET", url: base, body: undefined },
-      { method: "PUT", url: `${base}/f1`, body: { value: "opt_high" } },
-      { method: "PUT", url: `${base}/f2`, body: { value: 42 } },
+      { method: "PUT", url: base, body: { fields: [{ fieldId: "f1", value: "opt_high" }] } },
+      { method: "PUT", url: base, body: { fields: [{ fieldId: "f2", value: 42 }] } },
       { method: "PUT", url: base, body: { fields: [{ fieldId: "f1", value: ["a", "b"] }] } },
       { method: "DELETE", url: `${base}/f1`, body: undefined },
     ]);

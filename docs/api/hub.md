@@ -369,8 +369,8 @@ a dry run until `--confirm`. `--raw` prints the hub's bytes unchanged.
 | `hub fields delete --list L --field F` | `DELETE .../lists/L/fields/F` |
 | `hub fields options add\|update\|delete --list L --field F [--option O]` | `POST\|PUT\|DELETE .../lists/L/fields/F/options[/O]` (`--name` is the option's `value`) |
 | `hub items fields get --id I` | `GET .../items/I/customFields` |
-| `hub items fields set --id I --field F --value JSON` | `PUT .../items/I/customFields/F` with `{"value": ...}` |
-| `hub items fields set --id I --custom-fields JSON` | `PUT .../items/I/customFields` with `{"fields":[...]}` |
+| `hub items fields set --id I --field F --value JSON` | `PUT .../items/I/customFields` with `{"fields":[{"fieldId":"F","value":...}]}` (partial merge) |
+| `hub items fields set --id I --custom-fields JSON` | `PUT .../items/I/customFields` with `{"fields":[...]}` (partial merge) |
 | `hub items fields clear --id I --field F` | `DELETE .../items/I/customFields/F` |
 
 With a personal token `hub stages` uses `stages.listByListId`, `stages.create`, `stages.update` (no `--order`) and

@@ -290,19 +290,19 @@ export async function hubItemsFieldsSet(p: Parsed, stdout: Out, stderr: Out, fet
   if (one === (p.customFields !== "")) {
     throw usage(`hub items fields set: pass --field with --value, or --custom-fields, not both\n\n${help(p)}`);
   }
-  let plan: PlannedRequest;
+  let fields: unknown[];
   if (one) {
     requireFlag(p, "field", p.field, help(p));
     requireFlag(p, "value", p.fieldValue, help(p));
-    plan = { method: "PUT", path: `${itemFieldsBase(p)}/${pathSegment("field", p.field)}`, body: { value: fieldValue(p.fieldValue) } };
+    fields = [{ fieldId: p.field, value: fieldValue(p.fieldValue) }];
   } else {
-    const fields = parseJSONArray("custom-fields", p.customFields);
+    fields = parseJSONArray("custom-fields", p.customFields);
     if (fields.some((f) => typeof record(f).fieldId !== "string")) {
       throw usage('--custom-fields must be a JSON array of {"fieldId","value"} objects');
     }
-    plan = { method: "PUT", path: itemFieldsBase(p), body: { fields } };
   }
-  await sendHub(p, [plan], stdout, stderr, fetchImpl);
+  // The partial-merge route: it changes only these fields. The single-field PUT .../customFields/F is not used here.
+  await sendHub(p, [{ method: "PUT", path: itemFieldsBase(p), body: { fields } }], stdout, stderr, fetchImpl);
 }
 
 export async function hubItemsFieldsClear(p: Parsed, stdout: Out, stderr: Out, fetchImpl: typeof fetch): Promise<void> {

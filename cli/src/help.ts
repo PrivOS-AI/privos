@@ -1204,11 +1204,10 @@ const hubItemsFieldsHelp = `Usage:
 
 An item's custom-field values through
 /api/v1/internal/rooms/ROOM_ID/items/ITEM_ID/customFields[/FIELD_ID].
-"set --field" sends {"value": VALUE}; --value is JSON (a string, number,
-boolean, array, object or null), and text that is not JSON is sent as a
-string. A SELECT value is the option's _id; MULTI_SELECT is an array of ids.
-"set --custom-fields" sends {"fields":[{"fieldId","value"}...]} and changes
-only those fields. Bot mode only. Writes are a dry run unless --confirm.
+Both "set" forms send PUT .../customFields with {"fields":[{"fieldId","value"}...]},
+which changes only the fields named. --value is JSON (a string, number,
+boolean, array, object or null); text that is not JSON is sent as a string.
+A SELECT value is the option's _id; MULTI_SELECT is an array of ids. Bot mode only. Writes are a dry run unless --confirm.
 `;
 
 const hubApiHelp = `Usage:
