@@ -8,29 +8,35 @@ Please do **not** open a public GitHub issue for a security problem.
 
 - Email **security@privos.ai**. You will get a human acknowledgement within **2 business days**.
 - Include: affected component (hub, sandbox, installer, an MCP app), version (`versions.json` `stackVersion` or the image tag), steps to reproduce, impact, and a proof of concept if you have one.
-- If you need to encrypt the report, ask for our PGP key in a first plain email.
 
 We do not run a paid bounty programme today. We credit reporters in the release notes of the fix unless you ask us not to.
 
 ## What happens next
 
-| Severity (CVSS v3.1) | Fix target | Communication |
-|---|---|---|
-| Critical (9.0+) | Patched release within **72 hours** of confirmation | Security advisory + email to registered self-hosted operators |
-| High (7.0–8.9) | Patched release within **7 days** | Security advisory |
-| Medium / Low | Next scheduled release, at most **30 days** | Release notes |
+We roll PrivOS Cloud and the workspaces we manage ourselves. A self-hosted install needs a published
+bundle and your own upgrade, so the two have separate targets.
+
+| Severity (CVSS v3.1) | PrivOS Cloud and managed workspaces | Self-hosted bundle | Communication |
+|---|---|---|---|
+| Critical (9.0+) | Fixed release rolled out within **72 hours** of confirmation | Published within **7 days** of the fix | Security advisory + email to registered self-hosted operators |
+| High (7.0–8.9) | Within **7 days** | Within **14 days** | Security advisory |
+| Medium / Low | Next scheduled release, at most **30 days** | Next bundle, at most **30 days** | Release notes |
 
 Coordinated disclosure: we ask for **90 days** from the report before public disclosure, or sooner once a fix is released, whichever comes first.
 
 ## Supported versions
 
-Self-hosted installs are versioned by the `stackVersion` published in `versions.json` with each release.
+Self-hosted installs are identified by the `stackVersion` published in `versions.json` with each release,
+for example `v7.15.42-tenant.445`.
 
-- The **latest release** receives all security fixes.
-- The **previous minor release** receives fixes for Critical and High issues for **90 days** after the next minor ships.
-- Anything older is unsupported; upgrade with the installer.
+- Only the **latest published release** is supported and receives security fixes.
+- Our releases are **forward-only**: a fix ships in a new release rather than as a patch to a superseded
+  one, and database migrations only move forward. An affected install is remediated by upgrading with the
+  installer, not by a backport to an older build.
+- Every advisory names the release that carries the fix and the releases that are affected.
 
-PrivOS Cloud always runs the latest release, so a fix reaches Cloud workspaces before or at the same time as the self-hosted release.
+PrivOS Cloud always runs the latest release, so a fix reaches Cloud workspaces before or at the same time as
+the self-hosted bundle.
 
 ## Upstream components
 
