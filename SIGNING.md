@@ -127,8 +127,12 @@ app-cluster, publisher, netguard) are signed separately with
 (mongo, redis, rustfs, weaviate) are not signed by PrivOS; they are pinned by
 digest in the minisign-signed `compose.yml` / `versions.json`.
 
-> **Status (2026-11-20):** the key exists; the publish scripts do not sign yet.
-> Images published before signing is wired in carry no cosign signature.
+> **Status:** `publish-self-hosted-bundle.sh --yes` signs and attests every
+> pinned `ghcr.io/privos-ai/*` image from the first release published after this
+> change. Releases published before it carry no cosign signature. Customer verify
+> commands: [`VERIFY-IMAGES.md`](VERIFY-IMAGES.md) (also a Release asset).
+> `install.sh` does not verify cosign signatures: the minisign-signed
+> `versions.json` pins the image digests and the sha256 of `cosign.pub`.
 
 ### Active image signing key (generated 2026-11-20)
 
