@@ -40,17 +40,19 @@ IMAGE_REFS=(
   "sandboxBoard|ghcr.io/privos-ai/privos-sandbox-board|__SANDBOX_BOARD_DIGEST__"
   "sandboxProxy|ghcr.io/privos-ai/privos-sandbox-proxy|__SANDBOX_PROXY_DIGEST__"
   "sandboxVm|ghcr.io/privos-ai/privos-sandbox-vm|__SANDBOX_VM_DIGEST__"
-  "mongo|mongo:7.0.14|__MONGO_DIGEST__"
-  "redis|redis:7.2-alpine|__REDIS_DIGEST__"
+  # Third-party images are pinned by their multi-arch INDEX digest (never a
+  # single-platform child): an upstream tag can move, and re-publishing a
+  # release must not change an image it already shipped. Bump digest and tag
+  # together.
+  "mongo|mongo:7.0.14@sha256:0032d2ca20db5fa34926f196c8a43b74e34ed239a7f2453ff1505b6f12ba8ea6|__MONGO_DIGEST__"
+  "redis|redis:7.2-alpine@sha256:3d2b46efa3280299fe6e117a33fccdfeb495c39098f95d076fadd12a88005b0a|__REDIS_DIGEST__"
   # rustfs / rustfsRc: the third field is the digest text compose.yml carries in
-  # the source tree; resolve_digest replaces it with the tag's multi-arch INDEX
-  # digest at publish time, so amd64 and arm64 hosts pull the same pin.
-  "rustfs|ghcr.io/rustfs/rustfs:1.0.0-rc.6|8d8bfa61f3a20cdcf644562bb8c3a314ca03c66a9827f6056f741e787bf0c804"
-  "rustfsRc|docker.io/rustfs/rc:v0.1.35|6558b9777a1e75fc92e040a7bae67af93334703b4b4ab3a28cf45ecc08ee2404"
-  # Digest-pinned: cr.weaviate.io enforces a strict unauthenticated pull rate
-  # limit that blocks digest resolution from developer machines. Pin explicitly
-  # (the multi-arch INDEX digest, never a single-platform child) and bump
-  # alongside the tag.
+  # the source tree; the publisher replaces it with the pinned index digest, so
+  # amd64 and arm64 hosts pull the same pin.
+  "rustfs|ghcr.io/rustfs/rustfs:1.0.0-rc.6@sha256:97171b3d72cd47dc81000f92ea84de25608bfc35a94c965501afaeb5d99f6035|8d8bfa61f3a20cdcf644562bb8c3a314ca03c66a9827f6056f741e787bf0c804"
+  "rustfsRc|docker.io/rustfs/rc:v0.1.35@sha256:adb45b56539006120f1d790bcc17ee5f9b4d93c1d7e71ed0a24f10267f9d6914|6558b9777a1e75fc92e040a7bae67af93334703b4b4ab3a28cf45ecc08ee2404"
+  # weaviate: cr.weaviate.io also enforces a strict unauthenticated pull rate
+  # limit that blocks digest resolution from developer machines.
   "weaviate|cr.weaviate.io/semitechnologies/weaviate:1.38.2@sha256:107e8faae40ead5477fa6e2e86cc3da5a2d578d32d4586b4e23861d90eb3601c|__WEAVIATE_DIGEST__"
   "appCluster|ghcr.io/privos-ai/privos-app-cluster|__APP_CLUSTER_DIGEST__"
   "publisher|ghcr.io/privos-ai/privos-publisher|__PUBLISHER_DIGEST__"
