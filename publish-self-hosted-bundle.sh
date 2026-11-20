@@ -13,6 +13,10 @@
 #
 #   publish-self-hosted-bundle.sh --stack-version <tag> --minisign-key <path> [--yes]
 #   publish-self-hosted-bundle.sh --check   # verify an already-published bundle dir, no key needed
+#
+# A real publish (--yes) also cosign-signs every pinned ghcr.io/privos-ai/*
+# image digest and attaches a CycloneDX SBOM attestation per platform (see
+# SIGNING.md, "Container image signing"). --check never needs cosign.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,7 +67,9 @@ REQUIRED_PLATFORMS=(linux/amd64 linux/arm64)
 ALLOW_AMD64_ONLY="false"
 
 SIGNED_FILES=(compose.yml compose.desktop.yml versions.json)
-HASHED_FILES=(compose.yml compose.desktop.yml install.sh install.ps1 rustfs-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md)
+# cosign.pub is hashed so the minisign-signed versions.json vouches for the
+# image signing key it ships next to.
+HASHED_FILES=(compose.yml compose.desktop.yml install.sh install.ps1 rustfs-init.sh docker-user-rules.sh LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md cosign.pub VERIFY-IMAGES.md)
 # Files whose image placeholders are replaced with resolved digests.
 DIGEST_FILES=(compose.yml compose.desktop.yml)
 
@@ -72,6 +78,14 @@ DIGEST_FILES=(compose.yml compose.desktop.yml)
 # / run_check below).
 OSN_STACK_VERSION_TOKEN="__PRIVOS_STACK_VERSION__"
 OSN_SBOM_TOKEN="__SBOM_LICENSE_INVENTORY__"
+
+# Image signing (cosign). Binaries by full path: ~/.local/bin is not on a
+# non-interactive PATH. The committed $BUNDLE_DIR/cosign.pub is the trust root;
+# a host key that does not pair with it is refused.
+COSIGN="${COSIGN:-$HOME/.local/bin/cosign}"
+SYFT="${SYFT:-$(command -v syft 2>/dev/null || printf '%s' "$HOME/.local/bin/syft")}"
+COSIGN_KEY="${COSIGN_KEY:-$HOME/.ssh/privos-cosign.key}"
+COSIGN_PASSWORD_FILE="${COSIGN_PASSWORD_FILE:-$HOME/.ssh/privos-cosign.password}"
 
 log()  { printf '[publish-bundle] %s\n' "$*" >&2; }
 die()  { printf '[publish-bundle] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -189,6 +203,10 @@ run_check() {
   fi
   log "OK: OPEN-SOURCE-NOTICES has no unresolved template tokens"
 
+  # TODO: optional --verify-images flag to also run `cosign verify` /
+  # `verify-attestation` against the pinned ghcr.io/privos-ai/* digests (needs
+  # network + cosign on the checking machine, so not part of --check).
+
   log "--check passed."
 }
 
@@ -215,7 +233,7 @@ resolve_digest() {
 resolve_all_digests() {
   [[ -n "$STACK_VERSION" ]] || die "--stack-version is required"
   local entry name ref_template placeholder ref digest
-  declare -gA RESOLVED_DIGEST=() RESOLVED_PLATFORMS=()
+  declare -gA RESOLVED_DIGEST=() RESOLVED_PLATFORMS=() PLATFORM_CHILD=()
   for entry in "${IMAGE_REFS[@]}"; do
     IFS='|' read -r name ref_template placeholder <<<"$entry"
     # Entries with no tag baked into ref_template (hub/sandbox-*, appCluster)
@@ -230,8 +248,27 @@ resolve_all_digests() {
     log "  -> ${digest} (${RESOLVED_PLATFORMS[$name]})"
     if [[ "$ref_template" == ghcr.io/privos-ai/* ]]; then
       require_platforms "$name" "${RESOLVED_PLATFORMS[$name]}"
+      local plat
+      for plat in ${RESOLVED_PLATFORMS[$name]//,/ }; do
+        PLATFORM_CHILD["$name|$plat"]="$(platform_child_digest "${ref%@*}@${digest}" "$plat")"
+      done
     fi
   done
+}
+
+# Digest of the os/arch manifest inside an index (the ref itself when it is a
+# plain single-platform manifest). SBOMs are attested per platform image.
+platform_child_digest() {
+  local ref="$1" plat="$2" raw child
+  raw="$(docker buildx imagetools inspect "$ref" --raw 2>/dev/null)" || die "could not read the manifest of ${ref}"
+  if jq -e '.manifests' >/dev/null 2>&1 <<<"$raw"; then
+    child="$(jq -r --arg os "${plat%%/*}" --arg arch "${plat#*/}" \
+      'first(.manifests[] | select(.platform.os == $os and .platform.architecture == $arch) | .digest) // empty' <<<"$raw")"
+  else
+    child="${ref##*@}"
+  fi
+  [[ "$child" == sha256:* ]] || die "no ${plat} manifest in ${ref}"
+  printf '%s' "$child"
 }
 
 # Comma-separated os/arch list of a pinned ref: the children of an index, or
@@ -269,49 +306,60 @@ require_platforms() {
 # ---------------------------------------------------------------------------
 
 # Generates "name  version  license" rows per ghcr.io/privos-ai/* image
-# (grouped per image, sorted), via `syft <image@digest> -o json`. Only images
-# Roxane builds and conveys get an inventory here — third-party images
-# (mongo, redis, rustfs, weaviate) are already covered by OPEN-SOURCE-NOTICES
-# section 1, which states they are pulled by the deployment, not conveyed.
+# (grouped per image, sorted). Only images Roxane builds and conveys get an
+# inventory here — third-party images (mongo, redis, rustfs, weaviate) are
+# already covered by OPEN-SOURCE-NOTICES section 1, which states they are
+# pulled by the deployment, not conveyed.
+#
+# One syft scan per platform image writes both the syft JSON (license rows,
+# from ${SBOM_PLATFORM:-linux/amd64} only) and the CycloneDX SBOM that is
+# attested to that image and uploaded as $work/sbom/<name>-<os>-<arch>.cdx.json.
 build_sbom_inventory() {
-  require_cmd syft
+  local work="$1"
+  [[ -x "$SYFT" ]] || die "syft not found at ${SYFT} (set SYFT=<path>)"
   require_cmd jq
-  local entry name ref_template placeholder digest repo ref json rows section=""
+  mkdir -p "$work/sbom"
+  local entry name ref_template placeholder digest repo plat child json_file cdx rows section="" syft_err
   for entry in "${IMAGE_REFS[@]}"; do
     IFS='|' read -r name ref_template placeholder <<<"$entry"
     [[ "$ref_template" == ghcr.io/privos-ai/* ]] || continue
     digest="${RESOLVED_DIGEST[$name]:-}"
     [[ -n "$digest" ]] || die "no resolved digest for ${name} — cannot generate its SBOM inventory"
     repo="${ref_template%%:*}"
-    ref="${repo}@${digest}"
-    log "Generating SBOM inventory for ${ref}…"
-    # --platform: the fleet builds these images for linux/amd64 (x86 build hosts)
-    # and the bundle targets amd64 servers, so a multi-arch index has no arm64
-    # child. Without this an Apple-Silicon ops box fails with "no child with
-    # platform linux/arm64". Overridable for a future multi-arch build.
-    # syft's stderr carries the real cause, so surface it instead of swallowing it.
-    local syft_err
-    syft_err="$(mktemp)"
-    json="$(syft --platform "${SBOM_PLATFORM:-linux/amd64}" "$ref" -o json 2>"$syft_err")" || {
-      log "syft stderr: $(tail -3 "$syft_err")"
+    rows=""
+    for plat in ${RESOLVED_PLATFORMS[$name]//,/ }; do
+      child="${PLATFORM_CHILD[$name|$plat]:-}"
+      [[ -n "$child" ]] || die "no ${plat} child digest recorded for ${name}"
+      cdx="$work/sbom/${name}-${plat//\//-}.cdx.json"
+      json_file="$(mktemp)"
+      syft_err="$(mktemp)"
+      log "Generating SBOM for ${repo}@${child} (${plat})…"
+      # syft's stderr carries the real cause, so surface it instead of swallowing it.
+      "$SYFT" --platform "$plat" "${repo}@${child}" -o "json=${json_file}" -o "cyclonedx-json=${cdx}" 2>"$syft_err" >/dev/null || {
+        log "syft stderr: $(tail -3 "$syft_err")"
+        rm -f "$syft_err" "$json_file"
+        die "syft failed to generate an SBOM for ${repo}@${child}"
+      }
       rm -f "$syft_err"
-      die "syft failed to generate an SBOM for ${ref}"
-    }
-    rm -f "$syft_err"
-    rows="$(jq -r '
-        [ .artifacts[]? |
-          {
-            name: (.name // "unknown"),
-            version: (.version // "unknown"),
-            license: ((.licenses // []) | map(if type == "string" then . else (.value // .spdxExpression // "unknown") end) | unique | join(", "))
-          }
-        ]
-        | unique_by(.name, .version, .license)
-        | sort_by(.name, .version)
-        | .[]
-        | [.name, .version, (if .license == "" then "unknown" else .license end)]
-        | @tsv
-      ' <<<"$json" | awk -F'\t' '{printf "  %-40s %-24s %s\n", $1, $2, $3}')"
+      if [[ "$plat" == "${SBOM_PLATFORM:-linux/amd64}" ]]; then
+        rows="$(jq -r '
+            [ .artifacts[]? |
+              {
+                name: (.name // "unknown"),
+                version: (.version // "unknown"),
+                license: ((.licenses // []) | map(if type == "string" then . else (.value // .spdxExpression // "unknown") end) | unique | join(", "))
+              }
+            ]
+            | unique_by(.name, .version, .license)
+            | sort_by(.name, .version)
+            | .[]
+            | [.name, .version, (if .license == "" then "unknown" else .license end)]
+            | @tsv
+          ' "$json_file" | awk -F'\t' '{printf "  %-40s %-24s %s\n", $1, $2, $3}')"
+      fi
+      rm -f "$json_file"
+    done
+    [[ -n "$rows" ]] || die "no ${SBOM_PLATFORM:-linux/amd64} SBOM for ${name} — cannot build its license inventory"
     section+="$(printf '%s (%s)\n' "$repo" "$digest")"
     section+=$'\n'
     section+="$rows"
@@ -350,8 +398,8 @@ fill_open_source_notices_tokens() {
 
   if [[ "$SKIP_SBOM" == "true" ]]; then
     sbom_text="SBOM inventory not generated for this release (published with --skip-sbom)."
-  elif command -v syft >/dev/null 2>&1; then
-    sbom_text="$(build_sbom_inventory)"
+  elif [[ -x "$SYFT" ]]; then
+    sbom_text="$(build_sbom_inventory "$work")"
   else
     die "syft is required to generate the SBOM license inventory (see https://github.com/anchore/syft#installation for install instructions), or pass --skip-sbom to publish without one."
   fi
@@ -374,7 +422,7 @@ apply_digests_and_sign() {
   cp "$BUNDLE_DIR/compose.desktop.yml" "$work/compose.desktop.yml"
   cp "$BUNDLE_DIR/versions.json" "$work/versions.json"
   for f in install.sh install.ps1 rustfs-init.sh docker-user-rules.sh env.template SIGNING.md \
-    LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md; do
+    LICENSE NOTICE OPEN-SOURCE-NOTICES rocketchat-upstream-files.txt TRADEMARK.md cosign.pub VERIFY-IMAGES.md; do
     cp "$BUNDLE_DIR/$f" "$work/$f"
   done
 
@@ -451,6 +499,91 @@ apply_digests_and_sign() {
 }
 
 # ---------------------------------------------------------------------------
+# cosign image signing + SBOM attestations (ghcr.io/privos-ai/* only)
+# ---------------------------------------------------------------------------
+
+# The only place the cosign password is read: a prefix assignment on a single
+# cosign process. Never exported, echoed, or put in argv.
+cosign_keyed() {
+  COSIGN_PASSWORD="$(<"$COSIGN_PASSWORD_FILE")" "$COSIGN" "$@" --key "$COSIGN_KEY"
+}
+
+file_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+
+# Prerequisites for any non---check run. A dry run checks the files only and
+# never opens the key; --yes also proves the host key pairs with the
+# committed cosign.pub, before anything is pushed.
+require_signing_prereqs() {
+  [[ -x "$COSIGN" ]] || die "cosign not executable at ${COSIGN} (set COSIGN=<path>)"
+  [[ -f "$COSIGN_KEY" ]] || die "cosign key not found at ${COSIGN_KEY}"
+  [[ -f "$COSIGN_PASSWORD_FILE" ]] || die "cosign password file not found at ${COSIGN_PASSWORD_FILE}"
+  [[ "$(file_mode "$COSIGN_PASSWORD_FILE")" == 600 ]] || die "${COSIGN_PASSWORD_FILE} must be mode 600"
+  [[ -f "$BUNDLE_DIR/cosign.pub" ]] || die "missing committed ${BUNDLE_DIR}/cosign.pub"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    log "Signing prerequisites present (dry run: key not opened, key/cosign.pub pairing checked on --yes)"
+    return 0
+  fi
+  cmp -s <(cosign_keyed public-key 2>/dev/null) "$BUNDLE_DIR/cosign.pub" \
+    || die "${COSIGN_KEY} does not pair with the committed ${BUNDLE_DIR}/cosign.pub — wrong key on this host?"
+  log "Signing key pairs with the committed cosign.pub"
+}
+
+# Signs one image index (children included), attests each platform's SBOM,
+# then verifies all of it with the committed public key that ships in the
+# Release. Any failure aborts before the Release upload.
+sign_and_attest_image() {
+  local work="$1" name="$2" repo="$3" digest="$4" pub="$1/cosign.pub" plat child cdx
+  cosign_keyed sign --recursive --tlog-upload=false --yes "${repo}@${digest}" >/dev/null \
+    || die "cosign sign failed for ${repo}@${digest}"
+  "$COSIGN" verify --key "$pub" --insecure-ignore-tlog=true "${repo}@${digest}" >/dev/null \
+    || die "cosign verify failed for ${repo}@${digest}"
+  for plat in ${RESOLVED_PLATFORMS[$name]//,/ }; do
+    child="${PLATFORM_CHILD[$name|$plat]}"
+    "$COSIGN" verify --key "$pub" --insecure-ignore-tlog=true "${repo}@${child}" >/dev/null \
+      || die "cosign verify failed for ${repo}@${child} (${plat})"
+    [[ "$SKIP_SBOM" == "true" ]] && continue
+    cdx="$work/sbom/${name}-${plat//\//-}.cdx.json"
+    [[ -s "$cdx" ]] || die "missing SBOM ${cdx}"
+    cosign_keyed attest --type cyclonedx --predicate "$cdx" --tlog-upload=false --yes "${repo}@${child}" >/dev/null \
+      || die "cosign attest failed for ${repo}@${child} (${plat})"
+    "$COSIGN" verify-attestation --key "$pub" --insecure-ignore-tlog=true --type cyclonedx "${repo}@${child}" >/dev/null \
+      || die "cosign verify-attestation failed for ${repo}@${child} (${plat})"
+  done
+  log "Signed + verified ${repo}@${digest}"
+}
+
+sign_and_attest_images() {
+  local work="$1" entry name ref_template placeholder plat n=0
+  for entry in "${IMAGE_REFS[@]}"; do
+    IFS='|' read -r name ref_template placeholder <<<"$entry"
+    [[ "$ref_template" == ghcr.io/privos-ai/* ]] || continue
+    n=$((n + 1))
+    if [[ "$DRY_RUN" == "true" ]]; then
+      log "DRY RUN — would cosign sign --recursive ${ref_template}@${RESOLVED_DIGEST[$name]}"
+      for plat in ${RESOLVED_PLATFORMS[$name]//,/ }; do
+        [[ "$SKIP_SBOM" == "true" ]] && continue
+        log "DRY RUN —   would attest sbom/${name}-${plat//\//-}.cdx.json to ${ref_template}@${PLATFORM_CHILD[$name|$plat]} (${plat})"
+      done
+    fi
+  done
+  [[ "$SKIP_SBOM" == "true" ]] && log "WARNING: --skip-sbom — images are signed but carry no SBOM attestation"
+  [[ "$DRY_RUN" == "true" ]] && return 0
+
+  require_cmd gh
+  # cosign pushes signatures with the docker credentials; log out on exit.
+  trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+  gh auth token | docker login ghcr.io -u privos-ai --password-stdin >/dev/null \
+    || die "docker login ghcr.io failed (gh token needs write:packages)"
+  for entry in "${IMAGE_REFS[@]}"; do
+    IFS='|' read -r name ref_template placeholder <<<"$entry"
+    [[ "$ref_template" == ghcr.io/privos-ai/* ]] || continue
+    sign_and_attest_image "$work" "$name" "$ref_template" "${RESOLVED_DIGEST[$name]}"
+  done
+  docker logout ghcr.io >/dev/null 2>&1 || true
+  log "cosign: ${n} images signed and verified against the committed cosign.pub"
+}
+
+# ---------------------------------------------------------------------------
 # Publish: create-or-update a GitHub Release, upload the bundle as flat
 # release assets. No apex domain, no Cloudflare Worker, no branch push —
 # `releases/download/<tag>/<file>` (and `releases/latest/download/<file>`
@@ -477,7 +610,14 @@ publish() {
     "$work/OPEN-SOURCE-NOTICES"
     "$work/rocketchat-upstream-files.txt"
     "$work/TRADEMARK.md"
+    "$work/cosign.pub"
+    "$work/VERIFY-IMAGES.md"
   )
+  # Per-platform CycloneDX SBOMs, flat names (Releases have no folders).
+  local sbom
+  for sbom in "$work"/sbom/*.cdx.json; do
+    [[ -f "$sbom" ]] && assets+=("$sbom")
+  done
 
   if [[ "$DRY_RUN" == "true" ]]; then
     local a names=()
@@ -525,6 +665,7 @@ require_published_source() {
 main() {
   parse_args "$@"
   require_published_source
+  [[ "$CHECK_ONLY" == "true" ]] || require_signing_prereqs
 
   if [[ "$CHECK_ONLY" == "true" ]]; then
     run_check
@@ -535,6 +676,7 @@ main() {
   local work
   work="$(mktemp -d)"
   apply_digests_and_sign "$work"
+  sign_and_attest_images "$work"
   publish "$work"
   rm -rf "$work"
 }

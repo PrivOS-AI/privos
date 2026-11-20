@@ -326,7 +326,7 @@ The fleet feature that lets a room owner run their turns on a CLI inside a dedic
 | `rustfs-init.sh` | Bucket + scoped service account (mirrors the fleet provisioner) |
 | `docker-user-rules.sh` | Firewall rules so a later `ports:` edit can't expose the sandbox plane; `--loop` re-applies them on Docker Desktop |
 | `versions.json` | Bundle version + `@sha256` image digests + file hashes (resolved at publish) |
-| `publish-self-hosted-bundle.sh` | Resolve digests, sign with minisign, publish a GitHub Release |
+| `publish-self-hosted-bundle.sh` | Resolve digests, sign with minisign, cosign-sign the PrivOS images and attest their CycloneDX SBOMs, publish a GitHub Release |
 | `SIGNING.md` | How the bundle is signed; the embedded public key |
 | `LICENSE` | PrivOS Community License 1.0 |
 | `tests/` | Bash unit tests (port-check, env render, signature/hash verify, license acceptance, activation gate) + CI |
