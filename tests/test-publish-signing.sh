@@ -82,4 +82,13 @@ found=0
 for f in "${HASHED_FILES[@]}"; do [[ "$f" == cosign.pub ]] && found=1; done
 assert_eq "1" "$found" "cosign.pub is in HASHED_FILES (vouched for by versions.json)"
 
+# Every image PrivOS does not build is pinned by digest, so re-publishing a
+# release cannot pick up an upstream tag that moved.
+for entry in "${IMAGE_REFS[@]}"; do
+  IFS='|' read -r name ref _ <<<"$entry"
+  [[ "$ref" == ghcr.io/privos-ai/* ]] && continue
+  pinned=0; [[ "$ref" =~ @sha256:[0-9a-f]{64}$ ]] && pinned=1
+  assert_eq "1" "$pinned" "third-party image ${name} is pinned by @sha256 digest"
+done
+
 report_and_exit
